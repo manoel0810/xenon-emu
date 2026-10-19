@@ -57,13 +57,15 @@ pub struct XexFile {
     pub session_key: [u8; 16],
     pub encryption_type: u16,
     pub compression_type: u16,
+    pub window_size: u32,
+    pub first_block_size: u32,
     pub import_libraries: Vec<ImportLibrary>,
     pub pe_sections: Vec<PeSectionHeader>,
 }
 
 impl XexFile {
     pub fn parse(data: &[u8]) -> Result<Self, String> {
-        if data.len() < 0x20 {
+        if data.len() < 0x24 {
             return Err("File too small for XEX2 header".into());
         }
 
@@ -147,11 +149,18 @@ impl XexFile {
         // 0x000003FF: File Format Info (Encryption and Compression types)
         let mut encryption_type = 0;
         let mut compression_type = 0;
+        let mut window_size = 0;
+        let mut first_block_size = 0;
+
         if let Some(&fmt_off) = optional_headers.get(&0x000003FF) {
             let f_off = fmt_off as usize;
-            if f_off + 4 <= data.len() {
-                encryption_type = BigEndian::read_u16(&data[f_off..f_off + 2]);
-                compression_type = BigEndian::read_u16(&data[f_off + 2..f_off + 4]);
+            if f_off + 12 <= data.len() {
+                encryption_type = BigEndian::read_u16(&data[f_off + 4..f_off + 6]);
+                compression_type = BigEndian::read_u16(&data[f_off + 6..f_off + 8]);
+                window_size = BigEndian::read_u32(&data[f_off + 8..f_off + 12]);
+                if f_off + 16 <= data.len() {
+                    first_block_size = BigEndian::read_u32(&data[f_off + 12..f_off + 16]);
+                }
             }
         }
 
@@ -166,7 +175,6 @@ impl XexFile {
                     if i_off + 36 > data.len() {
                         break;
                     }
-                    // String table + import records
                     let name_len = data[i_off..i_off + 8].iter().position(|&b| b == 0).unwrap_or(8);
                     let name = std::str::from_utf8(&data[i_off..i_off + name_len])
                         .unwrap_or("unknown")
@@ -203,9 +211,36 @@ impl XexFile {
             session_key,
             encryption_type,
             compression_type,
+            window_size,
+            first_block_size,
             import_libraries,
             pe_sections: Vec::new(),
         })
+    }
+
+    /// Decrypts the executable payload (from pe_offset) using AES-128-CBC with the session key
+    pub fn decrypt_image_payload(&self, raw_xex_data: &[u8]) -> Result<Vec<u8>, String> {
+        let pe_off = self.pe_offset as usize;
+        if pe_off >= raw_xex_data.len() {
+            return Err("PE offset out of bounds".into());
+        }
+
+        let mut payload = raw_xex_data[pe_off..].to_vec();
+        let len = (payload.len() / 16) * 16;
+        let payload = &mut payload[..len];
+
+        if self.encryption_type == 1 {
+            let iv = [0u8; 16];
+            let mut cipher = Aes128CbcDec::new(&self.session_key.into(), &iv.into());
+            cipher.decrypt_blocks(unsafe {
+                std::slice::from_raw_parts_mut(
+                    payload.as_mut_ptr() as *mut cbc::cipher::Block<Aes128CbcDec>,
+                    len / 16,
+                )
+            });
+        }
+
+        Ok(payload.to_vec())
     }
 
     pub fn print_summary(&self) {
@@ -227,7 +262,7 @@ impl XexFile {
             self.encryption_type
         );
         println!(
-            "Compression:      {} (0x{:04X})",
+            "Compression:      {} (0x{:04X}) | Window: {} KB | First Block: {} bytes",
             match self.compression_type {
                 0 => "Uncompressed",
                 1 => "Basic Blocks",
@@ -235,7 +270,9 @@ impl XexFile {
                 3 => "Delta Patch",
                 _ => "Custom",
             },
-            self.compression_type
+            self.compression_type,
+            self.window_size / 1024,
+            self.first_block_size
         );
 
         if let Some(exec) = &self.execution_info {
