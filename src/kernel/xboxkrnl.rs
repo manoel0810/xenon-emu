@@ -35,12 +35,20 @@ impl KernelDispatcher {
         krnl!(158, "KeInitializeEvent", "Initializes a synchronization event");
         krnl!(160, "KeSetEvent", "Signals an event");
         krnl!(161, "KeWaitForSingleObject", "Waits for an event, mutex, or semaphore");
+        krnl!(183, "NtClose", "Closes a kernel object handle");
         krnl!(187, "NtAllocateVirtualMemory", "Allocates virtual address pages");
         krnl!(190, "NtFreeVirtualMemory", "Frees virtual address pages");
         krnl!(202, "NtQueryVirtualMemory", "Queries virtual memory page states");
         krnl!(206, "NtCreateFile", "Opens or creates a file on device filesystem");
         krnl!(208, "NtOpenFile", "Opens an existing file");
+        krnl!(213, "NtQueryInformationFile", "Queries file metadata and attributes");
         krnl!(220, "RtlInitAnsiString", "Initializes counted ANSI string");
+        krnl!(240, "NtReadFile", "Reads data from a file handle");
+        krnl!(242, "NtWriteFile", "Writes data to a file handle");
+        krnl!(248, "RtlMultiByteToUnicodeN", "Converts ANSI string to Unicode");
+        krnl!(251, "RtlUnicodeStringToAnsiString", "Converts Unicode string to ANSI");
+        krnl!(346, "XapiInitProcess", "Initializes XAPI / CRT runtime environment");
+        krnl!(352, "XexUnloadImage", "Unloads an executable module");
         krnl!(405, "DbgPrint", "Prints debug string to console");
         krnl!(601, "XexCheckExecutablePrivilege", "Verifies process privileges");
         krnl!(602, "XexGetModuleHandle", "Retrieves handle to loaded module");
@@ -59,6 +67,9 @@ impl KernelDispatcher {
             };
         }
 
+        xam!(240, "XamGetExecutionId", "Gets module execution ID");
+        xam!(298, "XamLoaderGetLaunchData", "Retrieves system boot/launch data");
+        xam!(400, "XamNotifyCreateListener", "Registers system notification listener");
         xam!(528, "XamShowSigninUI", "Displays the Xbox 360 Signin blade");
         xam!(532, "XamUserGetSigninState", "Queries current user sign-in status");
         xam!(533, "XamUserGetName", "Retrieves Gamertag string");

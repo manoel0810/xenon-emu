@@ -8,5 +8,8 @@ aes = "0.9.3"
 byteorder = "1.5.0"
 cbc = "0.2.1"
 hmac = "0.13.0"
+minifb = "0.29.0"
 ms-compress = "0.2.1"
 sha1 = "0.11.0"
+lzxd = "0.2"
+

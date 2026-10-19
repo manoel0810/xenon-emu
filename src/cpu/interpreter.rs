@@ -18,6 +18,13 @@ pub fn ppc_mask32(mb: u32, me: u32) -> u32 {
     mask
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepResult {
+    Ok,
+    Syscall { lev: u32, pc: u64 },
+    Halted,
+}
+
 pub struct Cpu {
     pub regs: Registers,
     pub halted: bool,
@@ -36,9 +43,9 @@ impl Cpu {
     }
 
     /// Fetches, decodes, and executes a single PowerPC instruction
-    pub fn step(&mut self, bus: &mut MemoryBus) -> Result<(), String> {
+    pub fn step(&mut self, bus: &mut MemoryBus) -> Result<StepResult, String> {
         if self.halted {
-            return Ok(());
+            return Ok(StepResult::Halted);
         }
 
         let pc = self.regs.pc;
@@ -61,6 +68,21 @@ impl Cpu {
                 } else {
                     let val = self.regs.gpr[ra];
                     self.regs.update_cr_cmplw(crf, (val >> 32) as u32, 0);
+                }
+            }
+
+            // Opcode 11: cmpi (Compare Immediate) / cmpwi / cmpdi
+            11 => {
+                let crf = (insn >> 23) & 0x7;
+                let l = (insn >> 21) & 0x1;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let simm = (insn & 0xFFFF) as i16;
+                if l == 0 {
+                    let val = self.regs.gpr[ra] as i32;
+                    self.regs.update_cr_cmpw(crf, val, simm as i32);
+                } else {
+                    let val = self.regs.gpr[ra] as i64;
+                    self.regs.update_cr_cmpd(crf, val, simm as i64);
                 }
             }
 
@@ -131,6 +153,12 @@ impl Cpu {
                 }
             }
 
+            // Opcode 17: sc (System Call / HLE Trap)
+            17 => {
+                let lev = (insn >> 5) & 0x7F;
+                return Ok(StepResult::Syscall { lev, pc });
+            }
+
             // Opcode 18: b / bl / ba / bla
             18 => {
                 let li = (insn & 0x03FF_FFFC) as i32;
@@ -150,18 +178,26 @@ impl Cpu {
                 self.regs.pc = target;
             }
 
-            // Opcode 19: bclr / blrl (Branch to Link Register)
+            // Opcode 19: bclr / blrl / bcctr / bctrl
             19 => {
                 let xo = (insn >> 1) & 0x3FF;
-                if xo == 16 {
-                    let lk = insn & 0x1;
-                    let target = self.regs.lr;
-                    if lk != 0 {
-                        self.regs.lr = self.regs.pc;
+                let lk = insn & 0x1;
+                match xo {
+                    16 => {
+                        let target = self.regs.lr;
+                        if lk != 0 {
+                            self.regs.lr = self.regs.pc;
+                        }
+                        self.regs.pc = target;
                     }
-                    self.regs.pc = target;
-                } else {
-                    return Err(format!("Unimplemented opcode 19 xo {}", xo));
+                    528 => {
+                        let target = self.regs.ctr;
+                        if lk != 0 {
+                            self.regs.lr = self.regs.pc;
+                        }
+                        self.regs.pc = target;
+                    }
+                    _ => return Err(format!("Unimplemented opcode 19 xo {}", xo)),
                 }
             }
 
@@ -253,6 +289,22 @@ impl Cpu {
                         }
                     }
 
+                    // add
+                    266 => {
+                        let rd = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        self.regs.gpr[rd] = self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]);
+                    }
+
+                    // subf
+                    40 => {
+                        let rd = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        self.regs.gpr[rd] = self.regs.gpr[rb].wrapping_sub(self.regs.gpr[ra]);
+                    }
+
                     _ => return Err(format!("Unimplemented opcode 31 xo {}", xo)),
                 }
             }
@@ -267,19 +319,97 @@ impl Cpu {
                 self.regs.gpr[rd] = val as u64;
             }
 
-            // Opcode 58: ldu (Load Doubleword with Update)
+            // Opcode 34: lbz (Load Byte and Zero)
+            34 => {
+                let rd = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let d = (insn & 0xFFFF) as i16 as i64 as u64;
+                let addr = if ra == 0 { d } else { self.regs.gpr[ra].wrapping_add(d) };
+                let val = bus.read_u8(addr)?;
+                self.regs.gpr[rd] = val as u64;
+            }
+
+            // Opcode 36: stw (Store Word)
+            36 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let d = (insn & 0xFFFF) as i16 as i64 as u64;
+                let ea = if ra == 0 { d } else { self.regs.gpr[ra].wrapping_add(d) };
+                bus.write_u32(ea, self.regs.gpr[rs] as u32)?;
+            }
+
+            // Opcode 37: stwu (Store Word with Update)
+            37 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let d = (insn & 0xFFFF) as i16 as i64 as u64;
+                let ea = self.regs.gpr[ra].wrapping_add(d);
+                bus.write_u32(ea, self.regs.gpr[rs] as u32)?;
+                self.regs.gpr[ra] = ea;
+            }
+
+            // Opcode 38: stb (Store Byte)
+            38 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let d = (insn & 0xFFFF) as i16 as i64 as u64;
+                let ea = if ra == 0 { d } else { self.regs.gpr[ra].wrapping_add(d) };
+                bus.write_u8(ea, self.regs.gpr[rs] as u8)?;
+            }
+
+            // Opcode 40: lhz (Load Halfword and Zero)
+            40 => {
+                let rd = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let d = (insn & 0xFFFF) as i16 as i64 as u64;
+                let addr = if ra == 0 { d } else { self.regs.gpr[ra].wrapping_add(d) };
+                let val = bus.read_u16(addr)?;
+                self.regs.gpr[rd] = val as u64;
+            }
+
+            // Opcode 42: lha (Load Halfword Algebraic)
+            42 => {
+                let rd = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let d = (insn & 0xFFFF) as i16 as i64 as u64;
+                let addr = if ra == 0 { d } else { self.regs.gpr[ra].wrapping_add(d) };
+                let val = bus.read_u16(addr)? as i16;
+                self.regs.gpr[rd] = (val as i64) as u64;
+            }
+
+            // Opcode 44: sth (Store Halfword)
+            44 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let d = (insn & 0xFFFF) as i16 as i64 as u64;
+                let ea = if ra == 0 { d } else { self.regs.gpr[ra].wrapping_add(d) };
+                bus.write_u16(ea, self.regs.gpr[rs] as u16)?;
+            }
+
+            // Opcode 58: ld / ldu / lwa (Load Doubleword)
             58 => {
                 let rd = ((insn >> 21) & 0x1F) as usize;
                 let ra = ((insn >> 16) & 0x1F) as usize;
                 let ds = ((insn & 0xFFFC) as i16 as i64) as u64;
                 let xo = insn & 0x3;
-                if xo == 1 {
-                    let ea = self.regs.gpr[ra].wrapping_add(ds);
-                    let val = bus.read_u64(ea)?;
-                    self.regs.gpr[rd] = val;
-                    self.regs.gpr[ra] = ea;
-                } else {
-                    return Err(format!("Unimplemented opcode 58 xo {}", xo));
+                match xo {
+                    0 => {
+                        let ea = if ra == 0 { ds } else { self.regs.gpr[ra].wrapping_add(ds) };
+                        let val = bus.read_u64(ea)?;
+                        self.regs.gpr[rd] = val;
+                    }
+                    1 => {
+                        let ea = self.regs.gpr[ra].wrapping_add(ds);
+                        let val = bus.read_u64(ea)?;
+                        self.regs.gpr[rd] = val;
+                        self.regs.gpr[ra] = ea;
+                    }
+                    2 => {
+                        let ea = if ra == 0 { ds } else { self.regs.gpr[ra].wrapping_add(ds) };
+                        let val = bus.read_u32(ea)? as i32 as i64 as u64;
+                        self.regs.gpr[rd] = val;
+                    }
+                    _ => return Err(format!("Unimplemented opcode 58 xo {}", xo)),
                 }
             }
 
@@ -306,6 +436,6 @@ impl Cpu {
             _ => return Err(format!("Unimplemented PowerPC opcode: {} (0x{:02X}) at PC=0x{:016X}", opcode, opcode, pc)),
         }
 
-        Ok(())
+        Ok(StepResult::Ok)
     }
 }

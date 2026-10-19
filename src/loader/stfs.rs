@@ -73,16 +73,19 @@ impl StfsPackage {
     }
 
     /// Maps an STFS logical data block to its physical file byte offset,
-    /// correctly skipping interspersed L0 (every 170 blocks) and L1 (every 28900 blocks) hash tables.
-    pub fn block_to_offset(block: u32) -> usize {
-        let mut block_adjust = 0;
-        if block >= 0xAA {
-            block_adjust += block / 0xAA;
+    /// correctly skipping interspersed L0 (every 170 blocks), L1 (every 28900 blocks),
+    /// and L2 hash tables based on Xenia's BlockToOffsetSTFS specification.
+    pub fn block_to_offset(block_index: u32) -> usize {
+        let mut base: u64 = 170;
+        let mut block = block_index as u64;
+        for _ in 0..3 {
+            block += (block_index as u64 + base) / base;
+            if (block_index as u64) < base {
+                break;
+            }
+            base *= 170;
         }
-        if block > 0x70E4 {
-            block_adjust += block / 0x70E4;
-        }
-        ((block + block_adjust) as usize * 4096) + 0xC000
+        0xB000 + (block as usize * 4096)
     }
 
     /// Extracts a file by reading its blocks
@@ -117,5 +120,25 @@ impl StfsPackage {
         }
 
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_stfs_dump() {
+        let su_bytes = fs::read("../$SystemUpdate/su20076000_00000000").unwrap();
+        let stfs = StfsPackage::parse(&su_bytes).unwrap();
+        println!("Metadata 0x340..0x3B0: {:02X?}", &su_bytes[0x340..0x3B0]);
+        for e in &stfs.entries {
+            if e.name.contains("dash") {
+                println!("Entry: {:<20} | flags: 0x{:02X} (contig: {}) | start_block: {:5} | block_count: {:5} | size: {:8}",
+                    e.name, e.flags, (e.flags & 0x40) != 0, e.start_block, e.block_count, e.file_size
+                );
+            }
+        }
     }
 }

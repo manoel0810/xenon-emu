@@ -1,6 +1,7 @@
 use byteorder::{BigEndian, ByteOrder};
 use cbc::cipher::{BlockModeDecrypt, KeyIvInit};
 use std::collections::HashMap;
+use crate::memory::MemoryBus;
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
@@ -28,8 +29,7 @@ pub struct ImportLibrary {
     pub name: String,
     pub version: u32,
     pub min_version: u32,
-    pub record_count: u16,
-    pub import_table_addr: u32,
+    pub import_table: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +59,7 @@ pub struct XexFile {
     pub compression_type: u16,
     pub window_size: u32,
     pub first_block_size: u32,
+    pub first_block_hash: [u8; 20],
     pub import_libraries: Vec<ImportLibrary>,
     pub pe_sections: Vec<PeSectionHeader>,
 }
@@ -109,10 +110,16 @@ impl XexFile {
         let mut cipher = Aes128CbcDec::new(&XEX2_RETAIL_KEY.into(), &iv.into());
         cipher.decrypt_block((&mut session_key).into());
 
-        // Parse Optional Headers:
-        // 0x00010100: Original PE Name
+        // Parse Optional Headers (according to xex2_info.h):
+        // 0x00010100: Entry Point
+        let entry_point = optional_headers.get(&0x00010100).copied().unwrap_or(0);
+
+        // 0x00010201: Image Base Address
+        let image_base = optional_headers.get(&0x00010201).copied().unwrap_or(load_address);
+
+        // 0x000183FF: Original PE Name
         let mut original_pe_name = None;
-        if let Some(&name_off) = optional_headers.get(&0x00010100) {
+        if let Some(&name_off) = optional_headers.get(&0x000183FF) {
             let n_off = name_off as usize;
             if n_off < data.len() {
                 let end = data[n_off..].iter().position(|&b| b == 0).unwrap_or(0);
@@ -121,12 +128,6 @@ impl XexFile {
                 }
             }
         }
-
-        // 0x000183FF: Entry Point (Direct value or offset)
-        let entry_point = optional_headers.get(&0x000183FF).copied().unwrap_or(0);
-
-        // 0x000200FF: Image Base Address
-        let image_base = optional_headers.get(&0x000200FF).copied().unwrap_or(load_address);
 
         // 0x00040006: Execution Info
         let mut execution_info = None;
@@ -151,6 +152,7 @@ impl XexFile {
         let mut compression_type = 0;
         let mut window_size = 0;
         let mut first_block_size = 0;
+        let mut first_block_hash = [0u8; 20];
 
         if let Some(&fmt_off) = optional_headers.get(&0x000003FF) {
             let f_off = fmt_off as usize;
@@ -161,37 +163,75 @@ impl XexFile {
                 if f_off + 16 <= data.len() {
                     first_block_size = BigEndian::read_u32(&data[f_off + 12..f_off + 16]);
                 }
+                if f_off + 36 <= data.len() {
+                    first_block_hash.copy_from_slice(&data[f_off + 16..f_off + 36]);
+                }
             }
         }
 
-        // Parse Import Libraries (0x00020104)
+        // Parse Import Libraries (0x000103FF)
         let mut import_libraries = Vec::new();
-        if let Some(&imp_off) = optional_headers.get(&0x00020104) {
-            let mut i_off = imp_off as usize;
-            if i_off + 8 <= data.len() {
-                let count = BigEndian::read_u32(&data[i_off + 4..i_off + 8]) as usize;
-                i_off += 8;
-                for _ in 0..count {
-                    if i_off + 36 > data.len() {
+        if let Some(&imp_off) = optional_headers.get(&0x000103FF) {
+            let i_off = imp_off as usize;
+            if i_off + 12 <= data.len() {
+                let total_size = BigEndian::read_u32(&data[i_off..i_off + 4]) as usize;
+                let str_tbl_size = BigEndian::read_u32(&data[i_off + 4..i_off + 8]) as usize;
+                let str_tbl_count = BigEndian::read_u32(&data[i_off + 8..i_off + 12]) as usize;
+
+                let mut string_table = Vec::new();
+                let mut str_pos = i_off + 12;
+                let str_end = i_off + 12 + str_tbl_size;
+
+                while str_pos < str_end && string_table.len() < str_tbl_count {
+                    let mut end = str_pos;
+                    while end < str_end && data[end] != 0 {
+                        end += 1;
+                    }
+                    if let Ok(s) = std::str::from_utf8(&data[str_pos..end]) {
+                        string_table.push(s.to_string());
+                    } else {
+                        string_table.push("unknown".to_string());
+                    }
+                    let mut advance = (end - str_pos) + 1;
+                    if (advance % 4) != 0 {
+                        advance += 4 - (advance % 4);
+                    }
+                    str_pos += advance;
+                }
+
+                let mut lib_off = i_off + 12 + str_tbl_size;
+                let total_end = i_off + total_size;
+
+                while lib_off + 40 <= total_end && lib_off + 40 <= data.len() {
+                    let lib_size = BigEndian::read_u32(&data[lib_off..lib_off + 4]) as usize;
+                    if lib_size == 0 {
                         break;
                     }
-                    let name_len = data[i_off..i_off + 8].iter().position(|&b| b == 0).unwrap_or(8);
-                    let name = std::str::from_utf8(&data[i_off..i_off + name_len])
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let version = BigEndian::read_u32(&data[i_off + 8..i_off + 12]);
-                    let min_version = BigEndian::read_u32(&data[i_off + 12..i_off + 16]);
-                    let record_count = BigEndian::read_u16(&data[i_off + 18..i_off + 20]);
-                    let import_table_addr = BigEndian::read_u32(&data[i_off + 20..i_off + 24]);
+
+                    let version = BigEndian::read_u32(&data[lib_off + 28..lib_off + 32]);
+                    let min_version = BigEndian::read_u32(&data[lib_off + 32..lib_off + 36]);
+                    let name_index = BigEndian::read_u16(&data[lib_off + 36..lib_off + 38]) as usize;
+                    let count = BigEndian::read_u16(&data[lib_off + 38..lib_off + 40]) as usize;
+
+                    let name = string_table.get(name_index).cloned().unwrap_or_else(|| "unknown".into());
+
+                    let mut import_table = Vec::with_capacity(count);
+                    let table_start = lib_off + 40;
+                    for k in 0..count {
+                        if table_start + (k + 1) * 4 <= data.len() {
+                            let rec_addr = BigEndian::read_u32(&data[table_start + k * 4..table_start + (k + 1) * 4]);
+                            import_table.push(rec_addr);
+                        }
+                    }
 
                     import_libraries.push(ImportLibrary {
                         name,
                         version,
                         min_version,
-                        record_count,
-                        import_table_addr,
+                        import_table,
                     });
-                    i_off += 36;
+
+                    lib_off += lib_size;
                 }
             }
         }
@@ -213,6 +253,7 @@ impl XexFile {
             compression_type,
             window_size,
             first_block_size,
+            first_block_hash,
             import_libraries,
             pe_sections: Vec::new(),
         })
@@ -241,6 +282,140 @@ impl XexFile {
         }
 
         Ok(payload.to_vec())
+    }
+
+    /// De-blocks the decrypted payload and verifies each block's SHA-1 hash.
+    /// Returns the list of extracted LZX chunks.
+    pub fn extract_lzx_chunks(&self, decrypted_payload: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        if self.compression_type != 2 {
+            return Err(format!("Not LZX compressed (compression type: {})", self.compression_type));
+        }
+
+        let mut chunks = Vec::new();
+        let mut cur_block_size = self.first_block_size as usize;
+        let mut cur_block_hash = self.first_block_hash;
+
+        let mut offset = 0;
+        let mut block_idx = 0;
+
+        while cur_block_size > 0 {
+            if offset + cur_block_size > decrypted_payload.len() {
+                return Err(format!(
+                    "Block {} exceeds payload bounds (offset: 0x{:X}, size: 0x{:X}, total len: 0x{:X})",
+                    block_idx, offset, cur_block_size, decrypted_payload.len()
+                ));
+            }
+
+            let block_bytes = &decrypted_payload[offset..offset + cur_block_size];
+
+            // Verify block SHA-1 hash
+            use sha1::{Digest, Sha1};
+            let mut hasher = Sha1::new();
+            hasher.update(block_bytes);
+            let calculated_hash: [u8; 20] = hasher.finalize().into();
+
+            println!("  [Block {:02}] Offset: 0x{:08X} | Size: {:5} bytes | Hash: {:02X}{:02X}{:02X}{:02X}...",
+                block_idx, offset, cur_block_size, cur_block_hash[0], cur_block_hash[1], cur_block_hash[2], cur_block_hash[3]
+            );
+
+            if calculated_hash != cur_block_hash {
+                return Err(format!(
+                    "Block {} SHA-1 hash mismatch! Expected: {:02X?}, Got: {:02X?}",
+                    block_idx, cur_block_hash, calculated_hash
+                ));
+            }
+
+            if cur_block_size < 24 {
+                return Err(format!("Block {} too small for header ({} bytes)", block_idx, cur_block_size));
+            }
+
+            let next_block_size = BigEndian::read_u32(&block_bytes[0..4]) as usize;
+            let mut next_block_hash = [0u8; 20];
+            next_block_hash.copy_from_slice(&block_bytes[4..24]);
+
+            // Parse 16-bit chunk sizes and chunk data
+            let mut chunk_pos = 24;
+            while chunk_pos + 2 <= cur_block_size {
+                let chunk_size = BigEndian::read_u16(&block_bytes[chunk_pos..chunk_pos + 2]) as usize;
+                chunk_pos += 2;
+                if chunk_size == 0 {
+                    break;
+                }
+                if chunk_pos + chunk_size > cur_block_size {
+                    return Err(format!(
+                        "Block {} chunk overflow: pos {}, size {}, block_size {}",
+                        block_idx, chunk_pos, chunk_size, cur_block_size
+                    ));
+                }
+                chunks.push(block_bytes[chunk_pos..chunk_pos + chunk_size].to_vec());
+                chunk_pos += chunk_size;
+            }
+
+            offset += cur_block_size;
+            cur_block_size = next_block_size;
+            cur_block_hash = next_block_hash;
+            block_idx += 1;
+        }
+
+        println!(
+            "[+] Validated {} XEX2 compressed blocks with SHA-1 hashes (extracted {} chunks)",
+            block_idx, chunks.len()
+        );
+
+        Ok(chunks)
+    }
+
+    /// Decompresses all LZX chunks into the final uncompressed PE executable image.
+    pub fn decompress_image(&self, decrypted_payload: &[u8]) -> Result<Vec<u8>, String> {
+        let chunks = self.extract_lzx_chunks(decrypted_payload)?;
+
+        // Map window size to lzxd::WindowSize
+        let window_size = match self.window_size {
+            0x8000 => lzxd::WindowSize::KB32,
+            0x10000 => lzxd::WindowSize::KB64,
+            0x20000 => lzxd::WindowSize::KB128,
+            0x40000 => lzxd::WindowSize::KB256,
+            0x80000 => lzxd::WindowSize::KB512,
+            0x100000 => lzxd::WindowSize::MB1,
+            0x200000 => lzxd::WindowSize::MB2,
+            _ => lzxd::WindowSize::KB32,
+        };
+
+        let mut decoder = lzxd::Lzxd::new(window_size);
+        let mut uncompressed_image = Vec::with_capacity(self.image_size as usize);
+        let target_size = self.image_size as usize;
+
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let remaining = target_size.saturating_sub(uncompressed_image.len());
+            if remaining == 0 {
+                break;
+            }
+            let output_len = std::cmp::min(remaining, 32 * 1024);
+
+            match decoder.decompress_next(chunk, output_len) {
+                Ok(decompressed) => {
+                    uncompressed_image.extend_from_slice(decompressed);
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "LZX decode error on chunk {}/{}: {:?} (decompressed so far: {} bytes)",
+                        idx + 1, chunks.len(), e, uncompressed_image.len()
+                    ));
+                }
+            }
+        }
+
+        // Pad to image_size if needed
+        if uncompressed_image.len() < target_size {
+            uncompressed_image.resize(target_size, 0);
+        }
+
+        println!(
+            "[+] Successfully decompressed complete PE image: {} bytes ({} MB)!",
+            uncompressed_image.len(), uncompressed_image.len() / (1024 * 1024)
+        );
+
+        Ok(uncompressed_image)
     }
 
     pub fn print_summary(&self) {
@@ -288,11 +463,58 @@ impl XexFile {
             println!("\nImport Libraries ({}):", self.import_libraries.len());
             for lib in &self.import_libraries {
                 println!(
-                    "  - {:<16} (Records: {:3}, Import Table: 0x{:08X})",
-                    lib.name, lib.record_count, lib.import_table_addr
+                    "  - {:<16} (Records: {:3})",
+                    lib.name, lib.import_table.len()
                 );
             }
         }
+
+        println!("\nOptional Headers ({}):", self.optional_headers.len());
+        for (k, v) in &self.optional_headers {
+            println!("  0x{:08X} => 0x{:08X}", k, v);
+        }
         println!("------------------------------------------------------------");
+    }
+
+    /// Rewrites all import thunks in memory with `sc 2` and `blr`,
+    /// returning a mapping from thunk address to (library_name, ordinal).
+    pub fn setup_import_thunks(
+        &self,
+        bus: &mut MemoryBus,
+    ) -> Result<HashMap<u64, (String, u16)>, String> {
+        let mut thunk_map = HashMap::new();
+        let mut total_thunks = 0;
+        let mut total_vars = 0;
+
+        for lib in &self.import_libraries {
+            for &record_addr in &lib.import_table {
+                let addr = record_addr as u64;
+                if let Ok(record_val) = bus.read_u32(addr) {
+                    let record_type = ((record_val >> 24) & 0xFF) as u8;
+                    let ordinal = (record_val & 0xFFFF) as u16;
+
+                    if record_type == 1 {
+                        // Function Thunk:
+                        // Overwrite with:
+                        //   sc 2  (0x44000042)
+                        //   blr   (0x4E800020)
+                        bus.write_u32(addr, 0x44000042)?;
+                        bus.write_u32(addr + 4, 0x4E800020)?;
+                        thunk_map.insert(addr, (lib.name.clone(), ordinal));
+                        total_thunks += 1;
+                    } else if record_type == 0 {
+                        // Variable import
+                        total_vars += 1;
+                    }
+                }
+            }
+        }
+
+        println!(
+            "[+] Setup Import Thunks: {} function thunks hooked with HLE traps, {} variables mapped across {} libraries.",
+            total_thunks, total_vars, self.import_libraries.len()
+        );
+
+        Ok(thunk_map)
     }
 }

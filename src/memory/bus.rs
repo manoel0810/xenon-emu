@@ -103,6 +103,14 @@ impl MemoryBus {
         Ok(())
     }
 
+    pub fn read_u32_le(&self, addr: u64) -> Result<u32, String> {
+        let slice = self.translate_address(addr)?;
+        if slice.len() < 4 {
+            return Err("Short read".into());
+        }
+        Ok(byteorder::LittleEndian::read_u32(slice))
+    }
+
     pub fn read_u64(&self, addr: u64) -> Result<u64, String> {
         let slice = self.translate_address(addr)?;
         if slice.len() < 8 {

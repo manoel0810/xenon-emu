@@ -59,6 +59,20 @@ impl Registers {
         self.cr = (self.cr & mask) | (bits << shift);
     }
 
+    /// Update Condition Register Field (crf 0..7) comparing two 64-bit signed integers
+    pub fn update_cr_cmpd(&mut self, crf: u32, a: i64, b: i64) {
+        let shift = (7 - crf) * 4;
+        let mask = !(0xFu32 << shift);
+        let bits = if a < b {
+            0b1000
+        } else if a > b {
+            0b0100
+        } else {
+            0b0010
+        };
+        self.cr = (self.cr & mask) | (bits << shift);
+    }
+
     pub fn get_cr_bit(&self, bit: u32) -> bool {
         ((self.cr >> (31 - bit)) & 1) != 0
     }
