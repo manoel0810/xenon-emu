@@ -335,23 +335,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut display = GpuDisplay::new("Xenon-Emu: Xbox 360 Dashboard [Title: FFFE07D1 | Build 4532]")?;
     println!("[+] Display Window opened: 1280x720 @ 60 FPS");
 
-    println!("[*] Running Graphics Frame Loop (Rendering Xbox 360 Ring of Light & Dashboard Surface)...");
-    let max_frames = 120; // 2 seconds of 60 FPS live rendering (or until user closes/escapes)
-    println!("[*] Interactive Dashboard Active: Use Left/Right Arrow keys or A/D to switch Blades!");
-    for frame in 1..=max_frames {
-        if !display.is_open() {
-            println!("[*] Window closed by user at frame {}", frame);
-            break;
-        }
+    println!("\n[*] ========================================================");
+    println!("    🎮 DASHBOARD INTERATIVA DO XBOX 360 ATIVA!");
+    println!("    - Setas Esquerda / Direita ou A / D: Alternar Blades");
+    println!("    - Setas Cima / Baixo ou W / S: Navegar nos itens");
+    println!("    - Controle Xbox USB: D-Pad, Thumbstick, LB/RB, A, B");
+    println!("    - Pressione ESC ou clique no [X] para fechar a janela");
+    println!("    ========================================================\n");
 
+    let mut frame = 0u64;
+    while display.is_open() {
+        frame += 1;
         display.handle_input();
         display.render_blades_dashboard("FFFE07D1", "2.0.4532.0");
         display.update()?;
 
-        if frame % 30 == 0 {
+        if frame % 180 == 0 {
             println!(
-                "  [GPU] Rendered frame {:03} / {:03} | Active Blade: '{}' | 60 Hz VSync Active",
-                frame, max_frames, display.blades[display.active_blade].name
+                "  [GPU] Frame {:05} | Active Blade: '{}' | 60 FPS",
+                frame, display.blades[display.active_blade].name
             );
         }
     }
