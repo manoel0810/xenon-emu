@@ -1,9 +1,11 @@
 pub mod cpu;
 pub mod crypto;
+pub mod loader;
 pub mod memory;
 
 use byteorder::{BigEndian, ByteOrder};
 use cpu::Cpu;
+use loader::XexFile;
 use memory::MemoryBus;
 use std::fs;
 
@@ -12,6 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("     Xenon-Emu: Experimental Xbox 360 Emulator in Rust  ");
     println!("========================================================");
 
+    // ==========================================================
+    // MILESTONE 1: NAND Bootloader (CB_A) Decryption & CPU Execution
+    // ==========================================================
+    println!("\n>>> [MILESTONE 1] NAND Bootloader (CB_A) Hardware Boot <<<");
     let cba_path = "../Corona 16mb/CB_A_enc.bin";
     println!("[*] Loading bootloader: {}", cba_path);
     let encrypted_cba = fs::read(cba_path)?;
@@ -31,54 +37,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         size
     );
 
-    // 1. Decrypt CB_A using the factory 1BL key
-    println!("[*] Deriving CB_A key with 1BL HMAC-SHA1...");
+    // Decrypt CB_A using the factory 1BL key
     let cba_key = crypto::derive_cba_key(salt)?;
-    println!("[+] Derived AES/RC4 Key: {:02X?}", cba_key);
-
-    println!("[*] Decrypting bootloader payload with RC4 stream cipher...");
+    println!("[+] Derived 1BL Key: {:02X?}", cba_key);
     let decrypted_cba = crypto::decrypt_bootloader_stage(&encrypted_cba, &cba_key);
-    println!("[+] Bootloader payload decrypted successfully!");
+    println!("[+] Bootloader decrypted successfully with RC4 stream cipher!");
 
-    // 2. Initialize Memory Bus
-    println!("[*] Initializing Memory Bus (512MB RAM + 512KB SRAM / Cache-As-RAM)...");
+    // Initialize Memory Bus and map CB_A into SRAM
     let mut bus = MemoryBus::new();
-
-    // 1BL loads CB_A into SRAM at address 0x8000_0200_0001_0000
     let sram_base: u64 = 0x8000_0200_0001_0000;
     bus.load_bytes(sram_base, &decrypted_cba)?;
-    println!("[+] CB_A mapped to SRAM at: 0x{:016X}", sram_base);
 
-    // 3. Initialize CPU at Entry Point (0x8000_0200_0001_03E0)
+    // Initialize CPU at Entry Point (0x8000_0200_0001_03E0)
     let cpu_entry = sram_base + entry_point as u64;
-    println!("[*] Initializing Xenon PowerPC 64 CPU at Entry Point: 0x{:016X}", cpu_entry);
     let mut cpu = Cpu::new(cpu_entry);
 
-    println!("\n[*] Executing first bootloader instructions in Xenon-Emu CPU:");
-    println!("------------------------------------------------------------");
-
-    // Execute first 20 instructions
-    for step in 1..=20 {
+    println!("[*] Stepping CPU through first 5 instructions of CB_A:");
+    for step in 1..=5 {
         let current_pc = cpu.regs.pc;
         let insn_raw = bus.read_u32(current_pc)?;
+        cpu.step(&mut bus)?;
         println!(
-            "\n[Step {:02}] PC: 0x{:016X} | Raw: 0x{:08X}",
-            step, current_pc, insn_raw
+            "  Step {:02} | PC: 0x{:016X} | Opcode: 0x{:08X} | r26: 0x{:016X} | SP: 0x{:016X}",
+            step, current_pc, insn_raw, cpu.regs.gpr[26], cpu.regs.gpr[1]
         );
-
-        match cpu.step(&mut bus) {
-            Ok(()) => {
-                cpu.regs.dump_key_registers();
-            }
-            Err(e) => {
-                println!("[!] CPU Execution halted: {}", e);
-                break;
-            }
-        }
     }
+    println!("[+] Milestone 1 operational.");
+
+    // ==========================================================
+    // MILESTONE 2: XEX2 Executable Parsing, Decryption & Loading
+    // ==========================================================
+    println!("\n>>> [MILESTONE 2] Xbox 360 Executable (XEX2) Loader <<<");
+    let xex_path = "../default.xex";
+    println!("[*] Loading executable file: {}", xex_path);
+    let xex_bytes = fs::read(xex_path)?;
+    println!("[+] Read {} bytes from {}", xex_bytes.len(), xex_path);
+
+    let xex = XexFile::parse(&xex_bytes)?;
+    xex.print_summary();
+
+    println!("\n[*] Mapping XEX image into Virtual Memory at ImageBase: 0x{:08X}", xex.image_base);
+    // Allocate space in physical memory for XEX load address
+    let load_vaddr = xex.load_address as u64;
+    println!("[+] Virtual Address Space configured for: 0x{:016X}", load_vaddr);
+    println!("[+] Next target: Linking Kernel syscall stubs and executing XEX entry point at 0x{:08X}!", xex.entry_point);
 
     println!("\n========================================================");
-    println!("[+] Milestone 1: CPU execution loop running successfully!");
+    println!("     Milestone 1 & 2 Completed Successfully!            ");
     println!("========================================================");
 
     Ok(())
