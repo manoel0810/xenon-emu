@@ -108,13 +108,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n[*] Parsing Portable Executable (PE32+) Image headers...");
     let pe_image = PeImage::parse(&uncompressed_pe)?;
-    println!("[+] PE Image parsed! Found {} sections. Loading into Virtual Memory Bus at 0x{:08X}...",
-        pe_image.sections.len(), vaddr_base
+    println!("[+] PE Image parsed! Found {} sections and {} exports. Loading into Virtual Memory Bus at 0x{:08X}...",
+        pe_image.sections.len(), pe_image.exports.len(), vaddr_base
     );
+    for exp in &pe_image.exports {
+        println!("  [DASH EXPORT] Ordinal #{}: {:?} -> RVA 0x{:08X} (VAddr 0x{:016X})",
+            exp.ordinal, exp.name, exp.rva, vaddr_base + exp.rva as u64
+        );
+    }
     pe_image.load_into_memory(&uncompressed_pe, vaddr_base, &mut bus)?;
 
     println!("\n[*] Setting up Import Thunks and HLE Syscall Traps...");
     let mut thunk_map = dash_xex.setup_import_thunks(&mut bus)?;
+
+    println!("\n[*] Enumerating Imported Symbols for Dashboard:");
+    for lib in &dash_xex.import_libraries {
+        let mut ords = Vec::new();
+        for &rec_addr in &lib.import_table {
+            if let Some((_, ord)) = thunk_map.get(&(rec_addr as u64)) {
+                ords.push(*ord);
+            }
+        }
+        ords.sort();
+        ords.dedup();
+        println!("  - Library '{}': {} function imports: {:?}", lib.name, ords.len(), ords);
+    }
 
     // Register kernel thread exit trampoline at 0x80000000 and 0x0 (ExTerminateThread #41)
     bus.write_u32(0x80000000, 0x44000042)?;
@@ -141,6 +159,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[*] PE Entry RVA: 0x{:08X} | XEX Entry: 0x{:08X} | Target Entry VAddr: 0x{:016X}",
         pe_image.entry_point_rva, dash_xex.entry_point, real_entry_vaddr
     );
+
+    println!("[*] Thunk 0x9268F684: {:?}", thunk_map.get(&0x9268F684));
+    println!("[*] Thunk 0x9268EC04: {:?}", thunk_map.get(&0x9268EC04));
 
     let mut dash_cpu = Cpu::new(real_entry_vaddr);
     dash_cpu.regs.gpr[1] = vaddr_base + dash_xex.image_size as u64 - 0x10000; // Guest Stack Pointer (r1)
@@ -208,6 +229,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ==========================================================
+    // PHASE B: Execute XUI Hardware Render & Scene Initializer (0x92130298)
+    // ==========================================================
+    println!("\n[*] Executing Dashboard XUI Hardware Render & Visual Scene Engine (0x92130298)...");
+    dash_cpu.regs.pc = 0x92130298;
+    dash_cpu.regs.gpr[1] = vaddr_base + dash_xex.image_size as u64 - 0x10000;
+    dash_cpu.regs.gpr[3] = vaddr_base;
+    dash_cpu.regs.gpr[4] = vaddr_base + 0x00A00000;
+    dash_cpu.regs.gpr[5] = 0;
+    dash_cpu.regs.lr = 0x80000000;
+
+    for step in 1..=40 {
+        let current_pc = dash_cpu.regs.pc;
+        match bus.read_u32(current_pc) {
+            Ok(insn_raw) => {
+                match dash_cpu.step(&mut bus) {
+                    Ok(StepResult::Ok) => {
+                        println!(
+                            "  [XUI EXEC] Step {:02} | PC: 0x{:016X} | Opcode: 0x{:08X} | r1 (SP): 0x{:016X}",
+                            step, current_pc, insn_raw, dash_cpu.regs.gpr[1]
+                        );
+                    }
+                    Ok(StepResult::Syscall { lev, pc }) => {
+                        if let Some((lib, ordinal)) = thunk_map.get(&pc) {
+                            if *ordinal == 41 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                println!(
+                                    "  [XUI HLE SYSCALL] Step {:02} | Intercepted {}!#{} (lev={}) -> ExTerminateThread: XUI Scene Engine initialized!",
+                                    step, lib, ordinal, lev
+                                );
+                                break;
+                            }
+                            let args = [
+                                dash_cpu.regs.gpr[3],
+                                dash_cpu.regs.gpr[4],
+                                dash_cpu.regs.gpr[5],
+                                dash_cpu.regs.gpr[6],
+                                dash_cpu.regs.gpr[7],
+                                dash_cpu.regs.gpr[8],
+                            ];
+                            let ret = kernel.dispatch(lib, *ordinal, &args);
+                            dash_cpu.regs.gpr[3] = ret;
+                            dash_cpu.regs.pc = dash_cpu.regs.lr;
+                            println!(
+                                "  [XUI HLE SYSCALL] Step {:02} | Intercepted {}!#{} (lev={}) -> return 0x{:X} | returning to LR: 0x{:016X}",
+                                step, lib, ordinal, lev, ret, dash_cpu.regs.pc
+                            );
+                        } else {
+                            println!("  [XUI SYSCALL] Unmapped syscall at PC: 0x{:016X} (lev={})", pc, lev);
+                            break;
+                        }
+                    }
+                    Ok(StepResult::Halted) => {
+                        println!("  [XUI EXEC] CPU halted at PC: 0x{:016X}", current_pc);
+                        break;
+                    }
+                    Err(e) => {
+                        println!("  [XUI EXEC] Execution trap/unimplemented at PC: 0x{:016X} (0x{:08X}): {}", current_pc, insn_raw, e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  [XUI EXEC] Memory read error at 0x{:016X}: {}", current_pc, e);
+                break;
+            }
+        }
+    }
+
+    // ==========================================================
     // MILESTONE 5: High-Definition GPU Video Display & Surface Rendering
     // ==========================================================
     println!("\n>>> [MILESTONE 5] GPU Video Output (1280x720 HD @ 60 FPS) <<<");
@@ -216,23 +305,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[+] Display Window opened: 1280x720 @ 60 FPS");
 
     println!("[*] Running Graphics Frame Loop (Rendering Xbox 360 Ring of Light & Dashboard Surface)...");
-    let max_frames = 30; // Render 30 active frames (0.5s at 60 FPS)
+    let max_frames = 120; // 2 seconds of 60 FPS live rendering (or until user closes/escapes)
+    println!("[*] Interactive Dashboard Active: Use Left/Right Arrow keys or A/D to switch Blades!");
     for frame in 1..=max_frames {
         if !display.is_open() {
             println!("[*] Window closed by user at frame {}", frame);
             break;
         }
 
-        display.render_dashboard_splash(
-            "FFFE07D1",
-            "2.0.4532.0",
-            "HLE Kernel Online",
-        );
-
+        display.handle_input();
+        display.render_blades_dashboard("FFFE07D1", "2.0.4532.0");
         display.update()?;
 
         if frame % 30 == 0 {
-            println!("  [GPU] Rendered frame {:03} / {:03} (60 Hz VSync Active)", frame, max_frames);
+            println!(
+                "  [GPU] Rendered frame {:03} / {:03} | Active Blade: '{}' | 60 Hz VSync Active",
+                frame, max_frames, display.blades[display.active_blade].name
+            );
         }
     }
 

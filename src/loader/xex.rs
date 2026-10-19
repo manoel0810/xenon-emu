@@ -314,9 +314,11 @@ impl XexFile {
             hasher.update(block_bytes);
             let calculated_hash: [u8; 20] = hasher.finalize().into();
 
-            println!("  [Block {:02}] Offset: 0x{:08X} | Size: {:5} bytes | Hash: {:02X}{:02X}{:02X}{:02X}...",
-                block_idx, offset, cur_block_size, cur_block_hash[0], cur_block_hash[1], cur_block_hash[2], cur_block_hash[3]
-            );
+            if block_idx == 0 || block_idx % 20 == 0 || block_idx == 62 {
+                println!("  [Block {:02}] Offset: 0x{:08X} | Size: {:5} bytes | Hash: {:02X}{:02X}{:02X}{:02X}...",
+                    block_idx, offset, cur_block_size, cur_block_hash[0], cur_block_hash[1], cur_block_hash[2], cur_block_hash[3]
+                );
+            }
 
             if calculated_hash != cur_block_hash {
                 return Err(format!(
