@@ -106,6 +106,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vaddr_base: u64 = dash_xex.load_address as u64;
     println!("[+] Allocated 0x{:08X} bytes ({} MB) at 0x{:016X}", dash_xex.image_size, dash_xex.image_size / (1024*1024), vaddr_base);
 
+    println!("\n[*] Scanning decompressed Dashboard PE image for XUIZ (XZP Packages):");
+    let mut xzips = Vec::new();
+    for i in 0..uncompressed_pe.len().saturating_sub(4) {
+        if &uncompressed_pe[i..i + 4] == b"XUIZ" {
+            xzips.push(i);
+        }
+    }
+    println!("[+] Found {} XUIZ package(s) inside dash.xex at offsets: {:X?}", xzips.len(), xzips);
+
+    use loader::XzpPackage;
+    for (i, &off) in xzips.iter().take(3).enumerate() {
+        if off + 22 <= uncompressed_pe.len() {
+            println!("\n[*] Parsing Embedded XUIZ Package #{} at offset 0x{:08X}...", i + 1, off);
+            match XzpPackage::parse(&uncompressed_pe[off..]) {
+                Ok(xzp) => {
+                    println!("[+] XUIZ Package #{}: Total Size: {} bytes | Entries: {}", i + 1, xzp.total_size, xzp.entries.len());
+                    for (idx, entry) in xzp.entries.iter().enumerate() {
+                        println!("    [{:02}] {:<36} (Size: {:6} bytes, Offset: 0x{:08X})",
+                            idx, entry.name, entry.file_size, entry.file_offset
+                        );
+                        if entry.name.contains("strings.xus") {
+                            let preview_len = std::cmp::min(entry.data.len(), 48);
+                            println!("         Hex: {:02X?}", &entry.data[..preview_len]);
+                        }
+                    }
+                }
+                Err(e) => println!("  [!] XUIZ package #{} parse error: {}", i + 1, e),
+            }
+        }
+    }
+
     println!("\n[*] Parsing Portable Executable (PE32+) Image headers...");
     let pe_image = PeImage::parse(&uncompressed_pe)?;
     println!("[+] PE Image parsed! Found {} sections and {} exports. Loading into Virtual Memory Bus at 0x{:08X}...",

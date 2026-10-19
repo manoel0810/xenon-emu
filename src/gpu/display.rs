@@ -1,4 +1,9 @@
 use crate::gpu::font::draw_text;
+use crate::kernel::input::{
+    GamepadManager, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_DPAD_DOWN,
+    XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_UP,
+    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
+};
 use minifb::{Key, Window, WindowOptions};
 use std::fs::File;
 use std::io::Write;
@@ -30,6 +35,7 @@ pub struct GpuDisplay {
     pub selected_item: usize,
     pub key_cooldown: u32,
     pub blades: Vec<BladeData>,
+    pub gamepad_mgr: GamepadManager,
 }
 
 impl GpuDisplay {
@@ -142,6 +148,8 @@ impl GpuDisplay {
             },
         ];
 
+        let gamepad_mgr = GamepadManager::new();
+
         Ok(Self {
             width: DISPLAY_WIDTH,
             height: DISPLAY_HEIGHT,
@@ -152,6 +160,7 @@ impl GpuDisplay {
             selected_item: 0,
             key_cooldown: 0,
             blades,
+            gamepad_mgr,
         })
     }
 
@@ -159,7 +168,7 @@ impl GpuDisplay {
         self.window.is_open() && !self.window.is_key_down(Key::Escape)
     }
 
-    /// Handles keyboard navigation across the Blades and menus
+    /// Handles both physical USB Xbox 360 controller and keyboard navigation
     pub fn handle_input(&mut self) {
         if self.key_cooldown > 0 {
             self.key_cooldown -= 1;
@@ -168,8 +177,44 @@ impl GpuDisplay {
 
         let mut changed = false;
 
-        // Left / Right (Switch Blades)
-        if self.window.is_key_down(Key::Left) || self.window.is_key_down(Key::A) {
+        // Poll physical USB Gamepad via XInput
+        let mut pad_left = false;
+        let mut pad_right = false;
+        let mut pad_up = false;
+        let mut pad_down = false;
+        let mut pad_a = false;
+        let mut pad_b = false;
+
+        if let Some(state) = self.gamepad_mgr.poll(0) {
+            let btns = state.gamepad.w_buttons;
+            if (btns & XINPUT_GAMEPAD_DPAD_LEFT) != 0
+                || (btns & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0
+                || state.gamepad.s_thumb_lx < -16000
+            {
+                pad_left = true;
+            }
+            if (btns & XINPUT_GAMEPAD_DPAD_RIGHT) != 0
+                || (btns & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0
+                || state.gamepad.s_thumb_lx > 16000
+            {
+                pad_right = true;
+            }
+            if (btns & XINPUT_GAMEPAD_DPAD_UP) != 0 || state.gamepad.s_thumb_ly > 16000 {
+                pad_up = true;
+            }
+            if (btns & XINPUT_GAMEPAD_DPAD_DOWN) != 0 || state.gamepad.s_thumb_ly < -16000 {
+                pad_down = true;
+            }
+            if (btns & XINPUT_GAMEPAD_A) != 0 {
+                pad_a = true;
+            }
+            if (btns & XINPUT_GAMEPAD_B) != 0 {
+                pad_b = true;
+            }
+        }
+
+        // Left / Right (Switch Blades) - Keyboard Arrow Keys / A,D or Gamepad DPad / Bumpers / Stick
+        if self.window.is_key_down(Key::Left) || self.window.is_key_down(Key::A) || pad_left {
             self.active_blade = if self.active_blade == 0 {
                 self.blades.len() - 1
             } else {
@@ -178,15 +223,15 @@ impl GpuDisplay {
             self.selected_item = 0;
             self.key_cooldown = 12; // 200ms debounce at 60 FPS
             changed = true;
-        } else if self.window.is_key_down(Key::Right) || self.window.is_key_down(Key::D) {
+        } else if self.window.is_key_down(Key::Right) || self.window.is_key_down(Key::D) || pad_right {
             self.active_blade = (self.active_blade + 1) % self.blades.len();
             self.selected_item = 0;
             self.key_cooldown = 12;
             changed = true;
         }
 
-        // Up / Down (Switch Menu items)
-        if self.window.is_key_down(Key::Up) || self.window.is_key_down(Key::W) {
+        // Up / Down (Switch Menu items) - Keyboard Arrow Keys / W,S or Gamepad DPad / Stick
+        if self.window.is_key_down(Key::Up) || self.window.is_key_down(Key::W) || pad_up {
             let count = self.blades[self.active_blade].items.len();
             self.selected_item = if self.selected_item == 0 {
                 count - 1
@@ -195,11 +240,23 @@ impl GpuDisplay {
             };
             self.key_cooldown = 10;
             changed = true;
-        } else if self.window.is_key_down(Key::Down) || self.window.is_key_down(Key::S) {
+        } else if self.window.is_key_down(Key::Down) || self.window.is_key_down(Key::S) || pad_down {
             let count = self.blades[self.active_blade].items.len();
             self.selected_item = (self.selected_item + 1) % count;
             self.key_cooldown = 10;
             changed = true;
+        }
+
+        if pad_a {
+            println!(
+                "  [USB GAMEPAD] Button (A) pressed on item: '{}'",
+                self.blades[self.active_blade].items[self.selected_item].title
+            );
+            self.key_cooldown = 14;
+        }
+        if pad_b {
+            println!("  [USB GAMEPAD] Button (B) pressed");
+            self.key_cooldown = 14;
         }
 
         if changed {
@@ -586,6 +643,22 @@ impl GpuDisplay {
             by,
             "[<] [>] Change Blade (Arrows or A/D)",
             0x0090D0FF,
+            1,
+        );
+
+        let pad_status = if self.gamepad_mgr.controller_connected {
+            "[PAD 1: USB CONNECTED]"
+        } else {
+            "[KEYBOARD MODE]"
+        };
+        draw_text(
+            &mut self.framebuffer,
+            w,
+            h,
+            w - 580,
+            by,
+            pad_status,
+            if self.gamepad_mgr.controller_connected { 0x0052D053 } else { 0x00FFB000 },
             1,
         );
 
