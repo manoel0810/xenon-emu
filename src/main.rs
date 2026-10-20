@@ -63,20 +63,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[+] Milestone 2: XEX2 loader verified.");
 
     // ==========================================================
-    // MILESTONE 3: STFS Extraction of $flash_dash.xex & HLE Kernel Dispatch
+    // MILESTONE 3: Official Dashboard Executable Loading & Setup
     // ==========================================================
-    println!("\n>>> [MILESTONE 3] STFS Package Extraction & Dashboard Setup <<<");
-    let su_path = "../$SystemUpdate/su20076000_00000000";
-    let su_bytes = fs::read(su_path)?;
-    let stfs = StfsPackage::parse(&su_bytes)?;
-    println!("[+] STFS Package parsed! Found {} files inside container.", stfs.entries.len());
-    for entry in &stfs.entries {
-        println!("  - {:<28} ({} bytes)", entry.name, entry.file_size);
-    }
-
-    println!("\n[*] Extracting '$flash_dash.xex' (The Official Xbox 360 Dashboard)...");
-    let dash_bytes = stfs.extract_file(&su_bytes, "$flash_dash.xex")?;
-    println!("[+] Extracted {} bytes for $flash_dash.xex!", dash_bytes.len());
+    println!("\n>>> [MILESTONE 3] Official Dashboard Loading & Setup <<<");
+    let metro_path = "../SystemUpdate_17559_USB/$SystemUpdate/dash.xex";
+    let (dash_bytes, is_metro) = if std::path::Path::new(metro_path).exists() {
+        println!("[+] Found Authentic Microsoft Metro Dashboard 17559: {}", metro_path);
+        (fs::read(metro_path)?, true)
+    } else {
+        let su_path = "../$SystemUpdate/su20076000_00000000";
+        let su_bytes = fs::read(su_path)?;
+        let stfs = StfsPackage::parse(&su_bytes)?;
+        println!("[+] STFS Package parsed! Found {} files inside container.", stfs.entries.len());
+        for entry in &stfs.entries {
+            println!("  - {:<28} ({} bytes)", entry.name, entry.file_size);
+        }
+        println!("\n[*] Extracting '$flash_dash.xex' (The Official Xbox 360 Dashboard)...");
+        let b = stfs.extract_file(&su_bytes, "$flash_dash.xex")?;
+        (b, false)
+    };
+    println!("[+] Loaded {} bytes for Dashboard executable payload!", dash_bytes.len());
 
     println!("\n[*] Parsing extracted Dashboard executable with XEX2 Loader...");
     let dash_xex = XexFile::parse(&dash_bytes)?;
@@ -103,7 +109,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let uncompressed_pe = dash_xex.decompress_image(&decrypted_payload)?;
     println!("[*] First 32 bytes of decompressed PE image: {:02X?}", &uncompressed_pe[..32]);
 
-    let vaddr_base: u64 = dash_xex.load_address as u64;
+    let vaddr_base: u64 = if is_metro {
+        dash_xex.image_base as u64
+    } else {
+        dash_xex.load_address as u64
+    };
     println!("[+] Allocated 0x{:08X} bytes ({} MB) at 0x{:016X}", dash_xex.image_size, dash_xex.image_size / (1024*1024), vaddr_base);
 
     println!("\n[*] Scanning decompressed Dashboard PE image for XUIZ (XZP Packages):");
@@ -147,7 +157,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             exp.ordinal, exp.name, exp.rva, vaddr_base + exp.rva as u64
         );
     }
-    pe_image.load_into_memory(&uncompressed_pe, vaddr_base, &mut bus)?;
+    if is_metro {
+        bus.load_bytes(vaddr_base, &uncompressed_pe)?;
+    } else {
+        pe_image.load_into_memory(&uncompressed_pe, vaddr_base, &mut bus)?;
+    }
 
     println!("\n[*] Setting up Import Thunks and HLE Syscall Traps...");
     let mut thunk_map = dash_xex.setup_import_thunks(&mut bus)?;
@@ -181,7 +195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signin_status = kernel.dispatch("xam.xex", 0x0210, &[0], &mut bus); // XamUserGetSigninState
     println!("  -> XamUserGetSigninState: {} (Ready)", signin_status);
 
-    let real_entry_vaddr = if pe_image.entry_point_rva > 0 {
+    let real_entry_vaddr = if is_metro {
+        dash_xex.entry_point as u64
+    } else if pe_image.entry_point_rva > 0 {
         vaddr_base + pe_image.entry_point_rva as u64
     } else {
         vaddr_base + dash_xex.entry_point as u64
@@ -208,11 +224,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bus.write_u32(kpcr_base + 0x150, 0)?; // dpc_active = 0
     bus.write_u32(kpcr_base + 0x160, 0)?; // last_error = 0
 
-    // ==========================================================
-    // PHASE 1: DllMain (Process Attach) @ 0x9210D308
-    // ==========================================================
-    println!("\n[*] [PHASE 1] Executing Dashboard DllMain (Process Attach @ 0x{:08X})...", real_entry_vaddr);
-    let mut dash_cpu = Cpu::new(real_entry_vaddr);
+    if !is_metro {
+        // ==========================================================
+        // PHASE 1: DllMain (Process Attach) @ 0x9210D308
+        // ==========================================================
+        println!("\n[*] [PHASE 1] Executing Dashboard DllMain (Process Attach @ 0x{:08X})...", real_entry_vaddr);
+        let mut dash_cpu = Cpu::new(real_entry_vaddr);
     dash_cpu.regs.gpr[1] = stack_top;
     dash_cpu.regs.gpr[3] = vaddr_base; // r3: hModule (0x92000000)
     dash_cpu.regs.gpr[4] = 1;          // r4: DLL_PROCESS_ATTACH (1)
@@ -582,7 +599,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    println!("[+] Phase 5 (VdInitializeEngines Master Sequence) completed! ({} instructions stepped)", phase5_steps);
+        println!("[+] Phase 5 (VdInitializeEngines Master Sequence) completed! ({} instructions stepped)", phase5_steps);
+    }
 
     // ==========================================================
     // ETAPA 1: Authentic Microsoft XUI Resource Engine (.xur & .xus)
@@ -657,7 +675,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         VGT_DMA_STRIDE,
     };
 
-    let ring_base: u64 = 0x1000_0000; // 256 MB in RAM
+    let ring_base: u64 = if is_metro { 0x9010_4000 } else { 0x1000_0000 };
     let ring_size: usize = 64 * 1024;  // 64 KB Primary Ring Buffer
     let mut ring_buffer = RingBuffer::new(ring_base, ring_size);
     let mut xenos_gpu = XenosGpu::new();
@@ -668,94 +686,96 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bound_logo = xenos_gpu.bind_texture_by_name(0, "xboxLogo");
     println!("  [+] Texture 'xboxLogo' bound to Sampler Stage 0: {}", bound_logo);
 
-    // Link Primary Ring Buffer with Xboxkrnl Video Subsystem
-    let rb_ret = kernel.dispatch("xboxkrnl.exe", 0x01C3, &[ring_base, ring_size as u64], &mut bus);
-    println!("  -> VdInitializeRingBuffer(0x{:08X}, {} KB): status={}", ring_base, ring_size / 1024, rb_ret);
+    if !is_metro {
+        // Link Primary Ring Buffer with Xboxkrnl Video Subsystem
+        let rb_ret = kernel.dispatch("xboxkrnl.exe", 0x01C3, &[ring_base, ring_size as u64], &mut bus);
+        println!("  -> VdInitializeRingBuffer(0x{:08X}, {} KB): status={}", ring_base, ring_size / 1024, rb_ret);
 
-    // CPU emits Direct3D / XUI PM4 packet stream to the Ring Buffer:
-    println!("[*] CPU emitting Direct3D / XUI PM4 packet stream into Ring Buffer:");
-    // 1. Set Context Register: RB_COLOR_INFO (RenderTarget: 1280x720 32-bit ARGB at 0x70000000)
-    let pkt_color = build_set_context_reg(RB_COLOR_INFO, 0x7000_0000);
-    ring_buffer.write_packet(&mut bus, &pkt_color)?;
-    println!("  [PM4 EMIT] SET_CONTEXT_REG (RB_COLOR_INFO: 0x70000000) [{} dwords]", pkt_color.len());
+        // CPU emits Direct3D / XUI PM4 packet stream to the Ring Buffer:
+        println!("[*] CPU emitting Direct3D / XUI PM4 packet stream into Ring Buffer:");
+        // 1. Set Context Register: RB_COLOR_INFO (RenderTarget: 1280x720 32-bit ARGB at 0x70000000)
+        let pkt_color = build_set_context_reg(RB_COLOR_INFO, 0x7000_0000);
+        ring_buffer.write_packet(&mut bus, &pkt_color)?;
+        println!("  [PM4 EMIT] SET_CONTEXT_REG (RB_COLOR_INFO: 0x70000000) [{} dwords]", pkt_color.len());
 
-    // 2. Set Context Register: PA_SC_WINDOW_OFFSET (Viewport: (0, 0))
-    let pkt_vport = build_set_context_reg(PA_SC_WINDOW_OFFSET, 0x0000_0000);
-    ring_buffer.write_packet(&mut bus, &pkt_vport)?;
-    println!("  [PM4 EMIT] SET_CONTEXT_REG (PA_SC_WINDOW_OFFSET: 0x0) [{} dwords]", pkt_vport.len());
+        // 2. Set Context Register: PA_SC_WINDOW_OFFSET (Viewport: (0, 0))
+        let pkt_vport = build_set_context_reg(PA_SC_WINDOW_OFFSET, 0x0000_0000);
+        ring_buffer.write_packet(&mut bus, &pkt_vport)?;
+        println!("  [PM4 EMIT] SET_CONTEXT_REG (PA_SC_WINDOW_OFFSET: 0x0) [{} dwords]", pkt_vport.len());
 
-    // 3. Load ALU Constants (c0..c3: 4x4 Matrix for UI Projection, c4: Diffuse Tint)
-    let shader_constants = [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-        [1.0, 1.0, 1.0, 1.0],
-    ];
-    let pkt_constants = build_load_alu_constant(0, &shader_constants);
-    ring_buffer.write_packet(&mut bus, &pkt_constants)?;
-    println!("  [PM4 EMIT] LOAD_ALU_CONSTANT (c0..c4: Matrix + Diffuse Tint) [{} dwords]", pkt_constants.len());
+        // 3. Load ALU Constants (c0..c3: 4x4 Matrix for UI Projection, c4: Diffuse Tint)
+        let shader_constants = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ];
+        let pkt_constants = build_load_alu_constant(0, &shader_constants);
+        ring_buffer.write_packet(&mut bus, &pkt_constants)?;
+        println!("  [PM4 EMIT] LOAD_ALU_CONSTANT (c0..c4: Matrix + Diffuse Tint) [{} dwords]", pkt_constants.len());
 
-    // 4. Stream Vertex Buffer in guest RAM at 0x10060000 (VGT DMA)
-    let vgt_addr: u64 = 0x1006_0000;
-    let raw_vertices: [([f32; 3], u32, [f32; 2]); 4] = [
-        ([380.0, 150.0, 0.0], 0xFFFF_FFFF, [0.0, 0.0]),
-        ([1180.0, 150.0, 0.0], 0xFFFF_FFFF, [1.0, 0.0]),
-        ([1180.0, 250.0, 0.0], 0xFFFF_FFFF, [1.0, 1.0]),
-        ([380.0, 250.0, 0.0], 0xFFFF_FFFF, [0.0, 1.0]),
-    ];
-    for (i, (pos, color, uv)) in raw_vertices.iter().enumerate() {
-        let v_base = vgt_addr + (i * 24) as u64;
-        bus.write_u32(v_base, pos[0].to_bits())?;
-        bus.write_u32(v_base + 4, pos[1].to_bits())?;
-        bus.write_u32(v_base + 8, pos[2].to_bits())?;
-        bus.write_u32(v_base + 12, *color)?;
-        bus.write_u32(v_base + 16, uv[0].to_bits())?;
-        bus.write_u32(v_base + 20, uv[1].to_bits())?;
-    }
-    let pkt_dma_base = build_set_context_reg(VGT_DMA_BASE, vgt_addr as u32);
-    let pkt_dma_size = build_set_context_reg(VGT_DMA_SIZE, 4);
-    let pkt_dma_stride = build_set_context_reg(VGT_DMA_STRIDE, 24);
-    ring_buffer.write_packet(&mut bus, &pkt_dma_base)?;
-    ring_buffer.write_packet(&mut bus, &pkt_dma_size)?;
-    ring_buffer.write_packet(&mut bus, &pkt_dma_stride)?;
-    println!("  [PM4 EMIT] SET_CONTEXT_REG (VGT_DMA_BASE: 0x{:08X}, Size: 4, Stride: 24)", vgt_addr);
+        // 4. Stream Vertex Buffer in guest RAM at 0x10060000 (VGT DMA)
+        let vgt_addr: u64 = 0x1006_0000;
+        let raw_vertices: [([f32; 3], u32, [f32; 2]); 4] = [
+            ([380.0, 150.0, 0.0], 0xFFFF_FFFF, [0.0, 0.0]),
+            ([1180.0, 150.0, 0.0], 0xFFFF_FFFF, [1.0, 0.0]),
+            ([1180.0, 250.0, 0.0], 0xFFFF_FFFF, [1.0, 1.0]),
+            ([380.0, 250.0, 0.0], 0xFFFF_FFFF, [0.0, 1.0]),
+        ];
+        for (i, (pos, color, uv)) in raw_vertices.iter().enumerate() {
+            let v_base = vgt_addr + (i * 24) as u64;
+            bus.write_u32(v_base, pos[0].to_bits())?;
+            bus.write_u32(v_base + 4, pos[1].to_bits())?;
+            bus.write_u32(v_base + 8, pos[2].to_bits())?;
+            bus.write_u32(v_base + 12, *color)?;
+            bus.write_u32(v_base + 16, uv[0].to_bits())?;
+            bus.write_u32(v_base + 20, uv[1].to_bits())?;
+        }
+        let pkt_dma_base = build_set_context_reg(VGT_DMA_BASE, vgt_addr as u32);
+        let pkt_dma_size = build_set_context_reg(VGT_DMA_SIZE, 4);
+        let pkt_dma_stride = build_set_context_reg(VGT_DMA_STRIDE, 24);
+        ring_buffer.write_packet(&mut bus, &pkt_dma_base)?;
+        ring_buffer.write_packet(&mut bus, &pkt_dma_size)?;
+        ring_buffer.write_packet(&mut bus, &pkt_dma_stride)?;
+        println!("  [PM4 EMIT] SET_CONTEXT_REG (VGT_DMA_BASE: 0x{:08X}, Size: 4, Stride: 24)", vgt_addr);
 
-    // 5. Index buffer setup in guest RAM at 0x10050000
-    let index_ptr: u32 = 0x1005_0000;
-    let indices: [u16; 6] = [0, 1, 2, 2, 3, 0]; // 2 Triangles for UI Quad
-    for (i, &idx) in indices.iter().enumerate() {
-        bus.write_u16(index_ptr as u64 + (i * 2) as u64, idx)?;
-    }
+        // 5. Index buffer setup in guest RAM at 0x10050000
+        let index_ptr: u32 = 0x1005_0000;
+        let indices: [u16; 6] = [0, 1, 2, 2, 3, 0]; // 2 Triangles for UI Quad
+        for (i, &idx) in indices.iter().enumerate() {
+            bus.write_u16(index_ptr as u64 + (i * 2) as u64, idx)?;
+        }
 
-    // 6. Emit Draw Call: PM4_DRAW_INDX (Primitive: Triangles, 6 indices)
-    let pkt_draw = build_draw_indexed(0x04, 6, index_ptr);
-    ring_buffer.write_packet(&mut bus, &pkt_draw)?;
-    println!("  [PM4 EMIT] DRAW_INDX (Primitive: Triangles, 6 Indices, Base: 0x{:08X}) [{} dwords]", index_ptr, pkt_draw.len());
+        // 6. Emit Draw Call: PM4_DRAW_INDX (Primitive: Triangles, 6 indices)
+        let pkt_draw = build_draw_indexed(0x04, 6, index_ptr);
+        ring_buffer.write_packet(&mut bus, &pkt_draw)?;
+        println!("  [PM4 EMIT] DRAW_INDX (Primitive: Triangles, 6 Indices, Base: 0x{:08X}) [{} dwords]", index_ptr, pkt_draw.len());
 
-    // 7. Emit WAIT_FOR_IDLE fence
-    let pkt_idle = build_wait_for_idle();
-    ring_buffer.write_packet(&mut bus, &pkt_idle)?;
-    println!("  [PM4 EMIT] WAIT_FOR_IDLE (Pipeline Flush & Fence) [{} dwords]", pkt_idle.len());
+        // 7. Emit WAIT_FOR_IDLE fence
+        let pkt_idle = build_wait_for_idle();
+        ring_buffer.write_packet(&mut bus, &pkt_idle)?;
+        println!("  [PM4 EMIT] WAIT_FOR_IDLE (Pipeline Flush & Fence) [{} dwords]", pkt_idle.len());
 
-    println!("\n[*] Executing Xenos GPU Command Processor (CP) loop on Primary Ring Buffer...");
-    let executed_count = xenos_gpu.execute_ring(&mut bus, &mut ring_buffer)?;
-    println!("[+] Xenos GPU CP successfully processed {} PM4 packets from Ring Buffer!", executed_count);
-    println!("    - Total Packets Processed: {}", xenos_gpu.packets_executed);
-    println!("    - Draw Calls Executed:     {}", xenos_gpu.draw_calls);
-    println!("    - Primitives Drawn:        {}", xenos_gpu.primitives_drawn);
+        println!("\n[*] Executing Xenos GPU Command Processor (CP) loop on Primary Ring Buffer...");
+        let executed_count = xenos_gpu.execute_ring(&mut bus, &mut ring_buffer)?;
+        println!("[+] Xenos GPU CP successfully processed {} PM4 packets from Ring Buffer!", executed_count);
+        println!("    - Total Packets Processed: {}", xenos_gpu.packets_executed);
+        println!("    - Draw Calls Executed:     {}", xenos_gpu.draw_calls);
+        println!("    - Primitives Drawn:        {}", xenos_gpu.primitives_drawn);
 
-    // ==========================================================
-    // ETAPA 3: Direct3D 9 Subsystem & Barycentric Triangle Rasterizer
-    // ==========================================================
-    println!("\n>>> [ETAPA 3] Direct3D 9 Subsystem & XUI Barycentric Rasterizer <<<");
-    if let Some(games_scene) = loaded_scenes.iter().find(|s| s.name.contains("games")) {
-        println!("[*] Rasterizing authentic XUI Scene '{}' with D3D9 barycentric pipeline...", games_scene.name);
-        xenos_gpu.render_xui_scene(games_scene, xus_table.as_ref(), 0x0010_7C10, 0x000B_4D0B);
-        println!("[+] Direct3D 9 Subsystem successfully rasterized UI nodes into on-chip color buffer!");
-        println!("    - Triangles Shaded:        {}", xenos_gpu.primitives_drawn);
-        println!("    - Active Draw Calls:       {}", xenos_gpu.draw_calls);
-        println!("    - Color Buffer Resolution: 1280x720 32-bit ARGB (EDRAM Target)");
+        // ==========================================================
+        // ETAPA 3: Direct3D 9 Subsystem & Barycentric Triangle Rasterizer
+        // ==========================================================
+        println!("\n>>> [ETAPA 3] Direct3D 9 Subsystem & XUI Barycentric Rasterizer <<<");
+        if let Some(games_scene) = loaded_scenes.iter().find(|s| s.name.contains("games")) {
+            println!("[*] Rasterizing authentic XUI Scene '{}' with D3D9 barycentric pipeline...", games_scene.name);
+            xenos_gpu.render_xui_scene(games_scene, xus_table.as_ref(), 0x0010_7C10, 0x000B_4D0B);
+            println!("[+] Direct3D 9 Subsystem successfully rasterized UI nodes into on-chip color buffer!");
+            println!("    - Triangles Shaded:        {}", xenos_gpu.primitives_drawn);
+            println!("    - Active Draw Calls:       {}", xenos_gpu.draw_calls);
+            println!("    - Color Buffer Resolution: 1280x720 32-bit ARGB (EDRAM Target)");
+        }
     }
 
     // ==========================================================
@@ -773,119 +793,140 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut guest_threads = Vec::new();
 
-    // 1. Dashboard Main Controller / Event Pump (@ 0x921C9830 from live console)
-    let stack_top_ctrl = stack_top - 0xA0000;
-    bus.write_u32(stack_top_ctrl - 8, 0x80001000)?;
-    bus.write_u32(stack_top_ctrl + 0x100 - 8, 0x80001000)?;
-    let mut ctrl_cpu = Cpu::new(0x921C9830);
-    ctrl_cpu.regs.gpr[1] = stack_top_ctrl;
-    ctrl_cpu.regs.gpr[3] = 0;
-    ctrl_cpu.regs.gpr[4] = 0;
-    ctrl_cpu.regs.gpr[13] = kpcr_base;
-    ctrl_cpu.regs.lr = 0x80001000;
-    guest_threads.push(GuestThread {
-        name: "Main Controller & Event Pump".to_string(),
-        cpu: ctrl_cpu,
-        entry_pc: 0x921C9830,
-        active: true,
-        total_steps: 0,
-        continuous: true,
-    });
+    if is_metro {
+        println!("[*] Registering Metro 17559 Primary Thread (Entry: 0x{:08X}, SP: 0x{:08X})...", real_entry_vaddr, stack_top);
+        let mut metro_cpu = Cpu::new(real_entry_vaddr);
+        metro_cpu.regs.gpr[1] = stack_top;
+        metro_cpu.regs.gpr[3] = vaddr_base; // r3: hModule (0x92000000)
+        metro_cpu.regs.gpr[4] = 1;          // r4: DLL_PROCESS_ATTACH (1)
+        metro_cpu.regs.gpr[5] = 0;          // r5: lpReserved (0)
+        metro_cpu.regs.gpr[13] = kpcr_base; // r13: KPCR
+        metro_cpu.regs.lr = 0x80001000;     // LR: ExTerminateThread stub
+        bus.write_u32(stack_top - 8, 0x80001000)?;
+        bus.write_u32(stack_top + 0x90 - 8, 0x80001000)?;
+        guest_threads.push(GuestThread {
+            name: "Metro 17559 Primary Thread".to_string(),
+            cpu: metro_cpu,
+            entry_pc: real_entry_vaddr,
+            active: true,
+            total_steps: 0,
+            continuous: true,
+        });
+    } else {
+        // 1. Dashboard Main Controller / Event Pump (@ 0x921C9830 from live console)
+        let stack_top_ctrl = stack_top - 0xA0000;
+        bus.write_u32(stack_top_ctrl - 8, 0x80001000)?;
+        bus.write_u32(stack_top_ctrl + 0x100 - 8, 0x80001000)?;
+        let mut ctrl_cpu = Cpu::new(0x921C9830);
+        ctrl_cpu.regs.gpr[1] = stack_top_ctrl;
+        ctrl_cpu.regs.gpr[3] = 0;
+        ctrl_cpu.regs.gpr[4] = 0;
+        ctrl_cpu.regs.gpr[13] = kpcr_base;
+        ctrl_cpu.regs.lr = 0x80001000;
+        guest_threads.push(GuestThread {
+            name: "Main Controller & Event Pump".to_string(),
+            cpu: ctrl_cpu,
+            entry_pc: 0x921C9830,
+            active: true,
+            total_steps: 0,
+            continuous: true,
+        });
 
-    // 2. XUI Presentation & Scene Graph Thread (@ 0x9281FBC0 from live console)
-    let stack_top_xui = stack_top - 0xC0000;
-    bus.write_u32(stack_top_xui - 8, 0x80001000)?;
-    bus.write_u32(stack_top_xui + 0x100 - 8, 0x80001000)?;
-    let mut xui_cpu = Cpu::new(0x9281FBC0);
-    xui_cpu.regs.gpr[1] = stack_top_xui;
-    xui_cpu.regs.gpr[3] = 0;
-    xui_cpu.regs.gpr[4] = 0;
-    xui_cpu.regs.gpr[13] = kpcr_base;
-    xui_cpu.regs.lr = 0x80001000;
-    guest_threads.push(GuestThread {
-        name: "XUI Presentation Engine".to_string(),
-        cpu: xui_cpu,
-        entry_pc: 0x9281FBC0,
-        active: true,
-        total_steps: 0,
-        continuous: true,
-    });
+        // 2. XUI Presentation & Scene Graph Thread (@ 0x9281FBC0 from live console)
+        let stack_top_xui = stack_top - 0xC0000;
+        bus.write_u32(stack_top_xui - 8, 0x80001000)?;
+        bus.write_u32(stack_top_xui + 0x100 - 8, 0x80001000)?;
+        let mut xui_cpu = Cpu::new(0x9281FBC0);
+        xui_cpu.regs.gpr[1] = stack_top_xui;
+        xui_cpu.regs.gpr[3] = 0;
+        xui_cpu.regs.gpr[4] = 0;
+        xui_cpu.regs.gpr[13] = kpcr_base;
+        xui_cpu.regs.lr = 0x80001000;
+        guest_threads.push(GuestThread {
+            name: "XUI Presentation Engine".to_string(),
+            cpu: xui_cpu,
+            entry_pc: 0x9281FBC0,
+            active: true,
+            total_steps: 0,
+            continuous: true,
+        });
 
-    // 3. Direct3D 9 / GPU Driver Loop (@ 0x92185BC0 from live console)
-    let stack_top_gpu = stack_top - 0xE0000;
-    bus.write_u32(stack_top_gpu - 8, 0x80001000)?;
-    bus.write_u32(stack_top_gpu + 0x100 - 8, 0x80001000)?;
-    let mut gpu_cpu = Cpu::new(0x92185BC0);
-    gpu_cpu.regs.gpr[1] = stack_top_gpu;
-    gpu_cpu.regs.gpr[3] = 0;
-    gpu_cpu.regs.gpr[4] = 0;
-    gpu_cpu.regs.gpr[13] = kpcr_base;
-    gpu_cpu.regs.lr = 0x80001000;
-    guest_threads.push(GuestThread {
-        name: "Direct3D 9 GPU Driver".to_string(),
-        cpu: gpu_cpu,
-        entry_pc: 0x92185BC0,
-        active: true,
-        total_steps: 0,
-        continuous: true,
-    });
+        // 3. Direct3D 9 / GPU Driver Loop (@ 0x92185BC0 from live console)
+        let stack_top_gpu = stack_top - 0xE0000;
+        bus.write_u32(stack_top_gpu - 8, 0x80001000)?;
+        bus.write_u32(stack_top_gpu + 0x100 - 8, 0x80001000)?;
+        let mut gpu_cpu = Cpu::new(0x92185BC0);
+        gpu_cpu.regs.gpr[1] = stack_top_gpu;
+        gpu_cpu.regs.gpr[3] = 0;
+        gpu_cpu.regs.gpr[4] = 0;
+        gpu_cpu.regs.gpr[13] = kpcr_base;
+        gpu_cpu.regs.lr = 0x80001000;
+        guest_threads.push(GuestThread {
+            name: "Direct3D 9 GPU Driver".to_string(),
+            cpu: gpu_cpu,
+            entry_pc: 0x92185BC0,
+            active: true,
+            total_steps: 0,
+            continuous: true,
+        });
 
-    // 4. Dashboard State Machine Thread (@ 0x92261CE8 from live console)
-    let stack_top_sm = stack_top - 0x100000;
-    bus.write_u32(stack_top_sm - 8, 0x80001000)?;
-    bus.write_u32(stack_top_sm + 0x100 - 8, 0x80001000)?;
-    let mut sm_cpu = Cpu::new(0x92261CE8);
-    sm_cpu.regs.gpr[1] = stack_top_sm;
-    sm_cpu.regs.gpr[3] = 0;
-    sm_cpu.regs.gpr[4] = 0;
-    sm_cpu.regs.gpr[13] = kpcr_base;
-    sm_cpu.regs.lr = 0x80001000;
-    guest_threads.push(GuestThread {
-        name: "Dashboard State Machine".to_string(),
-        cpu: sm_cpu,
-        entry_pc: 0x92261CE8,
-        active: true,
-        total_steps: 0,
-        continuous: true,
-    });
+        // 4. Dashboard State Machine Thread (@ 0x92261CE8 from live console)
+        let stack_top_sm = stack_top - 0x100000;
+        bus.write_u32(stack_top_sm - 8, 0x80001000)?;
+        bus.write_u32(stack_top_sm + 0x100 - 8, 0x80001000)?;
+        let mut sm_cpu = Cpu::new(0x92261CE8);
+        sm_cpu.regs.gpr[1] = stack_top_sm;
+        sm_cpu.regs.gpr[3] = 0;
+        sm_cpu.regs.gpr[4] = 0;
+        sm_cpu.regs.gpr[13] = kpcr_base;
+        sm_cpu.regs.lr = 0x80001000;
+        guest_threads.push(GuestThread {
+            name: "Dashboard State Machine".to_string(),
+            cpu: sm_cpu,
+            entry_pc: 0x92261CE8,
+            active: true,
+            total_steps: 0,
+            continuous: true,
+        });
 
-    // 5. Background Resource & Stream Worker (@ 0x92267C58 from live console)
-    let stack_top_res = stack_top - 0x120000;
-    bus.write_u32(stack_top_res - 8, 0x80001000)?;
-    bus.write_u32(stack_top_res + 0x100 - 8, 0x80001000)?;
-    let mut res_cpu = Cpu::new(0x92267C58);
-    res_cpu.regs.gpr[1] = stack_top_res;
-    res_cpu.regs.gpr[3] = 0;
-    res_cpu.regs.gpr[4] = 0;
-    res_cpu.regs.gpr[13] = kpcr_base;
-    res_cpu.regs.lr = 0x80001000;
-    guest_threads.push(GuestThread {
-        name: "Resource & Stream Worker".to_string(),
-        cpu: res_cpu,
-        entry_pc: 0x92267C58,
-        active: true,
-        total_steps: 0,
-        continuous: true,
-    });
+        // 5. Background Resource & Stream Worker (@ 0x92267C58 from live console)
+        let stack_top_res = stack_top - 0x120000;
+        bus.write_u32(stack_top_res - 8, 0x80001000)?;
+        bus.write_u32(stack_top_res + 0x100 - 8, 0x80001000)?;
+        let mut res_cpu = Cpu::new(0x92267C58);
+        res_cpu.regs.gpr[1] = stack_top_res;
+        res_cpu.regs.gpr[3] = 0;
+        res_cpu.regs.gpr[4] = 0;
+        res_cpu.regs.gpr[13] = kpcr_base;
+        res_cpu.regs.lr = 0x80001000;
+        guest_threads.push(GuestThread {
+            name: "Resource & Stream Worker".to_string(),
+            cpu: res_cpu,
+            entry_pc: 0x92267C58,
+            active: true,
+            total_steps: 0,
+            continuous: true,
+        });
 
-    // 6. Content & Tile Initializer Worker (@ 0x92107280)
-    let stack_top_worker = stack_top - 0x140000;
-    bus.write_u32(stack_top_worker - 8, 0x80001000)?;
-    bus.write_u32(stack_top_worker + 0x320 - 8, 0x80001000)?;
-    let mut worker_cpu = Cpu::new(0x92107280);
-    worker_cpu.regs.gpr[1] = stack_top_worker;
-    worker_cpu.regs.gpr[3] = 0;
-    worker_cpu.regs.gpr[4] = 0;
-    worker_cpu.regs.gpr[13] = kpcr_base;
-    worker_cpu.regs.lr = 0x80001000;
-    guest_threads.push(GuestThread {
-        name: "Content & Tile Initializer".to_string(),
-        cpu: worker_cpu,
-        entry_pc: 0x92107280,
-        active: true,
-        total_steps: 0,
-        continuous: false,
-    });
+        // 6. Content & Tile Initializer Worker (@ 0x92107280)
+        let stack_top_worker = stack_top - 0x140000;
+        bus.write_u32(stack_top_worker - 8, 0x80001000)?;
+        bus.write_u32(stack_top_worker + 0x320 - 8, 0x80001000)?;
+        let mut worker_cpu = Cpu::new(0x92107280);
+        worker_cpu.regs.gpr[1] = stack_top_worker;
+        worker_cpu.regs.gpr[3] = 0;
+        worker_cpu.regs.gpr[4] = 0;
+        worker_cpu.regs.gpr[13] = kpcr_base;
+        worker_cpu.regs.lr = 0x80001000;
+        guest_threads.push(GuestThread {
+            name: "Content & Tile Initializer".to_string(),
+            cpu: worker_cpu,
+            entry_pc: 0x92107280,
+            active: true,
+            total_steps: 0,
+            continuous: false,
+        });
+    }
 
     println!("[+] Registered {} authentic Dashboard threads into 60 FPS guest scheduler:", guest_threads.len());
     for t in &guest_threads {
@@ -897,7 +938,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================
     println!("\n>>> [MILESTONE 5] GPU Video Output (1280x720 HD @ 60 FPS) <<<");
     println!("[*] Initializing High-Definition Video Display Surface...");
-    let mut display = GpuDisplay::new("Xenon-Emu: Xbox 360 Dashboard [Title: FFFE07D1 | Build 4532]")?;
+    let win_title = if is_metro {
+        "Xenon-Emu: Xbox 360 Metro Dashboard [Title: FFFE07D1 | Build 17559]"
+    } else {
+        "Xenon-Emu: Xbox 360 Blades Dashboard [Title: FFFE07D1 | Build 4532]"
+    };
+    let mut display = GpuDisplay::new(win_title)?;
     if let Some(ref table) = xus_table {
         display.apply_xui_locale(table, &loaded_scenes);
     }
@@ -925,18 +971,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let thread_stack = stack_top - 0x160000 - (guest_threads.len() as u64 * 0x20000);
             let _ = bus.write_u32(thread_stack - 8, 0x80001000);
             let _ = bus.write_u32(thread_stack + 0x100 - 8, 0x80001000);
-            let mut thread_cpu = Cpu::new(pending.start_routine);
+            let routine = (pending.start_routine & 0xFFFF_FFFF) as u64;
+            let mut thread_cpu = Cpu::new(routine);
             thread_cpu.regs.gpr[1] = thread_stack;
             thread_cpu.regs.gpr[3] = pending.start_context;
             thread_cpu.regs.gpr[13] = kpcr_base;
             thread_cpu.regs.lr = 0x80001000;
             println!("  [SCHEDULER] Spawning dynamic guest thread TID=0x{:X} (@0x{:08X})",
-                pending.tid, pending.start_routine
+                pending.tid, routine
             );
             guest_threads.push(GuestThread {
                 name: format!("Dynamic Thread 0x{:X}", pending.tid),
                 cpu: thread_cpu,
-                entry_pc: pending.start_routine,
+                entry_pc: routine,
                 active: true,
                 total_steps: 0,
                 continuous: false,
@@ -952,8 +999,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !thread.active {
                 continue;
             }
-            // Execute a timeslice of up to 1,000 instructions per thread per frame
-            for _ in 0..1000 {
+            // Execute a timeslice of up to 2,500 instructions per thread per frame
+            for _ in 0..2500 {
                 let current_pc = thread.cpu.regs.pc;
                 match bus.read_u32(current_pc) {
                     Ok(_) => {
@@ -962,7 +1009,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 thread.total_steps += 1;
                             }
                             Ok(StepResult::Syscall { lev: _, pc }) => {
-                                if let Some((lib, ordinal)) = thunk_map.get(&pc) {
+                                let thunk = thunk_map.get(&pc).or_else(|| thunk_map.get(&(pc & 0xFFFF_FFFF)));
+                                if let Some((lib, ordinal)) = thunk {
                                     let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
                                     let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x002B && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
@@ -1021,14 +1069,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // 4. Execute pending PM4 packets in the Primary Ring Buffer with Xenos GPU CP
-        let _ = xenos_gpu.execute_ring(&mut bus, &mut ring_buffer);
+        // 4. Synchronize & Execute PM4 packets in Primary Ring Buffer with Xenos GPU CP
+        ring_buffer.sync_wptr_from_memory(&bus);
+        let executed_pkts = xenos_gpu
+            .execute_ring_with_writeback(&mut bus, &mut ring_buffer, kernel.rptr_writeback_ptr)
+            .unwrap_or(0);
 
         // 5. Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
-        kernel.dispatch("xboxkrnl.exe", 0x025B, &[0x7000_0000, frame], &mut bus);
+        let frontbuffer = if kernel.frontbuffer_ptr != 0 {
+            kernel.frontbuffer_ptr
+        } else if kernel.last_swap_frontbuffer != 0 {
+            kernel.last_swap_frontbuffer
+        } else {
+            0x7000_0000
+        };
+        kernel.dispatch("xboxkrnl.exe", 0x025B, &[frontbuffer, frame], &mut bus);
 
         // 6. Direct Presentation: Boot Animation -> Direct ATI Xenos GPU Framebuffer
-        display.present_gpu_framebuffer(&xenos_gpu.color_buffer);
+        display.present_guest_memory_framebuffer(&bus, frontbuffer, &xenos_gpu.color_buffer);
         display.update()?;
 
         if frame == 70 {
@@ -1036,20 +1094,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if frame == 180 {
             let _ = display.save_bmp("../bootanim_sphere.bmp");
         } else if frame == 290 {
-            let _ = display.save_bmp("../dash_framebuffer.bmp");
+            let out_name = if is_metro { "../dash_17559_framebuffer.bmp" } else { "../dash_framebuffer.bmp" };
+            let _ = display.save_bmp(out_name);
         }
 
         if frame % 180 == 0 {
             let total_guest_steps: u64 = guest_threads.iter().map(|t| t.total_steps).sum();
             println!(
-                "  [GPU] Frame {:05} | Direct GPU Presentation | 60 FPS | Guest Code Executed: {} instructions",
-                frame, total_guest_steps
+                "  [GPU] Frame {:05} | FrontBuffer: 0x{:08X} | Ring Executed: {} pkts | 60 FPS | Guest Code: {} insns",
+                frame, frontbuffer, executed_pkts, total_guest_steps
             );
         }
     }
 
     // Save framebuffer screenshot to disk
-    let bmp_path = "../dash_framebuffer.bmp";
+    let bmp_path = if is_metro { "../dash_17559_framebuffer.bmp" } else { "../dash_framebuffer.bmp" };
     display.save_bmp(bmp_path)?;
     println!("[+] Framebuffer exported as High-Res BMP screenshot: {}", bmp_path);
 

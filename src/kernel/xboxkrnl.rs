@@ -39,6 +39,12 @@ pub struct KernelDispatcher {
     pub ring_buffer_size: u32,
     pub swap_count: u64,
     pub last_swap_frontbuffer: u64,
+    pub rptr_writeback_ptr: u64,
+    pub graphics_interrupt_callback: u64,
+    pub graphics_interrupt_context: u64,
+    pub frontbuffer_ptr: u64,
+    pub backbuffer_ptr: u64,
+    pub gpu_identifier_ptr: u64,
     pub gamepad_state: crate::kernel::input::XInputGamepad,
     pub gamepad_packet_number: u32,
     pub pending_threads: Vec<PendingThread>,
@@ -62,6 +68,12 @@ impl KernelDispatcher {
             ring_buffer_size: 64 * 1024,
             swap_count: 0,
             last_swap_frontbuffer: 0x7000_0000,
+            rptr_writeback_ptr: 0,
+            graphics_interrupt_callback: 0,
+            graphics_interrupt_context: 0,
+            frontbuffer_ptr: 0,
+            backbuffer_ptr: 0,
+            gpu_identifier_ptr: 0,
             gamepad_state: crate::kernel::input::XInputGamepad::default(),
             gamepad_packet_number: 1,
             pending_threads: Vec::new(),
@@ -462,6 +474,15 @@ impl KernelDispatcher {
                 let aligned = (size + 0xFFF) & !0xFFF;
                 let addr = self.valloc_bump;
                 self.valloc_bump += aligned;
+                if aligned == 0x398000 {
+                    if self.frontbuffer_ptr == 0 {
+                        self.frontbuffer_ptr = addr;
+                        println!("    -> MmAllocatePhysicalMemoryEx: Set Frontbuffer @ 0x{:08X}", addr);
+                    } else if self.backbuffer_ptr == 0 {
+                        self.backbuffer_ptr = addr;
+                        println!("    -> MmAllocatePhysicalMemoryEx: Set Backbuffer @ 0x{:08X}", addr);
+                    }
+                }
                 println!("    -> MmAllocatePhysicalMemoryEx: Allocated 0x{:X} bytes at 0x{:08X}", aligned, addr);
                 addr
             }
@@ -955,7 +976,16 @@ impl KernelDispatcher {
             0x01A5 => 0,
 
             // 0x01B1..0x01B9: Video Display (Vd*) Handlers
-            0x01B1 | 0x01B3 | 0x01B4 | 0x01B5 | 0x01B6 | 0x01B7 | 0x01B8 | 0x01B9 => 0,
+            0x01B1 | 0x01B3 | 0x01B4 | 0x01B5 | 0x01B7 | 0x01B8 | 0x01B9 => 0,
+
+            // 0x01B6: VdEnableRingBufferRPtrWriteBack (pWriteBackAddress, frequency)
+            0x01B6 => {
+                if let Some(&ptr) = args.first() {
+                    self.rptr_writeback_ptr = ptr;
+                    println!("    -> VdEnableRingBufferRPtrWriteBack: Address=0x{:08X}", ptr);
+                }
+                0
+            }
 
             // 0x01BA: VdGetCurrentDisplayInformation
             0x01BA => 0,
@@ -1018,7 +1048,31 @@ impl KernelDispatcher {
             }
 
             // 0x01CF..0x01DC: Vd display controls
-            0x01CF | 0x01D0 | 0x01D3 | 0x01D4 | 0x01D5 | 0x01D9 | 0x01DC => 0,
+            0x01CF | 0x01D0 | 0x01D3 | 0x01D4 | 0x01DC => 0,
+
+            // 0x01D5: VdSetGraphicsInterruptCallback (pfnCallback, pContext)
+            0x01D5 => {
+                if let Some(&cb) = args.first() {
+                    self.graphics_interrupt_callback = cb;
+                }
+                if let Some(&ctx) = args.get(1) {
+                    self.graphics_interrupt_context = ctx;
+                }
+                println!("    -> VdSetGraphicsInterruptCallback: Callback=0x{:08X}, Context=0x{:08X}",
+                    self.graphics_interrupt_callback, self.graphics_interrupt_context);
+                0
+            }
+
+            // 0x01D9: VdSetSystemCommandBufferGpuIdentifierAddress (pGpuIdent)
+            0x01D9 => {
+                if let Some(&ptr) = args.first() {
+                    self.gpu_identifier_ptr = ptr;
+                    if ptr != 0 {
+                        let _ = bus.write_u32(ptr, 0x0000_0001);
+                    }
+                }
+                0
+            }
 
             // 0x01DF: KiApcNormalRoutineNop
             0x01DF => 0,

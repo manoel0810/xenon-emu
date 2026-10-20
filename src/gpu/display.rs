@@ -7,6 +7,7 @@ use crate::kernel::input::{
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
 };
 use minifb::{Key, Window, WindowOptions};
+use crate::memory::MemoryBus;
 use std::fs::File;
 use std::io::Write;
 
@@ -405,6 +406,46 @@ impl GpuDisplay {
         // Direct Presentation: 100% ATI Xenos GPU Framebuffer driven by Guest PowerPC execution
         let len = self.framebuffer.len().min(gpu_color_buffer.len());
         self.framebuffer[..len].copy_from_slice(&gpu_color_buffer[..len]);
+    }
+
+    /// Presents framebuffer reading directly from guest physical memory (or falling back to GPU color buffer)
+    pub fn present_guest_memory_framebuffer(
+        &mut self,
+        bus: &MemoryBus,
+        frontbuffer_addr: u64,
+        gpu_color_buffer: &[u32],
+    ) {
+        if self.mode == DisplayMode::BootAnimation {
+            self.render_boot_animation();
+            self.boot_frame += 1;
+            if self.boot_frame >= 280 {
+                println!("  [BOOTANIM] Sequencia de boot concluida -> Apresentando GPU da Dashboard...");
+                self.mode = DisplayMode::Dashboard;
+            }
+            return;
+        }
+
+        if self.view_mode == ViewMode::XuiDirect {
+            self.render_xui_direct_scene();
+            return;
+        }
+
+        if frontbuffer_addr != 0 {
+            let total = self.framebuffer.len();
+            for i in 0..total {
+                let off = frontbuffer_addr + (i * 4) as u64;
+                if let Ok(pixel) = bus.read_u32(off) {
+                    if pixel != 0 {
+                        self.framebuffer[i] = pixel;
+                    } else if i < gpu_color_buffer.len() && gpu_color_buffer[i] != 0 {
+                        self.framebuffer[i] = gpu_color_buffer[i];
+                    }
+                }
+            }
+        } else {
+            let len = self.framebuffer.len().min(gpu_color_buffer.len());
+            self.framebuffer[..len].copy_from_slice(&gpu_color_buffer[..len]);
+        }
     }
 
     /// Renders the legendary authentic Xbox 360 "Blades" Dashboard UI

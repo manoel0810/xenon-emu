@@ -61,4 +61,16 @@ impl RingBuffer {
     pub fn advance_rptr(&mut self, count: usize) {
         self.rptr = (self.rptr + count) % self.num_dwords;
     }
+
+    /// Dynamically scans memory from wptr forward to discover newly written PM4 words from guest CPU
+    pub fn sync_wptr_from_memory(&mut self, bus: &MemoryBus) {
+        while self.wptr < self.num_dwords {
+            let addr = self.base_addr + (self.wptr * 4) as u64;
+            if bus.read_u32(addr).unwrap_or(0) != 0 {
+                self.wptr += 1;
+            } else {
+                break;
+            }
+        }
+    }
 }

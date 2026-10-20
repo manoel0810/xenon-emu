@@ -184,6 +184,20 @@ impl XenosGpu {
         Ok(count)
     }
 
+    /// Executes pending PM4 packets and writes back the current RPTR to guest memory
+    pub fn execute_ring_with_writeback(
+        &mut self,
+        bus: &mut MemoryBus,
+        ring: &mut RingBuffer,
+        writeback_addr: u64,
+    ) -> Result<usize, String> {
+        let count = self.execute_ring(bus, ring)?;
+        if writeback_addr != 0 {
+            let _ = bus.write_u32(writeback_addr, ring.rptr as u32);
+        }
+        Ok(count)
+    }
+
     /// Dispatches execution of a single decoded PM4 packet
     pub fn execute_packet(&mut self, bus: &mut MemoryBus, packet: &Pm4Packet) -> Result<(), String> {
         match packet {
