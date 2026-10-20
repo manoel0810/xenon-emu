@@ -1,35 +1,9 @@
-use std::collections::HashMap;
 use std::fs;
+use xenon_emu::kernel::exports::{get_xam_name, get_xboxkrnl_name};
 use xenon_emu::loader::{PeImage, StfsPackage, XexFile};
 use xenon_emu::memory::MemoryBus;
 
-fn load_table(path: &str) -> HashMap<u32, String> {
-    let mut map = HashMap::new();
-    if let Ok(content) = fs::read_to_string(path) {
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with("XE_EXPORT(") {
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() >= 3 {
-                    let ord_str = parts[1].trim();
-                    let name = parts[2].trim();
-                    let ord = if ord_str.starts_with("0x") {
-                        u32::from_str_radix(&ord_str[2..], 16).unwrap_or(0)
-                    } else {
-                        ord_str.parse().unwrap_or(0)
-                    };
-                    map.insert(ord, name.to_string());
-                }
-            }
-        }
-    }
-    map
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let krnl_table = load_table("C:/Users/manoe/.gemini/antigravity-ide/brain/3f1ffb6b-9bf4-4cc0-b24f-7ff0bb70f26d/scratch/xboxkrnl_table.inc");
-    let xam_table = load_table("C:/Users/manoe/.gemini/antigravity-ide/brain/3f1ffb6b-9bf4-4cc0-b24f-7ff0bb70f26d/scratch/xam_table.inc");
-
     let su_path = "../$SystemUpdate/su20076000_00000000";
     let su_bytes = fs::read(su_path)?;
     let stfs = StfsPackage::parse(&su_bytes)?;
@@ -46,11 +20,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let thunk_map = dash_xex.setup_import_thunks(&mut bus)?;
 
-    for (addr, (lib, ord)) in &thunk_map {
-        if *addr >= 0x9268E9A0 && *addr <= 0x9268E9F0 {
-            let table = if lib.eq_ignore_ascii_case("xboxkrnl.exe") { &krnl_table } else { &xam_table };
-            let name = table.get(&(*ord as u32)).cloned().unwrap_or("UNKNOWN".into());
-            println!("  0x{:08X} -> {}!#{} ({})", addr, lib, ord, name);
+    let mut imports_by_lib: std::collections::BTreeMap<String, Vec<(u16, u64, &'static str)>> = std::collections::BTreeMap::new();
+
+    for (&addr, (lib, ord)) in &thunk_map {
+        let name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+            get_xboxkrnl_name(*ord).unwrap_or("Unknown")
+        } else {
+            get_xam_name(*ord).unwrap_or("Unknown")
+        };
+        imports_by_lib.entry(lib.clone()).or_default().push((*ord, addr, name));
+    }
+
+    println!("========================================================");
+    println!("     $flash_dash.xex Imported Function Manifest         ");
+    println!("========================================================");
+    for (lib, mut fns) in imports_by_lib {
+        fns.sort_by_key(|f| f.0);
+        println!("\n[+] Library '{}' ({} functions):", lib, fns.len());
+        for (ord, addr, name) in fns {
+            println!("    - Ord #0x{:04X} ({:<4}) @ 0x{:08X} => {}", ord, ord, addr, name);
         }
     }
 

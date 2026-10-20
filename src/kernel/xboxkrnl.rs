@@ -17,6 +17,10 @@ pub struct KernelDispatcher {
     pub xam_app_id: u32,
     pub signin_state: u32,
     pub perf_counter: u64,
+    pub ring_buffer_ptr: u64,
+    pub ring_buffer_size: u32,
+    pub swap_count: u64,
+    pub last_swap_frontbuffer: u64,
 }
 
 impl KernelDispatcher {
@@ -31,6 +35,10 @@ impl KernelDispatcher {
             xam_app_id: 0,
             signin_state: 1,
             perf_counter: 10_000_000,
+            ring_buffer_ptr: 0x1000_0000,
+            ring_buffer_size: 64 * 1024,
+            swap_count: 0,
+            last_swap_frontbuffer: 0x7000_0000,
         }
     }
 
@@ -536,8 +544,26 @@ impl KernelDispatcher {
             // 0x01C1: VdHSIOCalibrationLock
             0x01C1 => 0,
 
-            // 0x01C2: VdInitializeEngines | 0x01C3: VdInitializeRingBuffer | 0x01C5: VdInitializeScalerCommandBuffer
-            0x01C2 | 0x01C3 | 0x01C5 => 0,
+            // 0x01C2: VdInitializeEngines
+            0x01C2 => 0,
+
+            // 0x01C3: VdInitializeRingBuffer
+            0x01C3 => {
+                if let Some(&ptr) = args.first() {
+                    if ptr != 0 {
+                        self.ring_buffer_ptr = ptr;
+                    }
+                }
+                if let Some(&size) = args.get(1) {
+                    if size != 0 {
+                        self.ring_buffer_size = size as u32;
+                    }
+                }
+                0
+            }
+
+            // 0x01C5: VdInitializeScalerCommandBuffer
+            0x01C5 => 0,
 
             // 0x01C6: VdIsHSIOTrainingSucceeded
             0x01C6 => 1, // TRUE
@@ -605,8 +631,16 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x025B: VdSwap
-            0x025B => 0,
+            // 0x025B: VdSwap (Presentation / Frame Swap)
+            0x025B => {
+                self.swap_count += 1;
+                if let Some(&fb) = args.first() {
+                    if fb != 0 {
+                        self.last_swap_frontbuffer = fb;
+                    }
+                }
+                0
+            }
 
             // 0x0266: KeCertMonitorData
             0x0266 => 0,
