@@ -678,16 +678,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ring_buffer.write_packet(&mut bus, &pkt_vport)?;
     println!("  [PM4 EMIT] SET_CONTEXT_REG (PA_SC_WINDOW_OFFSET: 0x0) [{} dwords]", pkt_vport.len());
 
-    // 3. Load ALU Constants (c0..c3: 4x4 Orthogonal Matrix for UI Projection)
-    let projection_matrix = [
+    // 3. Load ALU Constants (c0..c3: 4x4 Matrix for UI Projection, c4: Diffuse Tint)
+    let shader_constants = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0, 1.0],
     ];
-    let pkt_constants = build_load_alu_constant(0, &projection_matrix);
+    let pkt_constants = build_load_alu_constant(0, &shader_constants);
     ring_buffer.write_packet(&mut bus, &pkt_constants)?;
-    println!("  [PM4 EMIT] LOAD_ALU_CONSTANT (c0..c3: 4x4 Ortho Matrix) [{} dwords]", pkt_constants.len());
+    println!("  [PM4 EMIT] LOAD_ALU_CONSTANT (c0..c4: Matrix + Diffuse Tint) [{} dwords]", pkt_constants.len());
 
     // 4. Index buffer setup in guest RAM at 0x10050000
     let index_ptr: u32 = 0x1005_0000;

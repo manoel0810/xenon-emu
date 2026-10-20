@@ -27,6 +27,15 @@ pub const PA_CL_VPORT_XSCALE: u32 = 0x2084;
 pub const PA_CL_VPORT_YSCALE: u32 = 0x2088;
 pub const PA_CL_VPORT_XOFFSET: u32 = 0x208C;
 pub const PA_CL_VPORT_YOFFSET: u32 = 0x2090;
+pub const SQ_PROGRAM_CNTL: u32 = 0x2180;
+pub const SQ_CONTEXT_MISC: u32 = 0x2181;
+pub const SQ_INTERPOLATOR_CNTL: u32 = 0x2182;
+pub const SQ_VS_PROGRAM_ADDR: u32 = 0x2183;
+pub const SQ_PS_PROGRAM_ADDR: u32 = 0x2184;
+pub const SQ_VS_CONST_BASE: u32 = 0x2185;
+pub const SQ_PS_CONST_BASE: u32 = 0x2186;
+pub const VGT_DRAW_INITIATOR: u32 = 0x2191;
+pub const VGT_DMA_BASE: u32 = 0x2192;
 pub const PA_SU_SC_MODE_CNTL: u32 = 0x2205;
 
 /// High-level representation of a decoded ATI Xenos PM4 Packet
@@ -170,7 +179,22 @@ pub fn build_draw_indexed(prim_type: u32, num_indices: u32, index_ptr: u32) -> V
     build_type3(PM4_DRAW_INDX, &[prim_type, num_indices, index_ptr, 0x0002])
 }
 
+/// Helper to build PM4_SET_CONSTANT (Opcode 0x21)
+pub fn build_set_constant(reg_idx: u32, values: &[u32]) -> Vec<u32> {
+    let mut payload = Vec::with_capacity(1 + values.len());
+    payload.push(reg_idx);
+    payload.extend_from_slice(values);
+    build_type3(PM4_SET_CONSTANT, &payload)
+}
+
+/// Helper to bind a Vertex Shader or Pixel Shader program address
+pub fn build_set_shader_program(is_vertex_shader: bool, program_addr: u32) -> Vec<u32> {
+    let reg = if is_vertex_shader { SQ_VS_PROGRAM_ADDR } else { SQ_PS_PROGRAM_ADDR };
+    build_set_context_reg(reg, program_addr)
+}
+
 /// Helper to build PM4_WAIT_FOR_IDLE (Opcode 0x34)
 pub fn build_wait_for_idle() -> Vec<u32> {
     build_type3(PM4_WAIT_FOR_IDLE, &[0x00000000])
 }
+

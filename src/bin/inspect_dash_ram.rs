@@ -149,12 +149,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 3. Query full integer registers (GPR0..GPR31) of the top dash threads
-    for (t_hex, _info) in dash_threads.iter().take(4) {
-        println!("\n[*] Registradores Inteiros (GPRs) da Thread {}:", t_hex);
-        if let Ok(lines) = xbdm.send_command(&format!("getcontext thread={} int", t_hex)) {
-            for l in &lines {
-                println!("    {}", l);
+    // 3. Inspect GPU state and video memory
+    println!("\n[*] 3. Testando Comandos de GPU e Memoria de Video via XBDM:");
+    for cmd in &["gpu", "gpu info", "screenshot", "getmem addr=0xC0000000 length=64", "getmem addr=0x70000000 length=64"] {
+        println!("  -> Enviando: '{}'", cmd);
+        if let Ok(lines) = xbdm.send_command(cmd) {
+            for l in lines.iter().take(4) {
+                println!("     {}", l);
             }
         }
     }

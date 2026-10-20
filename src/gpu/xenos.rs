@@ -1,6 +1,10 @@
 use crate::gpu::pm4::*;
 use crate::gpu::rasterizer::*;
 use crate::gpu::ring_buffer::RingBuffer;
+use crate::gpu::shader::{
+    create_default_xui_pixel_shader, create_default_xui_vertex_shader, PixelShader, VertexInput,
+    VertexShader,
+};
 use crate::memory::MemoryBus;
 use std::collections::HashMap;
 
@@ -22,6 +26,19 @@ pub struct XenosGpu {
     pub registers: HashMap<u32, u32>,
     /// ALU Constant Vector Registers: c0 through c255 (float4 each)
     pub alu_constants: [[f32; 4]; 256],
+    /// Currently bound Vertex Shader
+    pub current_vs: Option<VertexShader>,
+    /// Currently bound Pixel Shader
+    pub current_ps: Option<PixelShader>,
+    /// Default XUI Vertex Shader
+    pub default_vs: VertexShader,
+    /// Default XUI Pixel Shader
+    pub default_ps: PixelShader,
+    /// Viewport parameters
+    pub vport_xscale: f32,
+    pub vport_yscale: f32,
+    pub vport_xoffset: f32,
+    pub vport_yoffset: f32,
     /// On-chip internal color buffer (resolves into display framebuffer)
     pub color_buffer: Vec<u32>,
     /// Execution counters
@@ -39,9 +56,26 @@ impl XenosGpu {
         registers.insert(PA_CL_VPORT_XOFFSET, (640.0f32).to_bits());
         registers.insert(PA_CL_VPORT_YOFFSET, (360.0f32).to_bits());
 
+        let mut alu_constants = [[0.0f32; 4]; 256];
+        // Identity MVP matrix in c0..c3
+        alu_constants[0] = [1.0, 0.0, 0.0, 0.0];
+        alu_constants[1] = [0.0, 1.0, 0.0, 0.0];
+        alu_constants[2] = [0.0, 0.0, 1.0, 0.0];
+        alu_constants[3] = [0.0, 0.0, 0.0, 1.0];
+        // Full opacity diffuse tint in c4
+        alu_constants[4] = [1.0, 1.0, 1.0, 1.0];
+
         Self {
             registers,
-            alu_constants: [[0.0; 4]; 256],
+            alu_constants,
+            current_vs: None,
+            current_ps: None,
+            default_vs: create_default_xui_vertex_shader(),
+            default_ps: create_default_xui_pixel_shader(),
+            vport_xscale: 640.0,
+            vport_yscale: -360.0,
+            vport_xoffset: 640.0,
+            vport_yoffset: 360.0,
             color_buffer: vec![0u32; XENOS_WIDTH * XENOS_HEIGHT],
             packets_executed: 0,
             draw_calls: 0,
@@ -112,11 +146,60 @@ impl XenosGpu {
             }
             Pm4Packet::Type3 { opcode, data, .. } => {
                 match *opcode {
+                    PM4_SET_CONSTANT => {
+                        if data.len() >= 5 {
+                            let reg_idx = data[0] as usize;
+                            if reg_idx < 256 {
+                                self.alu_constants[reg_idx] = [
+                                    f32::from_bits(data[1]),
+                                    f32::from_bits(data[2]),
+                                    f32::from_bits(data[3]),
+                                    f32::from_bits(data[4]),
+                                ];
+                            }
+                        }
+                    }
                     PM4_SET_CONTEXT_REG => {
                         if data.len() >= 2 {
                             let reg = data[0] + 0x2000;
                             let val = data[1];
                             self.registers.insert(reg, val);
+
+                            match reg {
+                                PA_CL_VPORT_XSCALE => self.vport_xscale = f32::from_bits(val),
+                                PA_CL_VPORT_YSCALE => self.vport_yscale = f32::from_bits(val),
+                                PA_CL_VPORT_XOFFSET => self.vport_xoffset = f32::from_bits(val),
+                                PA_CL_VPORT_YOFFSET => self.vport_yoffset = f32::from_bits(val),
+                                SQ_VS_PROGRAM_ADDR => {
+                                    let addr = val as u64;
+                                    if addr > 0x1000 {
+                                        let mut code = Vec::new();
+                                        for i in 0..32 {
+                                            if let Ok(w) = bus.read_u32(addr + (i * 4) as u64) {
+                                                code.push(w);
+                                            }
+                                        }
+                                        if !code.is_empty() {
+                                            self.current_vs = Some(VertexShader::decode_bytecode("GuestVS", &code));
+                                        }
+                                    }
+                                }
+                                SQ_PS_PROGRAM_ADDR => {
+                                    let addr = val as u64;
+                                    if addr > 0x1000 {
+                                        let mut ps = PixelShader::new("GuestPS");
+                                        let mut code = Vec::new();
+                                        for i in 0..32 {
+                                            if let Ok(w) = bus.read_u32(addr + (i * 4) as u64) {
+                                                code.push(w);
+                                            }
+                                        }
+                                        ps.raw_bytecode = code;
+                                        self.current_ps = Some(ps);
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     PM4_LOAD_ALU_CONSTANT => {
@@ -159,7 +242,7 @@ impl XenosGpu {
         Ok(())
     }
 
-    /// Executes an indexed draw call by reading indices, transforming vertices, and rasterizing triangles
+    /// Executes an indexed draw call by reading indices, transforming vertices with shaders, and rasterizing triangles
     fn execute_draw_indexed(&mut self, bus: &MemoryBus, data: &[u32]) -> Result<(), String> {
         if data.len() < 3 {
             return Ok(());
@@ -183,13 +266,66 @@ impl XenosGpu {
             indices.push(idx);
         }
 
-        // Sample Quad Vertices (Default UI rectangle)
-        let vertices = [
-            Vertex { x: 380.0, y: 150.0, z: 0.0, color: 0xFF2A8C2A },
-            Vertex { x: 1180.0, y: 150.0, z: 0.0, color: 0xFF1B6B1B },
-            Vertex { x: 1180.0, y: 250.0, z: 0.0, color: 0xFF0D3B0D },
-            Vertex { x: 380.0, y: 250.0, z: 0.0, color: 0xFF0D3B0D },
+        let vs = self.current_vs.as_ref().unwrap_or(&self.default_vs);
+
+        // Convert base quad vertices into VertexInputs
+        let raw_inputs = [
+            VertexInput {
+                position: [380.0, 150.0, 0.0, 1.0],
+                color: [0.165, 0.549, 0.165, 1.0], // 0xFF2A8C2A
+                uv: [0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+            },
+            VertexInput {
+                position: [1180.0, 150.0, 0.0, 1.0],
+                color: [0.106, 0.420, 0.106, 1.0], // 0xFF1B6B1B
+                uv: [1.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+            },
+            VertexInput {
+                position: [1180.0, 250.0, 0.0, 1.0],
+                color: [0.051, 0.231, 0.051, 1.0], // 0xFF0D3B0D
+                uv: [1.0, 1.0],
+                normal: [0.0, 0.0, 1.0],
+            },
+            VertexInput {
+                position: [380.0, 250.0, 0.0, 1.0],
+                color: [0.051, 0.231, 0.051, 1.0], // 0xFF0D3B0D
+                uv: [0.0, 1.0],
+                normal: [0.0, 0.0, 1.0],
+            },
         ];
+
+        // Execute Vertex Shader for all vertices
+        let mut vertices = Vec::with_capacity(raw_inputs.len());
+        for v_in in &raw_inputs {
+            let v_out = vs.execute(
+                v_in,
+                &self.alu_constants,
+                self.vport_xscale,
+                self.vport_yscale,
+                self.vport_xoffset,
+                self.vport_yoffset,
+            );
+
+            // Modulate pixel color through Pixel Shader
+            let color = if let Some(ref ps) = self.current_ps {
+                ps.execute(v_out.color, v_out.uv, &self.alu_constants, None)
+            } else {
+                let ca = (v_out.color[3].clamp(0.0, 1.0) * 255.0) as u32;
+                let cr = (v_out.color[0].clamp(0.0, 1.0) * 255.0) as u32;
+                let cg = (v_out.color[1].clamp(0.0, 1.0) * 255.0) as u32;
+                let cb = (v_out.color[2].clamp(0.0, 1.0) * 255.0) as u32;
+                (ca << 24) | (cr << 16) | (cg << 8) | cb
+            };
+
+            vertices.push(Vertex {
+                x: v_out.screen_x,
+                y: v_out.screen_y,
+                z: v_out.clip_pos[2],
+                color,
+            });
+        }
 
         // Rasterize triangles using D3D9 barycentric rasterizer
         let mut tris_count = 0;
