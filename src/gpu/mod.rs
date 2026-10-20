@@ -3,6 +3,7 @@ pub mod font;
 pub mod pm4;
 pub mod rasterizer;
 pub mod ring_buffer;
+pub mod texture;
 pub mod xenos;
 
 pub use display::{GpuDisplay, DISPLAY_HEIGHT, DISPLAY_WIDTH};
@@ -13,4 +14,5 @@ pub use pm4::{
 };
 pub use rasterizer::{blend_pixel, rasterize_gradient_quad, rasterize_rounded_card, rasterize_triangle};
 pub use ring_buffer::RingBuffer;
+pub use texture::{Texture, TextureAtlas};
 pub use xenos::{Vertex, XenosGpu, XENOS_HEIGHT, XENOS_WIDTH};

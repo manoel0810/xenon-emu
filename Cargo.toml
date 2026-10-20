@@ -12,4 +12,5 @@ minifb = "0.29.0"
 ms-compress = "0.2.1"
 sha1 = "0.11.0"
 lzxd = "0.2"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 

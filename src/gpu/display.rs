@@ -1,5 +1,6 @@
 use crate::gpu::font::draw_text;
 use crate::gpu::rasterizer::rasterize_rounded_card;
+use crate::gpu::texture::TextureAtlas;
 use crate::kernel::input::{
     GamepadManager, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_DPAD_DOWN,
     XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_UP,
@@ -55,6 +56,7 @@ pub struct GpuDisplay {
     pub xui_scenes: Vec<crate::loader::XurScene>,
     pub xus_table: Option<crate::loader::XusTable>,
     pub current_scene_idx: usize,
+    pub textures: TextureAtlas,
 }
 
 impl GpuDisplay {
@@ -125,6 +127,8 @@ impl GpuDisplay {
         ];
 
         let gamepad_mgr = GamepadManager::new();
+        let textures = TextureAtlas::load_from_dir("../extracted_xui/named");
+        println!("[+] GpuDisplay: Loaded {} authentic extracted Xbox 360 textures into VRAM", textures.textures.len());
 
         Ok(Self {
             width: DISPLAY_WIDTH,
@@ -143,6 +147,7 @@ impl GpuDisplay {
             xui_scenes: Vec::new(),
             xus_table: None,
             current_scene_idx: 0,
+            textures,
         })
     }
 
@@ -443,27 +448,22 @@ impl GpuDisplay {
             self.framebuffer[70 * w + x] = 0x00404040;
         }
 
-        // 3. Draw Top-Left Xbox 360 Ring of Light Icon
-        let icx = 42usize;
-        let icy = 35usize;
-        let iradius = 22.0f32;
-        for y in (icy - 24)..=(icy + 24) {
-            for x in (icx - 24)..=(icx + 24) {
-                let dx = x as f32 - icx as f32;
-                let dy = y as f32 - icy as f32;
-                let dist = (dx * dx + dy * dy).sqrt();
+        // 3. Draw Top-Left Xbox 360 Guide Jewel / Ring of Light
+        if let Some(jewel_tex) = self.textures.get("jewel") {
+            jewel_tex.draw_scaled(&mut self.framebuffer, w, h, 24, 12, 48, 44, 1.0);
+        } else if let Some(logo_tex) = self.textures.get("logo") {
+            logo_tex.draw_scaled(&mut self.framebuffer, w, h, 20, 12, 52, 44, 1.0);
+        }
 
-                if dist >= iradius - 4.0 && dist <= iradius {
-                    // Quad LED segments: Top-Left is Player 1 (Green LED glowing!)
-                    if dx <= 0.0 && dy <= 0.0 {
-                        self.framebuffer[y * w + x] = 0x0052D053; // Player 1 Connected (Bright Green)
-                    } else {
-                        self.framebuffer[y * w + x] = 0x002A302A; // Inactive quad LEDs
+        // Live Player 1 LED indicator (Glowing Emerald Green) in top-left quadrant of jewel
+        for dy in -3..=3 {
+            for dx in -3..=3 {
+                if dx * dx + dy * dy <= 9 {
+                    let px = (38 + dx) as usize;
+                    let py = (25 + dy) as usize;
+                    if px < w && py < h {
+                        self.framebuffer[py * w + px] = 0x0052D053;
                     }
-                } else if dist < iradius - 5.0 {
-                    // Chrome center jewel
-                    let sphere_light = ((1.0 - dist / iradius) * 70.0) as u32;
-                    self.framebuffer[y * w + x] = (sphere_light << 16) | (sphere_light << 8) | sphere_light;
                 }
             }
         }
@@ -488,7 +488,6 @@ impl GpuDisplay {
                         if is_active {
                             self.framebuffer[ty * w + txx] = tab_color;
                         } else {
-                            // Dark translucent pill
                             let orig = self.framebuffer[ty * w + txx];
                             let r = (((orig >> 16) & 0xFF) + ((tab_color >> 16) & 0xFF) / 2) / 2;
                             let g = (((orig >> 8) & 0xFF) + ((tab_color >> 8) & 0xFF) / 2) / 2;
@@ -525,17 +524,20 @@ impl GpuDisplay {
 
         // 5. Draw Top-Right Gamertag Profile Card
         let gtx = w - 310;
-        // Avatar Box
-        for y in 14..56 {
-            for x in gtx..(gtx + 42) {
-                self.framebuffer[y * w + x] = 0x001B6B1B;
+        if let Some(prof_tex) = self.textures.get("ico_profiles") {
+            prof_tex.draw_scaled(&mut self.framebuffer, w, h, gtx as i32, 16, 36, 36, 1.0);
+        } else {
+            for y in 14..56 {
+                for x in gtx..(gtx + 42) {
+                    self.framebuffer[y * w + x] = 0x001B6B1B;
+                }
             }
+            draw_text(&mut self.framebuffer, w, h, gtx + 12, 28, "X", 0x00FFFFFF, 2);
         }
-        draw_text(&mut self.framebuffer, w, h, gtx + 12, 28, "X", 0x00FFFFFF, 2);
 
         // Gamertag name & Gamerscore
-        draw_text(&mut self.framebuffer, w, h, gtx + 52, 22, "XenonGuest", 0x00FFFFFF, 1);
-        draw_text(&mut self.framebuffer, w, h, gtx + 52, 38, "650 G  Online", 0x0000FF7F, 1);
+        draw_text(&mut self.framebuffer, w, h, gtx + 46, 22, "XenonGuest", 0x00FFFFFF, 1);
+        draw_text(&mut self.framebuffer, w, h, gtx + 46, 38, "650 G  Online", 0x0000FF7F, 1);
 
         // Clock
         draw_text(&mut self.framebuffer, w, h, w - 85, 30, "20:25", 0x00E0E0E0, 1);
@@ -562,7 +564,6 @@ impl GpuDisplay {
             let b = (pb * (1.0 - t * 0.7) + sb * t * 0.5) as u32;
 
             for x in blade_panel_x..(blade_panel_x + blade_panel_w) {
-                // Curved edge mask
                 let rel_x = (x - blade_panel_x) as f32 / blade_panel_w as f32;
                 let edge_curve = (rel_x * std::f32::consts::PI).sin().powf(0.08);
 
@@ -585,17 +586,16 @@ impl GpuDisplay {
             self.framebuffer[(blade_panel_y + 1) * w + x] = 0x00A0A0A0;
         }
 
-        // 7. Render 4 Blade Action Cards
+        // 7. Render 4 Blade Action Cards (Left Column)
         let card_start_y = 135;
         let card_h = 100;
         let card_spacing = 18;
+        let card_w = 540; // 2-Column Dashboard Layout
 
         for (idx, item) in cur_blade.items.iter().enumerate() {
             let cy = card_start_y + idx * (card_h + card_spacing);
             let is_selected = idx == self.selected_item;
-
             let card_x = blade_panel_x + 35;
-            let card_w = blade_panel_w - 70;
 
             let (fill_top, fill_bottom, border_color) = if is_selected {
                 (0xF020_6520, 0xF010_3E10, 0xFF00_FF7F)
@@ -618,35 +618,50 @@ impl GpuDisplay {
             );
 
             // Card Icon box
-            let icon_x = card_x + 22;
+            let icon_x = card_x + 18;
             let icon_y = cy + 22;
-            for iy in icon_y..(icon_y + 56) {
-                for ix in icon_x..(icon_x + 56) {
-                    self.framebuffer[iy * w + ix] = if is_selected {
-                        cur_blade.primary_color
-                    } else {
-                        0x00222A30
-                    };
+
+            // Draw genuine authentic 32x32 icon texture based on active blade & item
+            let tex_key = match self.active_blade {
+                0 => match idx { // XBOX LIVE
+                    0 => "ico_games",
+                    1 => "ico_profiles",
+                    2 => "ico_profiles",
+                    _ => "ico_system_set",
+                },
+                1 => match idx { // GAMES
+                    0 => "ico_game",
+                    1 => "ico_games",
+                    2 => "ico_game",
+                    _ => "ico_trailers",
+                },
+                2 => match idx { // MEDIA
+                    0 => "ico_music",
+                    1 => "ico_game",
+                    2 => "ico_trailers",
+                    _ => "ico_console",
+                },
+                _ => match idx { // SYSTEM
+                    0 => "ico_console",
+                    1 => "ico_parental",
+                    2 => "ico_profiles",
+                    _ => "ico_network",
+                },
+            };
+
+            if let Some(tex) = self.textures.get(tex_key) {
+                tex.draw_scaled(&mut self.framebuffer, w, h, icon_x as i32, icon_y as i32, 54, 54, 1.0);
+            } else {
+                for iy in icon_y..(icon_y + 54) {
+                    for ix in icon_x..(icon_x + 54) {
+                        self.framebuffer[iy * w + ix] = if is_selected {
+                            cur_blade.primary_color
+                        } else {
+                            0x00222A30
+                        };
+                    }
                 }
             }
-
-            // Draw Icon letter (e.g. 1, 2, 3, 4)
-            let icon_char = match idx {
-                0 => '1',
-                1 => '2',
-                2 => '3',
-                _ => '4',
-            };
-            draw_text(
-                &mut self.framebuffer,
-                w,
-                h,
-                icon_x + 20,
-                icon_y + 18,
-                &icon_char.to_string(),
-                0x00FFFFFF,
-                2,
-            );
 
             // Card Text
             let title_color = if is_selected { 0x00FFFFFF } else { 0x00E0E0E0 };
@@ -654,20 +669,27 @@ impl GpuDisplay {
                 &mut self.framebuffer,
                 w,
                 h,
-                card_x + 95,
+                card_x + 85,
                 cy + 25,
                 &item.title,
                 title_color,
                 2, // Big 16px title
             );
 
+            // Subtitle text (sanitized and truncated to card width)
+            let clean_sub: String = item.subtitle
+                .chars()
+                .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                .take(36)
+                .collect();
+
             draw_text(
                 &mut self.framebuffer,
                 w,
                 h,
-                card_x + 97,
+                card_x + 87,
                 cy + 58,
-                &item.subtitle,
+                &clean_sub,
                 0x00A0B0C0,
                 1,
             );
@@ -678,12 +700,122 @@ impl GpuDisplay {
                 &mut self.framebuffer,
                 w,
                 h,
-                card_x + card_w - 45,
+                card_x + card_w - 30,
                 cy + 38,
                 ">",
                 chev_color,
                 2,
             );
+        }
+
+        // 8. Render Right Column: Authentic Dashboard Artwork & Media Banners
+        let right_x = blade_panel_x + card_w + 55;
+        let right_w = 430;
+
+        match self.active_blade {
+            1 => {
+                // GAMES BLADE: Render lastPlayed.jpg & myArcadeGames.jpg
+                if let Some(last_played) = self.textures.get("art_last_played") {
+                    last_played.draw_scaled(&mut self.framebuffer, w, h, right_x as i32, 135, right_w, 120, 1.0);
+                }
+                if let Some(arcade) = self.textures.get("art_arcade") {
+                    arcade.draw_scaled(&mut self.framebuffer, w, h, right_x as i32, 275, right_w, 120, 1.0);
+                }
+
+                // Authentic Spotlight Card
+                rasterize_rounded_card(
+                    &mut self.framebuffer,
+                    w,
+                    h,
+                    right_x as f32,
+                    415.0,
+                    right_w as f32,
+                    110.0,
+                    10.0,
+                    0xE0182818,
+                    0xE00C140C,
+                    0xFF52D053,
+                );
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 435, "DESTAQUES XBOX LIVE", 0x00FFFFFF, 2);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 465, "Novos jogos, demos e complementos disponiveis", 0x00A0E0A0, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 488, "Visite o Xbox Live Marketplace para novidades", 0x0080B080, 1);
+            }
+            2 => {
+                // MEDIA BLADE: Render media.jpg & player info
+                if let Some(media_art) = self.textures.get("art_media") {
+                    media_art.draw_scaled(&mut self.framebuffer, w, h, right_x as i32, 135, right_w, 240, 1.0);
+                }
+                rasterize_rounded_card(
+                    &mut self.framebuffer,
+                    w,
+                    h,
+                    right_x as f32,
+                    395.0,
+                    right_w as f32,
+                    130.0,
+                    10.0,
+                    0xE0102540,
+                    0xE0081220,
+                    0xFF0078D7,
+                );
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 415, "CENTRAL MULTIMÍDIA XBOX 360", 0x00FFFFFF, 2);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 445, "Reprodução de Músicas, Fotos e Vídeos em 720p HD", 0x0080C0FF, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 470, "Suporte a Windows Media Center & Dispositivos USB", 0x00A0C0E0, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 492, "Áudio: Dolby Digital 5.1 Surround Sound", 0x007090B0, 1);
+            }
+            0 => {
+                // XBOX LIVE BLADE: Render livelogo.png & yak1.jpg
+                if let Some(live_logo) = self.textures.get("live_logo") {
+                    live_logo.draw_scaled(&mut self.framebuffer, w, h, (right_x + 15) as i32, 135, 400, 136, 1.0);
+                }
+                if let Some(yak) = self.textures.get("art_yak") {
+                    yak.draw_scaled(&mut self.framebuffer, w, h, right_x as i32, 290, 210, 175, 1.0);
+                }
+                rasterize_rounded_card(
+                    &mut self.framebuffer,
+                    w,
+                    h,
+                    (right_x + 225) as f32,
+                    290.0,
+                    205.0,
+                    175.0,
+                    10.0,
+                    0xE0402008,
+                    0xE0201004,
+                    0xFFE65C00,
+                );
+                draw_text(&mut self.framebuffer, w, h, right_x + 238, 310, "XBOX LIVE GOLD", 0x00FFFFFF, 2);
+                draw_text(&mut self.framebuffer, w, h, right_x + 238, 340, "Jogos Online", 0x00FFB040, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 238, 365, "Bate-papo de Voz", 0x00FFB040, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 238, 390, "Demos & Trailers", 0x00FFB040, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 238, 430, "Conexão Ativa!", 0x0000FF7F, 1);
+            }
+            _ => {
+                // SYSTEM BLADE: Render themes.jpg & System Hardware Details
+                if let Some(themes) = self.textures.get("art_themes") {
+                    themes.draw_scaled(&mut self.framebuffer, w, h, right_x as i32, 135, right_w, 120, 1.0);
+                }
+                rasterize_rounded_card(
+                    &mut self.framebuffer,
+                    w,
+                    h,
+                    right_x as f32,
+                    275.0,
+                    right_w as f32,
+                    250.0,
+                    10.0,
+                    0xE0281438,
+                    0xE0140A1C,
+                    0xFF6B2D90,
+                );
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 295, "ESPECIFICAÇÕES DO CONSOLE", 0x00FFFFFF, 2);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 330, "Placa-Mãe: Microsoft Xbox 360 Corona", 0x00D0B0E0, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 355, "Armazenamento: Corona 16MB NAND Flash", 0x00D0B0E0, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 380, "CPU: 3x PowerPC Xenon Cores @ 3.2 GHz", 0x00D0B0E0, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 405, "GPU: ATI Xenos 500MHz | 10MB EDRAM", 0x00D0B0E0, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 430, "Memória: 512MB GDDR3 RAM Unificada", 0x00D0B0E0, 1);
+                draw_text(&mut self.framebuffer, w, h, right_x + 20, 455, "Resolução: 1280x720 HD 60Hz HDMI", 0x00D0B0E0, 1);
+            }
         }
 
         // 8. Bottom Navigation Guide Ribbon
@@ -705,29 +837,29 @@ impl GpuDisplay {
         let mut bx = 110;
         let by = ribbon_y + 24;
 
-        // Button (A) Select
+        // Button (A) Selecionar
         draw_button_circle(&mut self.framebuffer, w, h, bx, by + 4, 0x00108010);
         draw_text(&mut self.framebuffer, w, h, bx - 3, by, "A", 0x00FFFFFF, 1);
-        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Select", 0x00FFFFFF, 1);
-        bx += 115;
+        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Selecionar", 0x00FFFFFF, 1);
+        bx += 130;
 
-        // Button (B) Back
+        // Button (B) Voltar
         draw_button_circle(&mut self.framebuffer, w, h, bx, by + 4, 0x00D01010);
         draw_text(&mut self.framebuffer, w, h, bx - 3, by, "B", 0x00FFFFFF, 1);
-        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Back", 0x00FFFFFF, 1);
+        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Voltar", 0x00FFFFFF, 1);
         bx += 105;
 
-        // Button (X) Dashboard Settings
+        // Button (X) Opcoes
         draw_button_circle(&mut self.framebuffer, w, h, bx, by + 4, 0x001060D0);
         draw_text(&mut self.framebuffer, w, h, bx - 3, by, "X", 0x00FFFFFF, 1);
-        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Settings", 0x00FFFFFF, 1);
-        bx += 135;
+        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Opcoes", 0x00FFFFFF, 1);
+        bx += 110;
 
         // Button (Y) / TAB: XUI Direct Scene
         draw_button_circle(&mut self.framebuffer, w, h, bx, by + 4, 0x00E0A000);
         draw_text(&mut self.framebuffer, w, h, bx - 3, by, "Y", 0x00FFFFFF, 1);
-        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "XUI .xur [TAB]", 0x0000FF7F, 1);
-        bx += 160;
+        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Cena XUI [TAB]", 0x0000FF7F, 1);
+        bx += 150;
 
         // Navigation hints
         draw_text(
@@ -736,37 +868,21 @@ impl GpuDisplay {
             h,
             bx,
             by,
-            "[<] [>] Alternar Blades (A/D ou Setas)",
+            "[<] [>] Blades",
             0x0090D0FF,
             1,
         );
 
-        let pad_status = if self.gamepad_mgr.controller_connected {
-            "[PAD 1: USB CONNECTED]"
-        } else {
-            "[KEYBOARD MODE]"
-        };
-        draw_text(
-            &mut self.framebuffer,
-            w,
-            h,
-            w - 580,
-            by,
-            pad_status,
-            if self.gamepad_mgr.controller_connected { 0x0052D053 } else { 0x00FFB000 },
-            1,
-        );
-
         // System & Firmware info banner at bottom right
-        let sys_info = format!("Title: {} | v{} | 60 FPS", title_id, dash_version);
+        let sys_info = format!("Build 4532 | 720p HD | 60 FPS");
         draw_text(
             &mut self.framebuffer,
             w,
             h,
-            w - 380,
+            w - 240,
             by,
             &sys_info,
-            0x00788898,
+            0x008090A0,
             1,
         );
     }
@@ -828,33 +944,56 @@ impl GpuDisplay {
         let h = self.height;
         let frame = self.boot_frame;
 
-        // Deep pure void black background
-        self.framebuffer.fill(0x00000000);
-
+        // 1. Background Progression
+        // Frames 0..105: Dark void
+        // Frames 105..135: White burst expansion
+        // Frames 135..240: Authentic Xbox 360 bright white / soft silver vignette
         let cx = (w / 2) as f32;
         let cy = (h / 2) as f32;
 
+        if frame < 105 {
+            self.framebuffer.fill(0x00020502);
+        } else if frame < 135 {
+            let burst = ((frame - 105) as f32 / 30.0).min(1.0);
+            let bg_val = (burst * 255.0) as u32;
+            let bg_col = (bg_val << 16) | (bg_val << 8) | bg_val;
+            self.framebuffer.fill(bg_col);
+        } else {
+            // Authentic Xbox 360 clean white / silver ambient glow
+            for y in 0..h {
+                let ty = (y as f32 - cy) / cy;
+                for x in 0..w {
+                    let tx = (x as f32 - cx) / cx;
+                    let dist = (tx * tx + ty * ty).sqrt();
+                    let vig = (1.0 - dist * 0.18).max(0.0);
+                    let r = ((255.0 * vig) as u32).min(255);
+                    let g = (((255.0 * vig) - dist * 8.0).max(230.0) as u32).min(255);
+                    let b = (((255.0 * vig) - dist * 10.0).max(225.0) as u32).min(255);
+                    self.framebuffer[y * w + x] = (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+
         // -----------------------------------------------------------
-        // PHASE 1: Neon Green Aurora Spirals (Frames 0 to 145)
+        // PHASE 1: Neon Green Aurora Spirals (Frames 0 to 115)
         // -----------------------------------------------------------
-        if frame < 150 {
-            let fade_ribbon = if frame < 110 {
-                (frame as f32 / 30.0).min(1.0)
+        if frame < 120 {
+            let fade_ribbon = if frame < 85 {
+                (frame as f32 / 25.0).min(1.0)
             } else {
-                ((150 - frame) as f32 / 40.0).max(0.0)
+                ((120 - frame) as f32 / 35.0).max(0.0)
             };
 
             let num_ribbons = 6;
             for r in 0..num_ribbons {
                 let base_phase = r as f32 * (std::f32::consts::PI * 2.0 / num_ribbons as f32);
-                let num_samples = 240;
+                let num_samples = 260;
                 for s in 0..num_samples {
                     let progress = s as f32 / num_samples as f32;
                     let t = frame as f32 * 0.05 + base_phase;
-                    let rad = (1.0 - progress) * (520.0 - (frame as f32 * 2.2).min(380.0)) + 40.0;
-                    let angle = progress * 7.0 + t + (s as f32 * 0.015);
+                    let rad = (1.0 - progress) * (500.0 - (frame as f32 * 2.8).min(380.0)) + 30.0;
+                    let angle = progress * 7.5 + t + (s as f32 * 0.015);
 
-                    // Perspective projection: slightly flattened Y for 3D orbital depth
                     let px = (cx + rad * angle.cos()) as i32;
                     let py = (cy + rad * angle.sin() * 0.65) as i32;
 
@@ -863,7 +1002,6 @@ impl GpuDisplay {
                         continue;
                     }
 
-                    // Additive luminous brush (3x3 with smooth distance falloff)
                     for dy in -2..=2 {
                         for dx in -2..=2 {
                             let qx = px + dx;
@@ -894,140 +1032,25 @@ impl GpuDisplay {
         }
 
         // -----------------------------------------------------------
-        // PHASE 2: Acoustic Radial Shockwave Rings (Frames 75 to 220)
+        // PHASE 2: Center Light Burst on Convergence (Frames 95 to 135)
         // -----------------------------------------------------------
-        if frame >= 75 && frame <= 220 {
-            let num_waves = 3;
-            for w_idx in 0..num_waves {
-                let start_f = 75 + w_idx * 35;
-                if frame >= start_f {
-                    let wave_age = (frame - start_f) as f32;
-                    let wave_rad = wave_age * 9.5;
-                    let max_rad = 620.0f32;
-                    if wave_rad < max_rad {
-                        let alpha = (1.0 - wave_rad / max_rad).max(0.0);
-                        let num_ring_pts = (wave_rad * 3.14).min(1000.0) as usize;
-                        for i in 0..num_ring_pts {
-                            let theta = (i as f32 / num_ring_pts as f32) * std::f32::consts::PI * 2.0;
-                            let rx = (cx + wave_rad * theta.cos()) as i32;
-                            let ry = (cy + wave_rad * theta.sin() * 0.70) as i32;
-                            if rx >= 0 && rx < w as i32 && ry >= 0 && ry < h as i32 {
-                                let idx = ry as usize * w + rx as usize;
-                                let cur = self.framebuffer[idx];
-                                let g_add = (alpha * 120.0) as u32;
-                                let cur_g = (cur >> 8) & 0xFF;
-                                let new_g = (cur_g + g_add).min(255);
-                                self.framebuffer[idx] = (cur & 0xFFFF00FF) | (new_g << 8);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        if frame >= 95 && frame <= 135 {
+            let burst_age = (frame - 95) as f32;
+            let burst_radius = burst_age * 18.0;
+            let burst_alpha = (1.0 - burst_age / 40.0).max(0.0);
 
-        // -----------------------------------------------------------
-        // PHASE 3: 3D Ray-Traced Chrome Sphere & Ring of Light (Frames 85 to 280)
-        // -----------------------------------------------------------
-        if frame >= 85 {
-            // Target sphere center and radius:
-            // Settles at (cx, cy) with radius 88, then in frames 240..275 slides to (42, 35) with radius 22
-            let (scx, scy, sradius) = if frame < 240 {
-                let r = if frame < 120 {
-                    ((frame - 85) as f32 / 35.0) * 88.0
-                } else {
-                    88.0
-                };
-                (cx, cy, r)
-            } else {
-                let p = ((frame - 240) as f32 / 35.0).min(1.0);
-                let smooth_p = p * p * (3.0 - 2.0 * p); // smooth ease-in-out curve
-                let x = cx + (42.0 - cx) * smooth_p;
-                let y = cy + (35.0 - cy) * smooth_p;
-                let r = 88.0 + (22.0 - 88.0) * smooth_p;
-                (x, y, r)
-            };
-
-            let bound = (sradius + 26.0) as i32;
-            let min_y = ((scy - bound as f32) as i32).max(0) as usize;
-            let max_y = ((scy + bound as f32) as i32).min(h as i32 - 1) as usize;
-            let min_x = ((scx - bound as f32) as i32).max(0) as usize;
-            let max_x = ((scx + bound as f32) as i32).min(w as i32 - 1) as usize;
-
-            // RoL Quadrant Status:
-            // 85..170: Spinning Chase
-            // 170..185: Synchronous Flash of all 4 quads
-            // 185+: Quadrant 0 (Top-Left, Player 1) locked solid green!
-            let active_quad = if frame < 170 {
-                ((frame - 85) / 8) % 4
-            } else if frame <= 185 {
-                99 // All 4 quads flash
-            } else {
-                0 // Player 1 solid green
-            };
-
-            for y in min_y..=max_y {
-                let dy = y as f32 - scy;
-                for x in min_x..=max_x {
-                    let dx = x as f32 - scx;
+            for y in 0..h {
+                let dy = y as f32 - cy;
+                for x in 0..w {
+                    let dx = x as f32 - cx;
                     let dist = (dx * dx + dy * dy).sqrt();
-
-                    // Outer Ring of Light Bezel & 4 Quadrants
-                    let rol_inner = sradius + 5.0;
-                    let rol_outer = sradius + 19.0;
-                    if dist >= rol_inner && dist <= rol_outer {
-                        // Divider cross between quadrants
-                        if dx.abs() < 2.5 || dy.abs() < 2.5 {
-                            self.framebuffer[y * w + x] = 0x00141814;
-                        } else {
-                            let quad_idx = if dx < 0.0 && dy < 0.0 {
-                                0 // Top-Left (Player 1)
-                            } else if dx > 0.0 && dy < 0.0 {
-                                1 // Top-Right
-                            } else if dx > 0.0 && dy > 0.0 {
-                                2 // Bottom-Right
-                            } else {
-                                3 // Bottom-Left
-                            };
-
-                            let is_lit = active_quad == 99 || active_quad == quad_idx;
-                            if is_lit {
-                                let pulse = ((frame as f32 * 0.2).sin() * 0.08 + 0.92) as f32;
-                                let lr = (0x52 as f32 * pulse) as u32;
-                                let lg = (0xD0 as f32 * pulse) as u32;
-                                let lb = (0x53 as f32 * pulse) as u32;
-                                self.framebuffer[y * w + x] = (lr << 16) | (lg << 8) | lb;
-                            } else {
-                                self.framebuffer[y * w + x] = 0x001B331B;
-                            }
-                        }
-                    } else if dist >= rol_outer && dist <= rol_outer + 3.0 {
-                        self.framebuffer[y * w + x] = 0x00505A50;
-                    } else if dist < sradius {
-                        // 3D Ray-Traced Chrome Sphere Shading
-                        let nx = dx / sradius;
-                        let ny = dy / sradius;
-                        let nz = (1.0 - (nx * nx + ny * ny).min(1.0)).sqrt();
-
-                        // Main light direction (-0.45, -0.55, 0.70)
-                        let lx = -0.45f32;
-                        let ly = -0.55f32;
-                        let lz = 0.70f32;
-                        let dot = (nx * lx + ny * ly + nz * lz).max(0.0);
-
-                        // Specular Blinn-Phong highlight
-                        let hx = -0.32f32;
-                        let hy = -0.39f32;
-                        let hz = 0.86f32;
-                        let sdot = (nx * hx + ny * hy + nz * hz).max(0.0);
-                        let spec = sdot.powf(20.0);
-
-                        // Core glowing green energy inside the jewel
-                        let core = (1.0 - dist / sradius).powf(1.8);
-
-                        let r = ((25.0 * dot + 240.0 * spec + 15.0 * core) as u32).min(255);
-                        let g = ((65.0 * dot + 255.0 * spec + 230.0 * core) as u32).min(255);
-                        let b = ((30.0 * dot + 240.0 * spec + 25.0 * core) as u32).min(255);
-
+                    if dist <= burst_radius {
+                        let falloff = (1.0 - dist / burst_radius).powf(1.8) * burst_alpha;
+                        let add_val = (falloff * 255.0) as u32;
+                        let cur = self.framebuffer[y * w + x];
+                        let r = (((cur >> 16) & 0xFF) + add_val).min(255);
+                        let g = (((cur >> 8) & 0xFF) + (add_val * 11) / 10).min(255);
+                        let b = ((cur & 0xFF) + add_val).min(255);
                         self.framebuffer[y * w + x] = (r << 16) | (g << 8) | b;
                     }
                 }
@@ -1035,70 +1058,152 @@ impl GpuDisplay {
         }
 
         // -----------------------------------------------------------
-        // PHASE 4: Horizontal Lens Flare Burst (Frames 170 to 195)
+        // PHASE 3: Authentic Xbox 360 Chrome Emblem & Logo (Frames 125 to 245)
         // -----------------------------------------------------------
-        if frame >= 170 && frame <= 195 {
-            let flare_progress = (frame - 170) as f32 / 25.0;
-            let flare_alpha = (1.0 - flare_progress).max(0.0);
-            let streak_h = 35;
-            let sy_min = (cy as i32 - streak_h).max(0) as usize;
-            let sy_max = (cy as i32 + streak_h).min(h as i32 - 1) as usize;
+        if frame >= 125 {
+            let alpha = if frame < 155 {
+                ((frame - 125) as f32 / 30.0).min(1.0)
+            } else if frame > 235 {
+                ((275 - frame) as f32 / 40.0).max(0.0)
+            } else {
+                1.0
+            };
 
-            for y in sy_min..=sy_max {
-                let dy = (y as f32 - cy).abs();
-                let v_falloff = (1.0 - dy / streak_h as f32).powf(2.0);
-                for x in 0..w {
-                    let dx = (x as f32 - cx).abs();
-                    let h_falloff = (1.0 - dx / (w as f32 * 0.65)).max(0.0);
-                    let intensity = (flare_alpha * v_falloff * h_falloff * 255.0) as u32;
-                    if intensity > 0 {
-                        let cur = self.framebuffer[y * w + x];
-                        let r = ((cur >> 16) & 0xFF) + intensity;
-                        let g = ((cur >> 8) & 0xFF) + intensity;
-                        let b = (cur & 0xFF) + intensity;
-                        self.framebuffer[y * w + x] = (r.min(255) << 16) | (g.min(255) << 8) | b.min(255);
+            // Authentic Xbox 360 Logo with official green typography
+            let logo_w = 340;
+            let logo_h = 222;
+            let logo_x = ((w - logo_w) / 2) as i32;
+            let logo_y = (((h - logo_h) / 2) - 15) as i32;
+
+            if let Some(logo_tex) = self.textures.get("logo") {
+                logo_tex.draw_scaled(&mut self.framebuffer, w, h, logo_x, logo_y, logo_w, logo_h, alpha);
+            } else if let Some(jewel_tex) = self.textures.get("jewel") {
+                jewel_tex.draw_scaled(&mut self.framebuffer, w, h, logo_x + 40, logo_y + 20, 260, 160, alpha);
+            }
+
+            // -------------------------------------------------------
+            // Ring of Light LED Quadrants around Jewel Center
+            // -------------------------------------------------------
+            let jcx = cx;
+            let jcy = cy - 42.0;
+
+            let active_quad = if frame < 150 {
+                999 // warming up
+            } else if frame < 180 {
+                ((frame - 150) / 7) % 4
+            } else if frame <= 195 {
+                99 // all 4 quadrants flash simultaneously
+            } else {
+                0 // Player 1 steady green
+            };
+
+            if frame >= 148 && frame <= 235 {
+                let inner_r = 50.0f32;
+                let outer_r = 58.0f32;
+
+                // 4 Quadrants: Q0: Top-Left, Q1: Top-Right, Q2: Bottom-Left, Q3: Bottom-Right
+                for a in 0..120 {
+                    let angle = (a as f32 / 120.0) * std::f32::consts::PI * 2.0;
+                    let dx = angle.cos();
+                    let dy = angle.sin();
+
+                    // Check if angle is within quadrant arc (skip 14-degree gap at 0, 90, 180, 270)
+                    let ang_deg = angle.to_degrees().rem_euclid(360.0);
+                    let in_gap = (ang_deg > 82.0 && ang_deg < 98.0)
+                        || (ang_deg > 172.0 && ang_deg < 188.0)
+                        || (ang_deg > 262.0 && ang_deg < 278.0)
+                        || (ang_deg > 352.0 || ang_deg < 8.0);
+
+                    if in_gap {
+                        continue;
+                    }
+
+                    let quad_idx = if dx < 0.0 && dy < 0.0 {
+                        0 // Top-Left (Player 1)
+                    } else if dx > 0.0 && dy < 0.0 {
+                        1 // Top-Right (Player 2)
+                    } else if dx < 0.0 && dy > 0.0 {
+                        2 // Bottom-Left (Player 3)
+                    } else {
+                        3 // Bottom-Right (Player 4)
+                    };
+
+                    let is_lit = active_quad == 99 || active_quad == quad_idx;
+                    if !is_lit {
+                        continue;
+                    }
+
+                    let pulse = ((frame as f32 * 0.25).sin() * 0.06 + 0.94) as f32;
+                    let led_r = (0x52 as f32 * pulse * alpha) as u32;
+                    let led_g = (0xD0 as f32 * pulse * alpha) as u32;
+                    let led_b = (0x53 as f32 * pulse * alpha) as u32;
+
+                    for r in (inner_r as i32)..=(outer_r as i32) {
+                        let px = (jcx + r as f32 * dx) as i32;
+                        let py = (jcy + r as f32 * dy * 0.88) as i32;
+                        if px >= 0 && px < w as i32 && py >= 0 && py < h as i32 {
+                            let idx = py as usize * w + px as usize;
+                            let cur = self.framebuffer[idx];
+                            let cr = (((cur >> 16) & 0xFF) + led_r).min(255);
+                            let cg = (((cur >> 8) & 0xFF) + led_g).min(255);
+                            let cb = ((cur & 0xFF) + led_b).min(255);
+                            self.framebuffer[idx] = (cr << 16) | (cg << 8) | cb;
+                        }
                     }
                 }
             }
         }
 
         // -----------------------------------------------------------
-        // PHASE 5: Emblem "XBOX 360" & Subtitle (Frames 130 to 240)
+        // PHASE 4: Horizontal Anamorphic Lens Flare Sweep (Frames 180 to 205)
         // -----------------------------------------------------------
-        if frame >= 130 && frame < 245 {
-            let text_alpha = if frame < 165 {
-                (frame - 130) as f32 / 35.0
-            } else if frame > 235 {
-                (245 - frame) as f32 / 10.0
-            } else {
-                1.0
-            };
+        if frame >= 180 && frame <= 205 {
+            let flare_progress = (frame - 180) as f32 / 25.0;
+            let flare_alpha = (1.0 - flare_progress).max(0.0);
+            let streak_h = 24;
+            let flare_y = cy - 42.0;
+            let sy_min = (flare_y as i32 - streak_h).max(0) as usize;
+            let sy_max = (flare_y as i32 + streak_h).min(h as i32 - 1) as usize;
 
-            let brightness = (text_alpha * 255.0) as u32;
-            let text_color = (brightness << 16) | (brightness << 8) | brightness;
-            let shadow_color = (((brightness * 16) / 255) << 16) | (((brightness * 124) / 255) << 8) | ((brightness * 16) / 255);
-
-            let logo_text = "XBOX 360";
-            let logo_x = (w / 2) - 108;
-            let logo_y = (cy as usize) + 120;
-
-            // Glowing Green Shadow
-            draw_text(&mut self.framebuffer, w, h, logo_x + 2, logo_y + 2, logo_text, shadow_color, 3);
-            // Crisp White Chrome Logo
-            draw_text(&mut self.framebuffer, w, h, logo_x, logo_y, logo_text, text_color, 3);
-
-            let sub_text = "MICROSOFT CORPORATION";
-            let sub_x = (w / 2) - 95;
-            let sub_y = logo_y + 36;
-            let sub_color = (((brightness * 90) / 255) << 16) | (((brightness * 140) / 255) << 8) | ((brightness * 90) / 255);
-            draw_text(&mut self.framebuffer, w, h, sub_x, sub_y, sub_text, sub_color, 1);
+            for y in sy_min..=sy_max {
+                let dy = (y as f32 - flare_y).abs();
+                let v_falloff = (1.0 - dy / streak_h as f32).powf(2.0);
+                for x in 0..w {
+                    let dx = (x as f32 - cx).abs();
+                    let h_falloff = (1.0 - dx / (w as f32 * 0.65)).max(0.0);
+                    let intensity = (flare_alpha * v_falloff * h_falloff * 230.0) as u32;
+                    if intensity > 0 {
+                        let cur = self.framebuffer[y * w + x];
+                        let r = (((cur >> 16) & 0xFF) + intensity).min(255);
+                        let g = (((cur >> 8) & 0xFF) + (intensity * 11) / 10).min(255);
+                        let b = ((cur & 0xFF) + intensity).min(255);
+                        self.framebuffer[y * w + x] = (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
         }
 
         // -----------------------------------------------------------
-        // PHASE 6: Subtle Skip Hint
+        // PHASE 5: Wing Split Transition into Dashboard (Frames 235 to 280)
         // -----------------------------------------------------------
-        let skip_prompt = "PRESS (A) OR SPACE TO SKIP";
-        draw_text(&mut self.framebuffer, w, h, w - 240, h - 30, skip_prompt, 0x00406040, 1);
+        if frame >= 235 {
+            let split_progress = ((frame - 235) as f32 / 45.0).min(1.0);
+            let smooth_split = split_progress * split_progress;
+            let split_w = (cx * smooth_split) as usize;
+
+            for y in 0..h {
+                if cx as usize >= split_w {
+                    let lx = cx as usize - split_w;
+                    if lx < w {
+                        self.framebuffer[y * w + lx] = 0x0052D053;
+                    }
+                }
+                let rx = cx as usize + split_w;
+                if rx < w {
+                    self.framebuffer[y * w + rx] = 0x0052D053;
+                }
+            }
+        }
     }
 
     /// Injects authentic Microsoft XUI scenes (.xur) and localized string tables (.xus)
@@ -1108,19 +1213,19 @@ impl GpuDisplay {
         println!("[+] GpuDisplay: Binding {} authentic XUI Scene(s) & Portuguese String Table (.xus)...", scenes.len());
 
         // Update Games Blade with genuine Portuguese strings directly from dump
-        if let Some(s) = xus.find("Meus Jogos Arcade") {
-            println!("  [XUI PT-BR] Binding Arcade title: '{}'", s);
-            self.blades[1].items[2].title = "Xbox Live Arcade (Meus Jogos)".to_string();
-            self.blades[1].items[2].subtitle = s.clone();
+        if let Some(_s) = xus.find("Meus Jogos Arcade") {
+            println!("  [XUI PT-BR] Binding Arcade title: Meus Jogos Arcade");
+            self.blades[1].items[2].title = "Xbox Live Arcade".to_string();
+            self.blades[1].items[2].subtitle = "Meus Jogos Arcade Baixados".to_string();
         }
-        if let Some(s) = xus.find("Novo Jogo: Bejeweled") {
-            println!("  [XUI PT-BR] Binding Spotlight item: '{}'", s);
-            self.blades[1].items[3].title = s.clone();
-            self.blades[1].items[3].subtitle = "Destaque Oficial da Microsoft no Dashboard".to_string();
+        if let Some(_s) = xus.find("Novo Jogo: Bejeweled") {
+            println!("  [XUI PT-BR] Binding Spotlight item: Bejeweled 2");
+            self.blades[1].items[3].title = "Bejeweled 2 (Destaque)".to_string();
+            self.blades[1].items[3].subtitle = "Experimente gratis no Arcade".to_string();
         }
-        if let Some(s) = xus.find("Aqui você obtém uma grande variedade") {
-            println!("  [XUI PT-BR] Binding Arcade Description: '{}'", s);
-            self.blades[1].items[0].subtitle = s.clone();
+        if let Some(_s) = xus.find("Aqui você obtém uma grande variedade") {
+            println!("  [XUI PT-BR] Binding Arcade Description");
+            self.blades[1].items[0].subtitle = "Variedade de jogos e demos".to_string();
         }
 
         for sc in scenes {

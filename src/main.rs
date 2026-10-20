@@ -620,6 +620,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Load authentic Microsoft XUI Visual Scenes (.xur)
     let mut loaded_scenes = Vec::new();
     let xur_files = [
+        ("dashmain", "../extracted_xui/dashmain.xur"),
         ("BladeSkin", "../extracted_xui/BladeSkin.xur"),
         ("gamesSignedOut", "../extracted_xui/gamesSignedOut.xur"),
         ("mediaSignedOut", "../extracted_xui/mediaSignedOut.xur"),
@@ -897,6 +898,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = display.save_bmp("../bootanim_ribbons.bmp");
         } else if frame == 180 {
             let _ = display.save_bmp("../bootanim_sphere.bmp");
+        } else if frame == 290 {
+            let _ = display.save_bmp("../dash_framebuffer.bmp");
         }
 
         if frame % 180 == 0 {
