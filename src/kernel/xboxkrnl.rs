@@ -104,6 +104,24 @@ impl KernelDispatcher {
         get_xam_name(ordinal)
     }
 
+    /// Returns the currently active frontbuffer address for presentation,
+    /// alternating between frontbuffer and backbuffer across VdSwap cycles.
+    pub fn active_frontbuffer(&self) -> u64 {
+        if self.last_swap_frontbuffer != 0 {
+            self.last_swap_frontbuffer
+        } else if self.frontbuffer_ptr != 0 && self.backbuffer_ptr != 0 {
+            if self.swap_count % 2 == 0 {
+                self.frontbuffer_ptr
+            } else {
+                self.backbuffer_ptr
+            }
+        } else if self.frontbuffer_ptr != 0 {
+            self.frontbuffer_ptr
+        } else {
+            0x7000_0000
+        }
+    }
+
     /// Dispatches a kernel/XAM syscall by ordinal and performs memory reads/writes
     pub fn dispatch(
         &mut self,
@@ -627,6 +645,16 @@ impl KernelDispatcher {
 
             // 0x00EF: NtQueryVolumeInformationFile
             0x00EF => 0,
+
+            // 0x00F3: NtReleaseSemaphore (hSemaphore, releaseCount, pPreviousCount)
+            0x00F3 => {
+                if let Some(&p_prev) = args.get(2) {
+                    if p_prev != 0 {
+                        let _ = bus.write_u32(p_prev, 1);
+                    }
+                }
+                0 // STATUS_SUCCESS
+            }
 
             // 0x00F4: NtRemoveIoCompletion
             0x00F4 => 0x0000_0102, // STATUS_TIMEOUT

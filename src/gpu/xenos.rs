@@ -33,6 +33,69 @@ impl Vertex {
     }
 }
 
+/// Decoded ATI Xenos Texture Resource Descriptor (SQ_TEX_RESOURCE_WORD0..5)
+#[derive(Debug, Clone, Default)]
+pub struct XenosTextureResource {
+    pub words: [u32; 6],
+}
+
+impl XenosTextureResource {
+    pub fn is_valid(&self) -> bool {
+        self.base_address() != 0 && self.width() > 0 && self.height() > 0
+    }
+
+    /// Extracts physical memory base address from the 6-dword descriptor
+    pub fn base_address(&self) -> u64 {
+        let raw = if self.words[2] != 0 && (self.words[2] & 0x1000_0000) != 0 {
+            self.words[2]
+        } else if (self.words[1] & 0x1000_0000) != 0 || (self.words[1] & 0x9000_0000) != 0 {
+            self.words[1]
+        } else if self.words[0] != 0 && (self.words[0] & 0x1000_0000) != 0 {
+            self.words[0]
+        } else {
+            self.words[1] & 0x7FFF_FFFF
+        };
+        (raw & 0x1FFF_FFFF) as u64
+    }
+
+    /// Extracts texture width from descriptor (words[2] bits [12:0] + 1)
+    pub fn width(&self) -> usize {
+        let w = (self.words[2] & 0x1FFF) as usize + 1;
+        if w > 4096 { 1280 } else { w }
+    }
+
+    /// Extracts texture height from descriptor (words[2] bits [25:13] + 1)
+    pub fn height(&self) -> usize {
+        let h = ((self.words[2] >> 13) & 0x1FFF) as usize + 1;
+        if h > 4096 { 720 } else { h }
+    }
+
+    /// Returns true if the texture format specifies 2D micro/macro tiling
+    pub fn is_tiled(&self) -> bool {
+        (self.words[3] & 0x8000_0000) != 0 || (self.words[0] & 0x0001_0000) != 0
+    }
+}
+
+/// Decoded ATI Xenos Texture Sampler Descriptor (SQ_TEX_SAMPLER_WORD0..7)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct XenosTextureSampler {
+    pub raw: u32,
+}
+
+impl XenosTextureSampler {
+    pub fn is_bilinear(&self) -> bool {
+        ((self.raw >> 8) & 0x03) != 0 || ((self.raw >> 10) & 0x03) != 0
+    }
+
+    pub fn clamp_x(&self) -> u32 {
+        self.raw & 0x07
+    }
+
+    pub fn clamp_y(&self) -> u32 {
+        (self.raw >> 3) & 0x07
+    }
+}
+
 /// ATI Xenos (Xbox 360) Command Processor and Graphics Engine
 pub struct XenosGpu {
     /// Context registers (e.g., RB_COLOR_INFO, PA_SC_WINDOW_OFFSET, etc.)
@@ -57,6 +120,10 @@ pub struct XenosGpu {
     /// Texture samplers (0..15)
     pub samplers: [Option<Texture>; 16],
     pub bound_texture_name: Option<String>,
+    /// Decoded Texture Resource Descriptors (SQ_TEX_RESOURCE_WORD0..5) for stages 0..15
+    pub tex_resources: [XenosTextureResource; 16],
+    /// Decoded Texture Sampler Descriptors (SQ_TEX_SAMPLER_WORD0..7) for stages 0..15
+    pub tex_samplers: [XenosTextureSampler; 16],
     /// VGT DMA Vertex Buffer Base in guest RAM
     pub vgt_dma_base: u64,
     pub vgt_dma_stride: usize,
@@ -101,6 +168,8 @@ impl XenosGpu {
             atlas: None,
             samplers: Default::default(),
             bound_texture_name: None,
+            tex_resources: Default::default(),
+            tex_samplers: Default::default(),
             vgt_dma_base: 0,
             vgt_dma_stride: 24,
             vgt_dma_count: 0,
@@ -198,18 +267,105 @@ impl XenosGpu {
         Ok(count)
     }
 
+    /// Dispatches a register write, updating state and decoding texture/sampler descriptors
+    pub fn write_register(&mut self, reg: u32, val: u32, bus: &MemoryBus) {
+        self.registers.insert(reg, val);
+
+        // Texture Resource Descriptor: 0x0A00..0x0A5F (6 DWORDs per sampler stage 0..15)
+        if (SQ_TEX_RESOURCE_BASE..SQ_TEX_RESOURCE_END).contains(&reg) {
+            let offset = (reg - SQ_TEX_RESOURCE_BASE) as usize;
+            let sampler_idx = offset / 6;
+            let word_idx = offset % 6;
+            if sampler_idx < 16 && word_idx < 6 {
+                self.tex_resources[sampler_idx].words[word_idx] = val;
+                self.update_sampler_from_resource(sampler_idx, bus);
+            }
+        }
+
+        // Texture Sampler Descriptor: 0x0D00..0x0D0F
+        if (SQ_TEX_SAMPLER_BASE..SQ_TEX_SAMPLER_END).contains(&reg) {
+            let sampler_idx = (reg - SQ_TEX_SAMPLER_BASE) as usize;
+            if sampler_idx < 16 {
+                self.tex_samplers[sampler_idx] = XenosTextureSampler { raw: val };
+            }
+        }
+
+        // Viewport and Geometry Context Registers
+        match reg {
+            PA_CL_VPORT_XSCALE => self.vport_xscale = f32::from_bits(val),
+            PA_CL_VPORT_YSCALE => self.vport_yscale = f32::from_bits(val),
+            PA_CL_VPORT_XOFFSET => self.vport_xoffset = f32::from_bits(val),
+            PA_CL_VPORT_YOFFSET => self.vport_yoffset = f32::from_bits(val),
+            VGT_DMA_BASE => self.vgt_dma_base = val as u64,
+            VGT_DMA_SIZE => self.vgt_dma_count = val as usize,
+            VGT_DMA_STRIDE => self.vgt_dma_stride = val as usize,
+            _ => {}
+        }
+    }
+
+    /// Dynamically constructs or updates a sampler stage from decoded hardware descriptors
+    pub fn update_sampler_from_resource(&mut self, sampler_idx: usize, bus: &MemoryBus) {
+        let res = &self.tex_resources[sampler_idx];
+        let base_addr = res.base_address();
+        let w = res.width();
+        let h = res.height();
+
+        if base_addr > 0 && w > 0 && h > 0 && w <= 4096 && h <= 4096 {
+            let pixel_count = w * h;
+            let byte_count = pixel_count * 4;
+            if byte_count <= 16 * 1024 * 1024 {
+                let mut pixels = Vec::with_capacity(pixel_count);
+                let mut non_zero = 0;
+                for i in 0..pixel_count {
+                    let p_addr = base_addr + (i * 4) as u64;
+                    if let Ok(pix) = bus.read_u32(p_addr) {
+                        pixels.push(pix);
+                        if pix != 0 {
+                            non_zero += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                if non_zero > 0 && pixels.len() == pixel_count {
+                    self.samplers[sampler_idx] = Some(Texture::new(w, h, pixels));
+                    println!("  [XENOS GPU] Sampler {}: Decoded dynamic texture ({}x{}, Base: 0x{:08X}, non-zero: {})",
+                        sampler_idx, w, h, base_addr, non_zero
+                    );
+                    return;
+                }
+            }
+        }
+
+        // Fallback to authentic Dashboard asset if not yet populated in guest memory
+        if self.samplers[sampler_idx].is_none() {
+            if let Some(ref atlas) = self.atlas {
+                let default_name = match sampler_idx {
+                    0 => "xboxLogo",
+                    1 => "Pip_bg",
+                    2 => "guidebug_hd",
+                    3 => "aura_floor",
+                    _ => "xboxLogo",
+                };
+                if let Some(tex) = atlas.get(default_name) {
+                    self.samplers[sampler_idx] = Some(tex.clone());
+                }
+            }
+        }
+    }
+
     /// Dispatches execution of a single decoded PM4 packet
     pub fn execute_packet(&mut self, bus: &mut MemoryBus, packet: &Pm4Packet) -> Result<(), String> {
         match packet {
             Pm4Packet::Type0 { base_reg, values, .. } => {
                 for (i, &val) in values.iter().enumerate() {
                     let reg = base_reg + i as u32;
-                    self.registers.insert(reg, val);
+                    self.write_register(reg, val, bus);
                 }
             }
             Pm4Packet::Type1 { reg1, val1, reg2, val2 } => {
-                self.registers.insert(*reg1, *val1);
-                self.registers.insert(*reg2, *val2);
+                self.write_register(*reg1, *val1, bus);
+                self.write_register(*reg2, *val2, bus);
             }
             Pm4Packet::Type2Nop { .. } => {
                 // No-op
@@ -233,13 +389,9 @@ impl XenosGpu {
                         if data.len() >= 2 {
                             let reg = data[0] + 0x2000;
                             let val = data[1];
-                            self.registers.insert(reg, val);
+                            self.write_register(reg, val, bus);
 
                             match reg {
-                                PA_CL_VPORT_XSCALE => self.vport_xscale = f32::from_bits(val),
-                                PA_CL_VPORT_YSCALE => self.vport_yscale = f32::from_bits(val),
-                                PA_CL_VPORT_XOFFSET => self.vport_xoffset = f32::from_bits(val),
-                                PA_CL_VPORT_YOFFSET => self.vport_yoffset = f32::from_bits(val),
                                 SQ_VS_PROGRAM_ADDR => {
                                     let addr = val as u64;
                                     if addr > 0x1000 {
@@ -267,15 +419,6 @@ impl XenosGpu {
                                         ps.raw_bytecode = code;
                                         self.current_ps = Some(ps);
                                     }
-                                }
-                                VGT_DMA_BASE => {
-                                    self.vgt_dma_base = val as u64;
-                                }
-                                VGT_DMA_SIZE => {
-                                    self.vgt_dma_count = val as usize;
-                                }
-                                VGT_DMA_STRIDE => {
-                                    self.vgt_dma_stride = val as usize;
                                 }
                                 _ => {}
                             }

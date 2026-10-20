@@ -1069,6 +1069,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // Retain only active or continuous threads to prevent vector bloat
+        guest_threads.retain(|t| t.active || t.continuous);
+
         // 4. Synchronize & Execute PM4 packets in Primary Ring Buffer with Xenos GPU CP
         ring_buffer.sync_wptr_from_memory(&bus);
         let executed_pkts = xenos_gpu
@@ -1076,14 +1079,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(0);
 
         // 5. Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
-        let frontbuffer = if kernel.frontbuffer_ptr != 0 {
-            kernel.frontbuffer_ptr
-        } else if kernel.last_swap_frontbuffer != 0 {
-            kernel.last_swap_frontbuffer
-        } else {
-            0x7000_0000
-        };
+        let frontbuffer = kernel.active_frontbuffer();
         kernel.dispatch("xboxkrnl.exe", 0x025B, &[frontbuffer, frame], &mut bus);
+
+        // Disparar VBlank Graphics Interrupt Callback se configurado pelo guest (#0x01D5)
+        if kernel.graphics_interrupt_callback != 0 && frame % 2 == 0 {
+            let cb_routine = (kernel.graphics_interrupt_callback & 0xFFFF_FFFF) as u64;
+            let cb_stack = stack_top - 0x1E0000;
+            let _ = bus.write_u32(cb_stack - 8, 0x80001000);
+            let _ = bus.write_u32(cb_stack + 0x100 - 8, 0x80001000);
+            let mut cb_cpu = Cpu::new(cb_routine);
+            cb_cpu.regs.gpr[1] = cb_stack;
+            cb_cpu.regs.gpr[3] = kernel.graphics_interrupt_context;
+            cb_cpu.regs.gpr[4] = 1; // 1 = VBLANK interrupt reason
+            cb_cpu.regs.gpr[5] = frame;
+            cb_cpu.regs.gpr[13] = kpcr_base;
+            cb_cpu.regs.lr = 0x80001000;
+            guest_threads.push(GuestThread {
+                name: format!("VBlank Interrupt Callback #{}", frame),
+                cpu: cb_cpu,
+                entry_pc: cb_routine,
+                active: true,
+                total_steps: 0,
+                continuous: false,
+            });
+        }
 
         // 6. Direct Presentation: Boot Animation -> Direct ATI Xenos GPU Framebuffer
         display.present_guest_memory_framebuffer(&bus, frontbuffer, &xenos_gpu.color_buffer);

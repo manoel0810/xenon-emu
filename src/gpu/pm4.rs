@@ -40,6 +40,10 @@ pub const VGT_DMA_BASE: u32 = 0x2192;
 pub const VGT_DMA_SIZE: u32 = 0x2193;
 pub const VGT_DMA_STRIDE: u32 = 0x2194;
 pub const PA_SU_SC_MODE_CNTL: u32 = 0x2205;
+pub const SQ_TEX_RESOURCE_BASE: u32 = 0x0A00;
+pub const SQ_TEX_RESOURCE_END: u32 = 0x0A60;
+pub const SQ_TEX_SAMPLER_BASE: u32 = 0x0D00;
+pub const SQ_TEX_SAMPLER_END: u32 = 0x0D10;
 
 /// High-level representation of a decoded ATI Xenos PM4 Packet
 #[derive(Debug, Clone)]
