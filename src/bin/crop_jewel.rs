@@ -1,5 +1,3 @@
-use std::path::Path;
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let img = image::open("../extracted_xui/named/xboxLogo.png")?;
     // The sphere is located around (75, 0) with width 150, height 126

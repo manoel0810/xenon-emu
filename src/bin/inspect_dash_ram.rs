@@ -104,32 +104,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Xenon-Emu: Mapeando Subsistema de Video da Dashboard  ");
     println!("========================================================");
 
-    // 1. Check title ID of current dashboard
-    println!("\n[*] 1. Inspecionando Titulo e ID de Execucao...");
-    // Let's query execution info or title
-    if let Ok(lines) = xbdm.send_command("modsections name=\"xam.xex\"") {
-        println!("    -> Secoes do xam.xex encontradas (Total: {})", lines.len());
-        for l in lines.iter().take(4) {
-            println!("       {}", l);
-        }
-    }
-
-    // 2. Query video display mode (VdGetCurrentDisplayMode)
-    // We can inspect physical memory regions commonly used by Xenos RingBuffer (0xC0000000 - 0xCFFFFFFF physical GPU aperture)
-    println!("\n[*] 2. Inspecionando Memoria de Video Primaria da GPU (0xC0000000):");
-    match xbdm.read_memory(0xC0000000, 64) {
+    // 1. Inspect .edata of dash.xex at 0x92A7D000
+    println!("\n[*] 1. Lendo .edata de dash.xex (0x92A7D000):");
+    match xbdm.read_memory(0x92A7D000, 128) {
         Ok(bytes) => {
-            println!("    -> Leitura direta da Memoria Fisica de Video da GPU permitida!");
-            print_hex(&bytes, 0xC0000000);
+            println!("    -> Export directory header de dash.xex:");
+            print_hex(&bytes, 0x92A7D000);
         }
-        Err(e) => println!("    -> Acesso GPU: {}", e),
+        Err(e) => println!("    [!] Erro .edata: {}", e),
     }
 
-    // 3. Inspect XAM exports table at 0x815F0000
-    println!("\n[*] 3. Lendo Tabela de Exportacoes do XAM (0x815F0000):");
-    match xbdm.read_memory(0x815F0000, 64) {
-        Ok(bytes) => print_hex(&bytes, 0x815F0000),
-        Err(e) => println!("    [!] Erro: {}", e),
+    // 2. Query all threads to locate dash.xex threads (0x92000000..0x93000000)
+    println!("\n[*] 2. Varrendo todas as threads para encontrar as de 'dash.xex' (0x92000000 - 0x93000000):");
+    let mut dash_threads = Vec::new();
+    if let Ok(lines) = xbdm.send_command("threads") {
+        for l in lines {
+            if let Ok(tid_dec) = l.parse::<i32>() {
+                let tid_hex = format!("0x{:08X}", tid_dec as u32);
+                if let Ok(info_lines) = xbdm.send_command(&format!("threadinfo thread={}", tid_hex)) {
+                    for info in info_lines {
+                        if info.contains("start=0x92") || info.contains("start=0x93") {
+                            println!("    -> ENCONTRADA THREAD DA DASHBOARD: TID={} info={}", tid_hex, info);
+                            dash_threads.push((tid_hex.clone(), info));
+                        } else if info.contains("start=") {
+                            // Check if proc matches
+                            if let Some(pos) = info.find("start=0x") {
+                                let addr_str = &info[pos + 8..pos + 16];
+                                if addr_str.starts_with("92") {
+                                    println!("    -> DASH THREAD: TID={} | {}", tid_hex, info);
+                                    dash_threads.push((tid_hex.clone(), info));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("[+] Total de threads pertencentes a dash.xex: {}", dash_threads.len());
+    for (t_hex, info) in &dash_threads {
+        println!("    [DASH THREAD {}] {}", t_hex, info);
+        if let Ok(ctx) = xbdm.send_command(&format!("getcontext thread={} control", t_hex)) {
+            println!("       Context: {:?}", ctx);
+        }
+    }
+
+    // 3. Query full integer registers (GPR0..GPR31) of the top dash threads
+    for (t_hex, _info) in dash_threads.iter().take(4) {
+        println!("\n[*] Registradores Inteiros (GPRs) da Thread {}:", t_hex);
+        if let Ok(lines) = xbdm.send_command(&format!("getcontext thread={} int", t_hex)) {
+            for l in &lines {
+                println!("    {}", l);
+            }
+        }
     }
 
     Ok(())

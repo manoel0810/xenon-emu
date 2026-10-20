@@ -7,6 +7,24 @@ pub struct KernelFunction {
     pub description: &'static str,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingThread {
+    pub tid: u32,
+    pub handle: u32,
+    pub start_routine: u64,
+    pub start_context: u64,
+    pub stack_size: u32,
+    pub creation_flags: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct KernelEvent {
+    pub handle: u32,
+    pub event_type: u32, // Notification (0) or Synchronization (1)
+    pub signaled: bool,
+    pub guest_ptr: u64,
+}
+
 pub struct KernelDispatcher {
     pub next_thread_id: u32,
     pub next_handle: u32,
@@ -23,6 +41,9 @@ pub struct KernelDispatcher {
     pub last_swap_frontbuffer: u64,
     pub gamepad_state: crate::kernel::input::XInputGamepad,
     pub gamepad_packet_number: u32,
+    pub pending_threads: Vec<PendingThread>,
+    pub events: HashMap<u32, KernelEvent>,
+    pub event_by_ptr: HashMap<u64, u32>,
 }
 
 impl KernelDispatcher {
@@ -43,6 +64,9 @@ impl KernelDispatcher {
             last_swap_frontbuffer: 0x7000_0000,
             gamepad_state: crate::kernel::input::XInputGamepad::default(),
             gamepad_packet_number: 1,
+            pending_threads: Vec::new(),
+            events: HashMap::new(),
+            event_by_ptr: HashMap::new(),
         }
     }
 
@@ -145,7 +169,27 @@ impl KernelDispatcher {
                         let _ = bus.write_u32(p_tid, tid);
                     }
                 }
-                println!("    -> ExCreateThread: Created thread TID=0x{:X}, Handle=0x{:X}", tid, h_thread);
+
+                let start_routine = args.get(4).copied().unwrap_or(0);
+                let start_context = args.get(5).copied().unwrap_or(0);
+                let stack_size = args.get(1).copied().unwrap_or(0x10000).max(0x10000) as u32;
+                let creation_flags = args.get(6).copied().unwrap_or(0) as u32;
+
+                println!("    -> ExCreateThread: Created thread TID=0x{:X}, Handle=0x{:X}, Entry=0x{:08X}, Param=0x{:08X}, Stack=0x{:X}",
+                    tid, h_thread, start_routine, start_context, stack_size
+                );
+
+                if start_routine != 0 {
+                    self.pending_threads.push(PendingThread {
+                        tid,
+                        handle: h_thread,
+                        start_routine,
+                        start_context,
+                        stack_size,
+                        creation_flags,
+                    });
+                }
+
                 0 // STATUS_SUCCESS
             }
 
@@ -203,11 +247,34 @@ impl KernelDispatcher {
             0x0070 => {
                 if let Some(&p_event) = args.first() {
                     if p_event != 0 {
-                        for off in (0..16).step_by(4) {
-                            let _ = bus.write_u32(p_event + off, 0);
-                        }
-                        let initial = args.get(2).copied().unwrap_or(0);
-                        let _ = bus.write_u8(p_event + 4, initial as u8);
+                        let event_type = args.get(1).copied().unwrap_or(0) as u32;
+                        let initial = args.get(2).copied().unwrap_or(0) as u32;
+
+                        // KEVENT memory layout:
+                        // 0x00: Header.Type (0 = Notification, 1 = Synchronization)
+                        // 0x01: Header.Absolute
+                        // 0x02: Header.Size (4 dwords = 16 bytes)
+                        // 0x03: Header.Inserted
+                        // 0x04: Header.SignalState
+                        // 0x08: WaitListHead.Flink
+                        // 0x0C: WaitListHead.Blink
+                        let _ = bus.write_u8(p_event, event_type as u8);
+                        let _ = bus.write_u8(p_event + 1, 0);
+                        let _ = bus.write_u8(p_event + 2, 4);
+                        let _ = bus.write_u8(p_event + 3, 0);
+                        let _ = bus.write_u32(p_event + 4, initial);
+                        let _ = bus.write_u32(p_event + 8, (p_event + 8) as u32);
+                        let _ = bus.write_u32(p_event + 12, (p_event + 8) as u32);
+
+                        let h = self.next_handle;
+                        self.next_handle += 4;
+                        self.events.insert(h, KernelEvent {
+                            handle: h,
+                            event_type,
+                            signaled: initial != 0,
+                            guest_ptr: p_event,
+                        });
+                        self.event_by_ptr.insert(p_event, h);
                     }
                 }
                 0
@@ -230,6 +297,25 @@ impl KernelDispatcher {
             // 0x007D: KeLeaveCriticalRegion
             0x007D => 0,
 
+            // 0x007F: KePulseEvent (pEvent, increment, wait)
+            0x007F => {
+                let mut prev = 0u64;
+                if let Some(&p_event) = args.first() {
+                    if p_event != 0 {
+                        if let Ok(st) = bus.read_u32(p_event + 4) {
+                            prev = st as u64;
+                        }
+                        let _ = bus.write_u32(p_event + 4, 0);
+                        if let Some(&h) = self.event_by_ptr.get(&p_event) {
+                            if let Some(ev) = self.events.get_mut(&h) {
+                                ev.signaled = false;
+                            }
+                        }
+                    }
+                }
+                prev
+            }
+
             // 0x0081: KeQueryBasePriorityThread
             0x0081 => 8, // Normal thread priority
 
@@ -244,12 +330,21 @@ impl KernelDispatcher {
 
             // 0x008F: KeResetEvent
             0x008F => {
+                let mut prev = 0u64;
                 if let Some(&p_event) = args.first() {
                     if p_event != 0 {
-                        let _ = bus.write_u8(p_event + 4, 0);
+                        if let Ok(st) = bus.read_u32(p_event + 4) {
+                            prev = st as u64;
+                        }
+                        let _ = bus.write_u32(p_event + 4, 0);
+                        if let Some(&h) = self.event_by_ptr.get(&p_event) {
+                            if let Some(ev) = self.events.get_mut(&h) {
+                                ev.signaled = false;
+                            }
+                        }
                     }
                 }
-                0
+                prev
             }
 
             // 0x0092: KeResumeThread
@@ -263,16 +358,55 @@ impl KernelDispatcher {
 
             // 0x009D: KeSetEvent
             0x009D => {
+                let mut prev = 0u64;
                 if let Some(&p_event) = args.first() {
                     if p_event != 0 {
-                        let _ = bus.write_u8(p_event + 4, 1);
+                        if let Ok(st) = bus.read_u32(p_event + 4) {
+                            prev = st as u64;
+                        }
+                        let _ = bus.write_u32(p_event + 4, 1);
+                        if let Some(&h) = self.event_by_ptr.get(&p_event) {
+                            if let Some(ev) = self.events.get_mut(&h) {
+                                ev.signaled = true;
+                            }
+                        }
                     }
                 }
-                0
+                prev
+            }
+
+            // 0x00AF: KeWaitForMultipleObjects
+            0x00AF => {
+                let count = args.first().copied().unwrap_or(1) as usize;
+                let p_objects = args.get(1).copied().unwrap_or(0);
+                if p_objects != 0 {
+                    for i in 0..count.min(8) {
+                        if let Ok(p_obj) = bus.read_u32(p_objects + (i * 4) as u64) {
+                            if p_obj != 0 {
+                                if let Ok(typ) = bus.read_u8(p_obj as u64) {
+                                    if typ == 1 {
+                                        let _ = bus.write_u32(p_obj as u64 + 4, 0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                0 // STATUS_WAIT_0 / STATUS_SUCCESS
             }
 
             // 0x00B0: KeWaitForSingleObject
-            0x00B0 => 0, // STATUS_SUCCESS / WAIT_OBJECT_0
+            0x00B0 => {
+                if let Some(&p_obj) = args.first() {
+                    if p_obj != 0 {
+                        let is_sync = bus.read_u8(p_obj).unwrap_or(0) == 1;
+                        if is_sync {
+                            let _ = bus.write_u32(p_obj + 4, 0);
+                        }
+                    }
+                }
+                0 // STATUS_SUCCESS / WAIT_OBJECT_0
+            }
 
             // 0x00B1: KfAcquireSpinLock
             0x00B1 => 0,
@@ -333,6 +467,41 @@ impl KernelDispatcher {
                 0 // STATUS_SUCCESS
             }
 
+            // 0x00CE: NtClearEvent
+            0x00CE => {
+                if let Some(&h) = args.first() {
+                    let h32 = h as u32;
+                    if let Some(ev) = self.events.get_mut(&h32) {
+                        ev.signaled = false;
+                        if ev.guest_ptr != 0 {
+                            let _ = bus.write_u32(ev.guest_ptr + 4, 0);
+                        }
+                    }
+                }
+                0 // STATUS_SUCCESS
+            }
+
+            // 0x00D1: NtCreateEvent (pHandle, desiredAccess, pObjAttr, eventType, initialState)
+            0x00D1 => {
+                let h = self.next_handle;
+                self.next_handle += 4;
+                let event_type = args.get(3).copied().unwrap_or(0) as u32;
+                let initial = args.get(4).copied().unwrap_or(0) as u32;
+
+                if let Some(&p_handle) = args.first() {
+                    if p_handle != 0 {
+                        let _ = bus.write_u32(p_handle, h);
+                    }
+                }
+                self.events.insert(h, KernelEvent {
+                    handle: h,
+                    event_type,
+                    signaled: initial != 0,
+                    guest_ptr: 0,
+                });
+                0 // STATUS_SUCCESS
+            }
+
             // 0x00D3: NtCreateIoCompletion
             0x00D3 => {
                 let handle = self.next_handle;
@@ -348,6 +517,20 @@ impl KernelDispatcher {
             // 0x00DC: NtFreeVirtualMemory
             0x00DC => 0,
 
+            // 0x00E2: NtPulseEvent
+            0x00E2 => {
+                if let Some(&h) = args.first() {
+                    let h32 = h as u32;
+                    if let Some(ev) = self.events.get_mut(&h32) {
+                        ev.signaled = false;
+                        if ev.guest_ptr != 0 {
+                            let _ = bus.write_u32(ev.guest_ptr + 4, 0);
+                        }
+                    }
+                }
+                0
+            }
+
             // 0x00E8: NtQueryInformationFile
             0x00E8 => 0,
 
@@ -360,14 +543,67 @@ impl KernelDispatcher {
             // 0x00F4: NtRemoveIoCompletion
             0x00F4 => 0x0000_0102, // STATUS_TIMEOUT
 
-            // 0x00F6: NtSetEvent
-            0x00F6 => 0,
+            // 0x00F6: NtSetEvent (hEvent, pPrevState)
+            0x00F6 => {
+                if let Some(&h) = args.first() {
+                    let h32 = h as u32;
+                    let prev = if let Some(ev) = self.events.get_mut(&h32) {
+                        let p = ev.signaled;
+                        ev.signaled = true;
+                        if ev.guest_ptr != 0 {
+                            let _ = bus.write_u32(ev.guest_ptr + 4, 1);
+                        }
+                        if p { 1 } else { 0 }
+                    } else {
+                        0
+                    };
+                    if let Some(&p_prev) = args.get(1) {
+                        if p_prev != 0 {
+                            let _ = bus.write_u32(p_prev, prev);
+                        }
+                    }
+                }
+                0 // STATUS_SUCCESS
+            }
 
             // 0x00F8: NtSetIoCompletion
             0x00F8 => 0,
 
+            // 0x00FB: NtSignalAndWaitForSingleObjectEx
+            0x00FB => {
+                if let Some(&h1) = args.first() {
+                    let h32 = h1 as u32;
+                    if let Some(ev) = self.events.get_mut(&h32) {
+                        ev.signaled = true;
+                        if ev.guest_ptr != 0 {
+                            let _ = bus.write_u32(ev.guest_ptr + 4, 1);
+                        }
+                    }
+                }
+                0 // STATUS_SUCCESS
+            }
+
             // 0x00FC: NtSuspendThread
             0x00FC => 0,
+
+            // 0x00FD: NtWaitForSingleObjectEx
+            0x00FD => {
+                if let Some(&h) = args.first() {
+                    let h32 = h as u32;
+                    if let Some(ev) = self.events.get_mut(&h32) {
+                        if ev.event_type == 1 {
+                            ev.signaled = false;
+                            if ev.guest_ptr != 0 {
+                                let _ = bus.write_u32(ev.guest_ptr + 4, 0);
+                            }
+                        }
+                    }
+                }
+                0 // STATUS_SUCCESS
+            }
+
+            // 0x00FE: NtWaitForMultipleObjectsEx
+            0x00FE => 0, // STATUS_WAIT_0
 
             // 0x00FF: NtWriteFile
             0x00FF => 0,
@@ -538,8 +774,8 @@ impl KernelDispatcher {
             // 0x0197: XexGetProcedureAddress
             0x0197 => 0x9268_DD14,
 
-            // 0x0199: XexLoadImage | 0x01A1: XexUnloadImage | 0x01A2: XexUnloadImageAndExitThread
-            0x0199 | 0x01A1 | 0x01A2 => 0,
+            // 0x0199: XexLoadImage | 0x01A1: XexUnloadImage | 0x01A2: XexUnloadImageAndExitThread | 0x01A4: XexVerifyImageHeaders
+            0x0199 | 0x01A1 | 0x01A2 | 0x01A4 => 0,
 
             // 0x01A5: __C_specific_handler
             0x01A5 => 0,

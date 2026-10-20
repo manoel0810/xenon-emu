@@ -731,66 +731,131 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================
     println!("\n>>> [ETAPA 3] Genuine Dashboard Multi-Thread Interleaved Dispatcher <<<");
     struct GuestThread {
-        name: &'static str,
+        name: String,
         cpu: Cpu,
+        entry_pc: u64,
         active: bool,
         total_steps: u64,
+        continuous: bool,
     }
 
     let mut guest_threads = Vec::new();
 
-    // 1. Dashboard Worker & Content Thread @ 0x92107280
-    let stack_top6 = stack_top - 0xA0000;
-    bus.write_u32(stack_top6 - 8, 0x80001000)?;
-    bus.write_u32(stack_top6 + 0x320 - 8, 0x80001000)?;
+    // 1. Dashboard Main Controller / Event Pump (@ 0x921C9830 from live console)
+    let stack_top_ctrl = stack_top - 0xA0000;
+    bus.write_u32(stack_top_ctrl - 8, 0x80001000)?;
+    bus.write_u32(stack_top_ctrl + 0x100 - 8, 0x80001000)?;
+    let mut ctrl_cpu = Cpu::new(0x921C9830);
+    ctrl_cpu.regs.gpr[1] = stack_top_ctrl;
+    ctrl_cpu.regs.gpr[3] = 0;
+    ctrl_cpu.regs.gpr[4] = 0;
+    ctrl_cpu.regs.gpr[13] = kpcr_base;
+    ctrl_cpu.regs.lr = 0x80001000;
+    guest_threads.push(GuestThread {
+        name: "Main Controller & Event Pump".to_string(),
+        cpu: ctrl_cpu,
+        entry_pc: 0x921C9830,
+        active: true,
+        total_steps: 0,
+        continuous: true,
+    });
+
+    // 2. XUI Presentation & Scene Graph Thread (@ 0x9281FBC0 from live console)
+    let stack_top_xui = stack_top - 0xC0000;
+    bus.write_u32(stack_top_xui - 8, 0x80001000)?;
+    bus.write_u32(stack_top_xui + 0x100 - 8, 0x80001000)?;
+    let mut xui_cpu = Cpu::new(0x9281FBC0);
+    xui_cpu.regs.gpr[1] = stack_top_xui;
+    xui_cpu.regs.gpr[3] = 0;
+    xui_cpu.regs.gpr[4] = 0;
+    xui_cpu.regs.gpr[13] = kpcr_base;
+    xui_cpu.regs.lr = 0x80001000;
+    guest_threads.push(GuestThread {
+        name: "XUI Presentation Engine".to_string(),
+        cpu: xui_cpu,
+        entry_pc: 0x9281FBC0,
+        active: true,
+        total_steps: 0,
+        continuous: true,
+    });
+
+    // 3. Direct3D 9 / GPU Driver Loop (@ 0x92185BC0 from live console)
+    let stack_top_gpu = stack_top - 0xE0000;
+    bus.write_u32(stack_top_gpu - 8, 0x80001000)?;
+    bus.write_u32(stack_top_gpu + 0x100 - 8, 0x80001000)?;
+    let mut gpu_cpu = Cpu::new(0x92185BC0);
+    gpu_cpu.regs.gpr[1] = stack_top_gpu;
+    gpu_cpu.regs.gpr[3] = 0;
+    gpu_cpu.regs.gpr[4] = 0;
+    gpu_cpu.regs.gpr[13] = kpcr_base;
+    gpu_cpu.regs.lr = 0x80001000;
+    guest_threads.push(GuestThread {
+        name: "Direct3D 9 GPU Driver".to_string(),
+        cpu: gpu_cpu,
+        entry_pc: 0x92185BC0,
+        active: true,
+        total_steps: 0,
+        continuous: true,
+    });
+
+    // 4. Dashboard State Machine Thread (@ 0x92261CE8 from live console)
+    let stack_top_sm = stack_top - 0x100000;
+    bus.write_u32(stack_top_sm - 8, 0x80001000)?;
+    bus.write_u32(stack_top_sm + 0x100 - 8, 0x80001000)?;
+    let mut sm_cpu = Cpu::new(0x92261CE8);
+    sm_cpu.regs.gpr[1] = stack_top_sm;
+    sm_cpu.regs.gpr[3] = 0;
+    sm_cpu.regs.gpr[4] = 0;
+    sm_cpu.regs.gpr[13] = kpcr_base;
+    sm_cpu.regs.lr = 0x80001000;
+    guest_threads.push(GuestThread {
+        name: "Dashboard State Machine".to_string(),
+        cpu: sm_cpu,
+        entry_pc: 0x92261CE8,
+        active: true,
+        total_steps: 0,
+        continuous: true,
+    });
+
+    // 5. Background Resource & Stream Worker (@ 0x92267C58 from live console)
+    let stack_top_res = stack_top - 0x120000;
+    bus.write_u32(stack_top_res - 8, 0x80001000)?;
+    bus.write_u32(stack_top_res + 0x100 - 8, 0x80001000)?;
+    let mut res_cpu = Cpu::new(0x92267C58);
+    res_cpu.regs.gpr[1] = stack_top_res;
+    res_cpu.regs.gpr[3] = 0;
+    res_cpu.regs.gpr[4] = 0;
+    res_cpu.regs.gpr[13] = kpcr_base;
+    res_cpu.regs.lr = 0x80001000;
+    guest_threads.push(GuestThread {
+        name: "Resource & Stream Worker".to_string(),
+        cpu: res_cpu,
+        entry_pc: 0x92267C58,
+        active: true,
+        total_steps: 0,
+        continuous: true,
+    });
+
+    // 6. Content & Tile Initializer Worker (@ 0x92107280)
+    let stack_top_worker = stack_top - 0x140000;
+    bus.write_u32(stack_top_worker - 8, 0x80001000)?;
+    bus.write_u32(stack_top_worker + 0x320 - 8, 0x80001000)?;
     let mut worker_cpu = Cpu::new(0x92107280);
-    worker_cpu.regs.gpr[1] = stack_top6;
+    worker_cpu.regs.gpr[1] = stack_top_worker;
     worker_cpu.regs.gpr[3] = 0;
     worker_cpu.regs.gpr[4] = 0;
     worker_cpu.regs.gpr[13] = kpcr_base;
     worker_cpu.regs.lr = 0x80001000;
     guest_threads.push(GuestThread {
-        name: "Worker & Content Thread",
+        name: "Content & Tile Initializer".to_string(),
         cpu: worker_cpu,
+        entry_pc: 0x92107280,
         active: true,
         total_steps: 0,
+        continuous: false,
     });
 
-    // 2. Dashboard UI / State Machine Thread @ 0x921088A0
-    let stack_top_ui = stack_top - 0xC0000;
-    bus.write_u32(stack_top_ui - 8, 0x80001000)?;
-    bus.write_u32(stack_top_ui + 0x80 - 8, 0x80001000)?;
-    let mut ui_cpu = Cpu::new(0x921088A0);
-    ui_cpu.regs.gpr[1] = stack_top_ui;
-    ui_cpu.regs.gpr[3] = 0;
-    ui_cpu.regs.gpr[4] = 1;
-    ui_cpu.regs.gpr[13] = kpcr_base;
-    ui_cpu.regs.lr = 0x80001000;
-    guest_threads.push(GuestThread {
-        name: "UI & State Thread",
-        cpu: ui_cpu,
-        active: true,
-        total_steps: 0,
-    });
-
-    // 3. Graphics & Hardware Engine Thread @ 0x9210EA48
-    let stack_top_eng = stack_top - 0xE0000;
-    bus.write_u32(stack_top_eng - 8, 0x80001000)?;
-    bus.write_u32(stack_top_eng + 0x80 - 8, 0x80001000)?;
-    let mut eng_cpu = Cpu::new(0x9210EA48);
-    eng_cpu.regs.gpr[1] = stack_top_eng;
-    eng_cpu.regs.gpr[3] = 0;
-    eng_cpu.regs.gpr[4] = 0;
-    eng_cpu.regs.gpr[13] = kpcr_base;
-    eng_cpu.regs.lr = 0x80001000;
-    guest_threads.push(GuestThread {
-        name: "Engine Monitor Thread",
-        cpu: eng_cpu,
-        active: true,
-        total_steps: 0,
-    });
-
-    println!("[+] Registered {} genuine Dashboard threads into 60 FPS guest scheduler:", guest_threads.len());
+    println!("[+] Registered {} authentic Dashboard threads into 60 FPS guest scheduler:", guest_threads.len());
     for t in &guest_threads {
         println!("  - Thread '{}' -> Entry PC: 0x{:08X}, SP: 0x{:08X}", t.name, t.cpu.regs.pc, t.cpu.regs.gpr[1]);
     }
@@ -823,11 +888,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frame += 1;
         display.handle_input();
 
-        // 1. Feed live unified gamepad state (USB controller or keyboard) into HLE Kernel
+        // 1. Process any pending dynamic thread creations from ExCreateThread
+        while let Some(pending) = kernel.pending_threads.pop() {
+            let thread_stack = stack_top - 0x160000 - (guest_threads.len() as u64 * 0x20000);
+            let _ = bus.write_u32(thread_stack - 8, 0x80001000);
+            let _ = bus.write_u32(thread_stack + 0x100 - 8, 0x80001000);
+            let mut thread_cpu = Cpu::new(pending.start_routine);
+            thread_cpu.regs.gpr[1] = thread_stack;
+            thread_cpu.regs.gpr[3] = pending.start_context;
+            thread_cpu.regs.gpr[13] = kpcr_base;
+            thread_cpu.regs.lr = 0x80001000;
+            println!("  [SCHEDULER] Spawning dynamic guest thread TID=0x{:X} (@0x{:08X})",
+                pending.tid, pending.start_routine
+            );
+            guest_threads.push(GuestThread {
+                name: format!("Dynamic Thread 0x{:X}", pending.tid),
+                cpu: thread_cpu,
+                entry_pc: pending.start_routine,
+                active: true,
+                total_steps: 0,
+                continuous: false,
+            });
+        }
+
+        // 2. Feed live unified gamepad state (USB controller or keyboard) into HLE Kernel
         let gp_state = display.get_current_gamepad_state();
         kernel.update_gamepad(gp_state);
 
-        // 2. Interleave continuous guest execution of genuine dashboard threads
+        // 3. Interleave continuous guest execution of genuine dashboard threads
         for thread in &mut guest_threads {
             if !thread.active {
                 continue;
@@ -846,7 +934,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
                                     let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x002B && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
-                                        || (*ordinal == 0x00B0 && lib.eq_ignore_ascii_case("xboxkrnl.exe"));
+                                        || (*ordinal == 0x00B0 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
+                                        || (*ordinal == 0x00AF && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
+                                        || (*ordinal == 0x00FD && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
+                                        || (*ordinal == 0x00FE && lib.eq_ignore_ascii_case("xboxkrnl.exe"));
 
                                     let args = [
                                         thread.cpu.regs.gpr[3], thread.cpu.regs.gpr[4], thread.cpu.regs.gpr[5],
@@ -857,8 +948,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     thread.cpu.regs.pc = thread.cpu.regs.lr;
 
                                     if is_term {
-                                        thread.active = false;
-                                        break;
+                                        if thread.continuous {
+                                            thread.cpu.regs.pc = thread.entry_pc;
+                                            thread.cpu.regs.lr = 0x80001000;
+                                            break;
+                                        } else {
+                                            thread.active = false;
+                                            break;
+                                        }
                                     }
                                     if is_yield {
                                         // Yield timeslice to next thread or frame
@@ -874,7 +971,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
                             Err(_) => {
-                                thread.active = false;
+                                if thread.continuous {
+                                    thread.cpu.regs.pc = thread.entry_pc;
+                                    thread.cpu.regs.lr = 0x80001000;
+                                } else {
+                                    thread.active = false;
+                                }
                                 break;
                             }
                         }
@@ -887,10 +989,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // 3. Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
+        // 4. Execute pending PM4 packets in the Primary Ring Buffer with Xenos GPU CP
+        if let Ok(executed) = xenos_gpu.execute_ring(&mut bus, &mut ring_buffer) {
+            if executed > 0 && display.mode == gpu::DisplayMode::Dashboard {
+                for (dst, &src) in display.framebuffer.iter_mut().zip(&xenos_gpu.color_buffer) {
+                    if src != 0 {
+                        *dst = src;
+                    }
+                }
+            }
+        }
+
+        // 5. Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
         kernel.dispatch("xboxkrnl.exe", 0x025B, &[0x7000_0000, frame], &mut bus);
 
-        // 4. Render and present the display frame
+        // 6. Render and present the display frame
         display.render_blades_dashboard("FFFE07D1", "2.0.4532.0");
         display.update()?;
 

@@ -11,8 +11,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let page_spare = 16;
     let page_raw = page_data + page_spare; // 528
     let pages_per_block = 32;
-    let block_raw = pages_per_block * page_raw; // 16896 = 0x4200
-    let block_data = pages_per_block * page_data; // 16384 = 0x4000
+    let _block_raw = pages_per_block * page_raw; // 16896 = 0x4200
+    let _block_data = pages_per_block * page_data; // 16384 = 0x4000
 
     // Remove spare bytes from entire NAND to get pure data stream
     println!("[*] Stripping ECC spare data (512/16)...");

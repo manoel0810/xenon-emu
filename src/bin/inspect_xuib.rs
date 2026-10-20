@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 let start = cur + 8;
                 let end = (start + size).min(xuib.len());
-                let cdata = &xuib[start..end];
+                let _cdata = &xuib[start..end];
 
         // Search for string table start (00 09 00 58 00 75 00 69)
         let pattern = [0x00, 0x09, 0x00, 0x58, 0x00, 0x75, 0x00, 0x69];

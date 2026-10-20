@@ -512,5 +512,143 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("[+] Phase 6 completed. Total instructions executed: {}", phase6_steps);
 
+    // ==========================================================
+    // PHASE 7: Execute Authentic Dashboard Controller Thread (0x921C9830)
+    // ==========================================================
+    println!("\n[*] Executing Authentic Dashboard Controller Thread from Live Console (0x921C9830)...");
+    let mut ctrl_cpu = Cpu::new(0x921C9830);
+    let stack_top7 = stack_top - 0xC0000;
+    ctrl_cpu.regs.gpr[1] = stack_top7;
+    ctrl_cpu.regs.gpr[3] = 0;
+    ctrl_cpu.regs.gpr[4] = 0;
+    ctrl_cpu.regs.gpr[13] = kpcr_base;
+    ctrl_cpu.regs.lr = 0x80001000;
+    bus.write_u32(stack_top7 - 8, 0x80001000)?;
+    bus.write_u32(stack_top7 + 0x100 - 8, 0x80001000)?;
+
+    let mut phase7_steps = 0;
+    for step in 1..=1000 {
+        let pc = ctrl_cpu.regs.pc;
+        match bus.read_u32(pc) {
+            Ok(insn) => {
+                match ctrl_cpu.step(&mut bus) {
+                    Ok(StepResult::Ok) => {
+                        phase7_steps += 1;
+                        if step <= 40 || step % 50 == 0 {
+                            println!("  [DASH CTRL {:04}] PC: 0x{:08X} | Opcode: 0x{:08X} | SP: 0x{:08X}", step, pc, insn, ctrl_cpu.regs.gpr[1]);
+                        }
+                    }
+                    Ok(StepResult::Syscall { lev, pc: call_pc }) => {
+                        if let Some((lib, ord)) = thunk_map.get(&call_pc) {
+                            let name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                kernel.resolve_xboxkrnl(*ord).unwrap_or("Unknown")
+                            } else {
+                                kernel.resolve_xam(*ord).unwrap_or("Unknown")
+                            };
+                            println!("  [DASH CTRL SYSCALL #{:04}] lev={} -> {}!{} (#0x{:04X} / {})", step, lev, lib, name, ord, ord);
+                            let args = [
+                                ctrl_cpu.regs.gpr[3], ctrl_cpu.regs.gpr[4], ctrl_cpu.regs.gpr[5],
+                                ctrl_cpu.regs.gpr[6], ctrl_cpu.regs.gpr[7], ctrl_cpu.regs.gpr[8],
+                            ];
+                            let ret = kernel.dispatch(lib, *ord, &args, &mut bus);
+                            ctrl_cpu.regs.gpr[3] = ret;
+                            ctrl_cpu.regs.pc = ctrl_cpu.regs.lr;
+
+                            if *ord == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                println!("  -> ExTerminateThread called! Controller sequence completed!");
+                                break;
+                            }
+                        } else {
+                            println!("  [UNMAPPED SYSCALL] PC: 0x{:016X}", call_pc);
+                            break;
+                        }
+                    }
+                    Ok(StepResult::Halted) => {
+                        println!("  [HALTED] at PC: 0x{:016X}", pc);
+                        break;
+                    }
+                    Err(e) => {
+                        println!("  [TRAP] PC: 0x{:08X} Opcode: 0x{:08X}: {}", pc, insn, e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  [BUS ERROR] at 0x{:08X}: {}", pc, e);
+                break;
+            }
+        }
+    }
+    println!("[+] Phase 7 completed. Total instructions executed: {}", phase7_steps);
+
+    // ==========================================================
+    // PHASE 8: Execute Authentic XUI Scene Graph Thread (0x9281FBC0)
+    // ==========================================================
+    println!("\n[*] Executing Authentic XUI Scene Graph Thread from Live Console (0x9281FBC0)...");
+    let mut xui_cpu = Cpu::new(0x9281FBC0);
+    let stack_top8 = stack_top - 0xE0000;
+    xui_cpu.regs.gpr[1] = stack_top8;
+    xui_cpu.regs.gpr[3] = 0;
+    xui_cpu.regs.gpr[4] = 0;
+    xui_cpu.regs.gpr[13] = kpcr_base;
+    xui_cpu.regs.lr = 0x80001000;
+    bus.write_u32(stack_top8 - 8, 0x80001000)?;
+    bus.write_u32(stack_top8 + 0x100 - 8, 0x80001000)?;
+
+    let mut phase8_steps = 0;
+    for step in 1..=1000 {
+        let pc = xui_cpu.regs.pc;
+        match bus.read_u32(pc) {
+            Ok(insn) => {
+                match xui_cpu.step(&mut bus) {
+                    Ok(StepResult::Ok) => {
+                        phase8_steps += 1;
+                        if step <= 40 || step % 50 == 0 {
+                            println!("  [DASH XUI {:04}] PC: 0x{:08X} | Opcode: 0x{:08X} | SP: 0x{:08X}", step, pc, insn, xui_cpu.regs.gpr[1]);
+                        }
+                    }
+                    Ok(StepResult::Syscall { lev, pc: call_pc }) => {
+                        if let Some((lib, ord)) = thunk_map.get(&call_pc) {
+                            let name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                kernel.resolve_xboxkrnl(*ord).unwrap_or("Unknown")
+                            } else {
+                                kernel.resolve_xam(*ord).unwrap_or("Unknown")
+                            };
+                            println!("  [DASH XUI SYSCALL #{:04}] lev={} -> {}!{} (#0x{:04X} / {})", step, lev, lib, name, ord, ord);
+                            let args = [
+                                xui_cpu.regs.gpr[3], xui_cpu.regs.gpr[4], xui_cpu.regs.gpr[5],
+                                xui_cpu.regs.gpr[6], xui_cpu.regs.gpr[7], xui_cpu.regs.gpr[8],
+                            ];
+                            let ret = kernel.dispatch(lib, *ord, &args, &mut bus);
+                            xui_cpu.regs.gpr[3] = ret;
+                            xui_cpu.regs.pc = xui_cpu.regs.lr;
+
+                            if *ord == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                println!("  -> ExTerminateThread called! XUI sequence completed!");
+                                break;
+                            }
+                        } else {
+                            println!("  [UNMAPPED SYSCALL] PC: 0x{:016X}", call_pc);
+                            break;
+                        }
+                    }
+                    Ok(StepResult::Halted) => {
+                        println!("  [HALTED] at PC: 0x{:016X}", pc);
+                        break;
+                    }
+                    Err(e) => {
+                        println!("  [TRAP] PC: 0x{:08X} Opcode: 0x{:08X}: {}", pc, insn, e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  [BUS ERROR] at 0x{:08X}: {}", pc, e);
+                break;
+            }
+        }
+    }
+    println!("[+] Phase 8 completed. Total instructions executed: {}", phase8_steps);
+
     Ok(())
 }

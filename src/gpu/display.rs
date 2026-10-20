@@ -383,7 +383,7 @@ impl GpuDisplay {
     }
 
     /// Renders the legendary authentic Xbox 360 "Blades" Dashboard UI
-    pub fn render_blades_dashboard(&mut self, title_id: &str, dash_version: &str) {
+    pub fn render_blades_dashboard(&mut self, _title_id: &str, _dash_version: &str) {
         // If in startup sequence, render the Xbox 360 boot animation
         if self.mode == DisplayMode::BootAnimation {
             self.render_boot_animation();
