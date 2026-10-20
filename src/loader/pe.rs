@@ -132,39 +132,33 @@ impl PeImage {
                         }
                         None
                     };
-
-                    for i in 0..num_functions {
-                        let ord = base_ordinal + i;
-                        let fn_rva_off = resolve_rva(funcs_rva).map(|o| o + (i as usize) * 4);
-                        let fn_rva = fn_rva_off.and_then(|o| if o + 4 <= pe_bytes.len() { Some(LittleEndian::read_u32(&pe_bytes[o..o+4])) } else { None }).unwrap_or(0);
-
-                        // Look up name if available
-                        let mut sym_name = None;
-                        if num_names > 0 {
-                            if let Some(names_table_off) = resolve_rva(names_rva) {
-                                if let Some(ords_table_off) = resolve_rva(ords_rva) {
-                                    for n_idx in 0..num_names as usize {
-                                        let ord_entry_off = ords_table_off + n_idx * 2;
-                                        if ord_entry_off + 2 <= pe_bytes.len() {
-                                            let name_ord = LittleEndian::read_u16(&pe_bytes[ord_entry_off..ord_entry_off + 2]) as u32;
-                                            if name_ord == i {
-                                                let name_ptr_off = names_table_off + n_idx * 4;
-                                                if name_ptr_off + 4 <= pe_bytes.len() {
-                                                    let name_str_rva = LittleEndian::read_u32(&pe_bytes[name_ptr_off..name_ptr_off + 4]);
-                                                    if let Some(str_off) = resolve_rva(name_str_rva) {
-                                                        let end = pe_bytes[str_off..].iter().position(|&b| b == 0).unwrap_or(0);
-                                                        if let Ok(s) = std::str::from_utf8(&pe_bytes[str_off..str_off + end]) {
-                                                            sym_name = Some(s.to_string());
-                                                        }
-                                                    }
-                                                }
-                                                break;
-                                            }
+                    // Pre-index names by function index in a single O(num_names) pass
+                    let mut name_map = std::collections::HashMap::new();
+                    if num_names > 0 {
+                        if let (Some(names_table_off), Some(ords_table_off)) = (resolve_rva(names_rva), resolve_rva(ords_rva)) {
+                            for n_idx in 0..num_names.min(4096) as usize {
+                                let ord_entry_off = ords_table_off + n_idx * 2;
+                                let name_ptr_off = names_table_off + n_idx * 4;
+                                if ord_entry_off + 2 <= pe_bytes.len() && name_ptr_off + 4 <= pe_bytes.len() {
+                                    let fn_idx = LittleEndian::read_u16(&pe_bytes[ord_entry_off..ord_entry_off + 2]) as u32;
+                                    let name_str_rva = LittleEndian::read_u32(&pe_bytes[name_ptr_off..name_ptr_off + 4]);
+                                    if let Some(str_off) = resolve_rva(name_str_rva) {
+                                        let end = pe_bytes[str_off..].iter().position(|&b| b == 0).unwrap_or(0);
+                                        if let Ok(s) = std::str::from_utf8(&pe_bytes[str_off..str_off + end]) {
+                                            name_map.insert(fn_idx, s.to_string());
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+
+                    let max_funcs = num_functions.min(1024);
+                    for i in 0..max_funcs {
+                        let ord = base_ordinal + i;
+                        let fn_rva_off = resolve_rva(funcs_rva).map(|o| o + (i as usize) * 4);
+                        let fn_rva = fn_rva_off.and_then(|o| if o + 4 <= pe_bytes.len() { Some(LittleEndian::read_u32(&pe_bytes[o..o+4])) } else { None }).unwrap_or(0);
+                        let sym_name = name_map.remove(&i);
 
                         exports.push(ExportSymbol {
                             ordinal: ord,

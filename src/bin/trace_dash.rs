@@ -440,5 +440,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("[+] Phase 5 completed. Total instructions executed: {}", phase5_steps);
 
+    // ==========================================================
+    // PHASE 6: Execute Genuine Dashboard Worker & Content Thread (0x92107280)
+    // ==========================================================
+    println!("\n[*] Executing Genuine Dashboard Worker & Content Thread (0x92107280)...");
+    let mut dash_bg_cpu = Cpu::new(0x92107280);
+    let stack_top6 = stack_top - 0xA0000;
+    dash_bg_cpu.regs.gpr[1] = stack_top6;
+    dash_bg_cpu.regs.gpr[3] = 0;
+    dash_bg_cpu.regs.gpr[4] = 0;
+    dash_bg_cpu.regs.gpr[13] = kpcr_base;
+    dash_bg_cpu.regs.lr = 0x80001000;
+    bus.write_u32(stack_top6 - 8, 0x80001000)?;
+    bus.write_u32(stack_top6 + 0x320 - 8, 0x80001000)?;
+
+    let mut phase6_steps = 0;
+    for step in 1..=2000 {
+        let pc = dash_bg_cpu.regs.pc;
+        match bus.read_u32(pc) {
+            Ok(insn) => {
+                match dash_bg_cpu.step(&mut bus) {
+                    Ok(StepResult::Ok) => {
+                        phase6_steps += 1;
+                        if step <= 60 || step % 50 == 0 {
+                            println!("  [DASH BG {:04}] PC: 0x{:08X} | Opcode: 0x{:08X} | SP: 0x{:08X}", step, pc, insn, dash_bg_cpu.regs.gpr[1]);
+                        }
+                    }
+                    Ok(StepResult::Syscall { lev, pc: call_pc }) => {
+                        if let Some((lib, ord)) = thunk_map.get(&call_pc) {
+                            let name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                kernel.resolve_xboxkrnl(*ord).unwrap_or("Unknown")
+                            } else {
+                                kernel.resolve_xam(*ord).unwrap_or("Unknown")
+                            };
+                            println!("  [DASH BG SYSCALL #{:04}] lev={} -> {}!{} (#0x{:04X} / {})", step, lev, lib, name, ord, ord);
+                            let args = [
+                                dash_bg_cpu.regs.gpr[3], dash_bg_cpu.regs.gpr[4], dash_bg_cpu.regs.gpr[5],
+                                dash_bg_cpu.regs.gpr[6], dash_bg_cpu.regs.gpr[7], dash_bg_cpu.regs.gpr[8],
+                            ];
+                            let ret = kernel.dispatch(lib, *ord, &args, &mut bus);
+                            dash_bg_cpu.regs.gpr[3] = ret;
+                            dash_bg_cpu.regs.pc = dash_bg_cpu.regs.lr;
+
+                            if *ord == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                println!("  -> ExTerminateThread called! Worker sequence completed!");
+                                break;
+                            }
+                            if *ord == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                println!("  -> NtYieldExecution called! Worker thread yielded and resumed at PC 0x{:08X}", dash_bg_cpu.regs.pc);
+                            }
+                        } else {
+                            println!("  [UNMAPPED SYSCALL] PC: 0x{:016X}", call_pc);
+                            break;
+                        }
+                    }
+                    Ok(StepResult::Halted) => {
+                        println!("  [HALTED] at PC: 0x{:016X}", pc);
+                        break;
+                    }
+                    Err(e) => {
+                        println!("  [TRAP] PC: 0x{:08X} Opcode: 0x{:08X}: {}", pc, insn, e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  [BUS ERROR] at 0x{:08X}: {}", pc, e);
+                break;
+            }
+        }
+    }
+    println!("[+] Phase 6 completed. Total instructions executed: {}", phase6_steps);
+
     Ok(())
 }

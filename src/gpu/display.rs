@@ -322,6 +322,61 @@ impl GpuDisplay {
         }
     }
 
+    /// Returns live unified gamepad state (physical USB controller + keyboard mapping)
+    pub fn get_current_gamepad_state(&mut self) -> crate::kernel::input::XInputGamepad {
+        let mut gp = if let Some(state) = self.gamepad_mgr.poll(0) {
+            state.gamepad
+        } else {
+            crate::kernel::input::XInputGamepad::default()
+        };
+
+        // Combine keyboard mapping with gamepad
+        if self.window.is_key_down(Key::Space) || self.window.is_key_down(Key::Enter) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_A;
+        }
+        if self.window.is_key_down(Key::Backspace) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_B;
+        }
+        if self.window.is_key_down(Key::X) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_X;
+        }
+        if self.window.is_key_down(Key::Y) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_Y;
+        }
+        if self.window.is_key_down(Key::Left) || self.window.is_key_down(Key::A) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_DPAD_LEFT;
+            if gp.s_thumb_lx == 0 {
+                gp.s_thumb_lx = -24000;
+            }
+        }
+        if self.window.is_key_down(Key::Right) || self.window.is_key_down(Key::D) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_DPAD_RIGHT;
+            if gp.s_thumb_lx == 0 {
+                gp.s_thumb_lx = 24000;
+            }
+        }
+        if self.window.is_key_down(Key::Up) || self.window.is_key_down(Key::W) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_DPAD_UP;
+            if gp.s_thumb_ly == 0 {
+                gp.s_thumb_ly = 24000;
+            }
+        }
+        if self.window.is_key_down(Key::Down) || self.window.is_key_down(Key::S) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_DPAD_DOWN;
+            if gp.s_thumb_ly == 0 {
+                gp.s_thumb_ly = -24000;
+            }
+        }
+        if self.window.is_key_down(Key::Q) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_LEFT_SHOULDER;
+        }
+        if self.window.is_key_down(Key::E) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        }
+
+        gp
+    }
+
     /// Renders the legendary authentic Xbox 360 "Blades" Dashboard UI
     pub fn render_blades_dashboard(&mut self, title_id: &str, dash_version: &str) {
         // If in startup sequence, render the Xbox 360 boot animation

@@ -201,6 +201,25 @@ impl Cpu {
                 }
             }
 
+            // Opcode 20: rlwimi (Rotate Left Word Immediate then Mask Insert)
+            20 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let sh = (insn >> 11) & 0x1F;
+                let mb = (insn >> 6) & 0x1F;
+                let me = (insn >> 1) & 0x1F;
+                let rc = insn & 1;
+
+                let val = (self.regs.gpr[rs] as u32).rotate_left(sh);
+                let mask = ppc_mask32(mb, me);
+                let ra_val = self.regs.gpr[ra] as u32;
+                let res = (val & mask) | (ra_val & !mask);
+                self.regs.gpr[ra] = (self.regs.gpr[ra] & 0xFFFF_FFFF_0000_0000) | (res as u64);
+                if rc != 0 {
+                    self.regs.update_cr_cmpw(0, res as i32, 0);
+                }
+            }
+
             // Opcode 21: rlwinm / srwi / slwi
             21 => {
                 let rs = ((insn >> 21) & 0x1F) as usize;
@@ -228,6 +247,42 @@ impl Cpu {
                 let ra = ((insn >> 16) & 0x1F) as usize;
                 let uimm = ((insn & 0xFFFF) as u64) << 16;
                 self.regs.gpr[ra] = self.regs.gpr[rs] | uimm;
+            }
+
+            // Opcode 26: xori
+            26 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let uimm = (insn & 0xFFFF) as u64;
+                self.regs.gpr[ra] = self.regs.gpr[rs] ^ uimm;
+            }
+
+            // Opcode 27: xoris
+            27 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let uimm = ((insn & 0xFFFF) as u64) << 16;
+                self.regs.gpr[ra] = self.regs.gpr[rs] ^ uimm;
+            }
+
+            // Opcode 28: andi.
+            28 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let uimm = (insn & 0xFFFF) as u64;
+                let res = self.regs.gpr[rs] & uimm;
+                self.regs.gpr[ra] = res;
+                self.regs.update_cr_cmpw(0, res as i32, 0);
+            }
+
+            // Opcode 29: andis.
+            29 => {
+                let rs = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let uimm = ((insn & 0xFFFF) as u64) << 16;
+                let res = self.regs.gpr[rs] & uimm;
+                self.regs.gpr[ra] = res;
+                self.regs.update_cr_cmpw(0, res as i32, 0);
             }
 
             // Opcode 30: rldicr / sldi

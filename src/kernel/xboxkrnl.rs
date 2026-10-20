@@ -21,6 +21,8 @@ pub struct KernelDispatcher {
     pub ring_buffer_size: u32,
     pub swap_count: u64,
     pub last_swap_frontbuffer: u64,
+    pub gamepad_state: crate::kernel::input::XInputGamepad,
+    pub gamepad_packet_number: u32,
 }
 
 impl KernelDispatcher {
@@ -39,6 +41,22 @@ impl KernelDispatcher {
             ring_buffer_size: 64 * 1024,
             swap_count: 0,
             last_swap_frontbuffer: 0x7000_0000,
+            gamepad_state: crate::kernel::input::XInputGamepad::default(),
+            gamepad_packet_number: 1,
+        }
+    }
+
+    pub fn update_gamepad(&mut self, gamepad: crate::kernel::input::XInputGamepad) {
+        if self.gamepad_state.w_buttons != gamepad.w_buttons
+            || self.gamepad_state.b_left_trigger != gamepad.b_left_trigger
+            || self.gamepad_state.b_right_trigger != gamepad.b_right_trigger
+            || self.gamepad_state.s_thumb_lx != gamepad.s_thumb_lx
+            || self.gamepad_state.s_thumb_ly != gamepad.s_thumb_ly
+            || self.gamepad_state.s_thumb_rx != gamepad.s_thumb_rx
+            || self.gamepad_state.s_thumb_ry != gamepad.s_thumb_ry
+        {
+            self.gamepad_packet_number = self.gamepad_packet_number.wrapping_add(1);
+            self.gamepad_state = gamepad;
         }
     }
 
@@ -724,19 +742,24 @@ impl KernelDispatcher {
 
             // 0x0191: XamInputGetState (userIndex, flags, pState)
             0x0191 => {
-                if let Some(&p_state) = args.get(2) {
-                    if p_state != 0 {
-                        let _ = bus.write_u32(p_state + 0, 1); // dwPacketNumber
-                        let _ = bus.write_u16(p_state + 4, 0); // wButtons
-                        let _ = bus.write_u8(p_state + 6, 0);  // bLeftTrigger
-                        let _ = bus.write_u8(p_state + 7, 0);  // bRightTrigger
-                        let _ = bus.write_u16(p_state + 8, 0);  // sThumbLX
-                        let _ = bus.write_u16(p_state + 10, 0); // sThumbLY
-                        let _ = bus.write_u16(p_state + 12, 0); // sThumbRX
-                        let _ = bus.write_u16(p_state + 14, 0); // sThumbRY
+                let user_index = args.first().copied().unwrap_or(0);
+                if user_index == 0 {
+                    if let Some(&p_state) = args.get(2) {
+                        if p_state != 0 {
+                            let _ = bus.write_u32(p_state + 0, self.gamepad_packet_number);
+                            let _ = bus.write_u16(p_state + 4, self.gamepad_state.w_buttons);
+                            let _ = bus.write_u8(p_state + 6, self.gamepad_state.b_left_trigger);
+                            let _ = bus.write_u8(p_state + 7, self.gamepad_state.b_right_trigger);
+                            let _ = bus.write_u16(p_state + 8, self.gamepad_state.s_thumb_lx as u16);
+                            let _ = bus.write_u16(p_state + 10, self.gamepad_state.s_thumb_ly as u16);
+                            let _ = bus.write_u16(p_state + 12, self.gamepad_state.s_thumb_rx as u16);
+                            let _ = bus.write_u16(p_state + 14, self.gamepad_state.s_thumb_ry as u16);
+                        }
                     }
+                    0 // ERROR_SUCCESS
+                } else {
+                    0x0000_0467 // ERROR_DEVICE_NOT_CONNECTED (1167)
                 }
-                0 // ERROR_SUCCESS
             }
 
             // 0x0192: XamInputSetState

@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[+] PE Image parsed! Found {} sections and {} exports. Loading into Virtual Memory Bus at 0x{:08X}...",
         pe_image.sections.len(), pe_image.exports.len(), vaddr_base
     );
-    for exp in &pe_image.exports {
+    for exp in pe_image.exports.iter().take(5) {
         println!("  [DASH EXPORT] Ordinal #{}: {:?} -> RVA 0x{:08X} (VAddr 0x{:016X})",
             exp.ordinal, exp.name, exp.rva, vaddr_base + exp.rva as u64
         );
@@ -726,6 +726,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ==========================================================
+    // ETAPA 3: Multi-Thread Guest Dispatcher & Live Input Loop
+    // ==========================================================
+    println!("\n>>> [ETAPA 3] Genuine Dashboard Multi-Thread Interleaved Dispatcher <<<");
+    struct GuestThread {
+        name: &'static str,
+        cpu: Cpu,
+        active: bool,
+        total_steps: u64,
+    }
+
+    let mut guest_threads = Vec::new();
+
+    // 1. Dashboard Worker & Content Thread @ 0x92107280
+    let stack_top6 = stack_top - 0xA0000;
+    bus.write_u32(stack_top6 - 8, 0x80001000)?;
+    bus.write_u32(stack_top6 + 0x320 - 8, 0x80001000)?;
+    let mut worker_cpu = Cpu::new(0x92107280);
+    worker_cpu.regs.gpr[1] = stack_top6;
+    worker_cpu.regs.gpr[3] = 0;
+    worker_cpu.regs.gpr[4] = 0;
+    worker_cpu.regs.gpr[13] = kpcr_base;
+    worker_cpu.regs.lr = 0x80001000;
+    guest_threads.push(GuestThread {
+        name: "Worker & Content Thread",
+        cpu: worker_cpu,
+        active: true,
+        total_steps: 0,
+    });
+
+    // 2. Dashboard UI / State Machine Thread @ 0x921088A0
+    let stack_top_ui = stack_top - 0xC0000;
+    bus.write_u32(stack_top_ui - 8, 0x80001000)?;
+    bus.write_u32(stack_top_ui + 0x80 - 8, 0x80001000)?;
+    let mut ui_cpu = Cpu::new(0x921088A0);
+    ui_cpu.regs.gpr[1] = stack_top_ui;
+    ui_cpu.regs.gpr[3] = 0;
+    ui_cpu.regs.gpr[4] = 1;
+    ui_cpu.regs.gpr[13] = kpcr_base;
+    ui_cpu.regs.lr = 0x80001000;
+    guest_threads.push(GuestThread {
+        name: "UI & State Thread",
+        cpu: ui_cpu,
+        active: true,
+        total_steps: 0,
+    });
+
+    // 3. Graphics & Hardware Engine Thread @ 0x9210EA48
+    let stack_top_eng = stack_top - 0xE0000;
+    bus.write_u32(stack_top_eng - 8, 0x80001000)?;
+    bus.write_u32(stack_top_eng + 0x80 - 8, 0x80001000)?;
+    let mut eng_cpu = Cpu::new(0x9210EA48);
+    eng_cpu.regs.gpr[1] = stack_top_eng;
+    eng_cpu.regs.gpr[3] = 0;
+    eng_cpu.regs.gpr[4] = 0;
+    eng_cpu.regs.gpr[13] = kpcr_base;
+    eng_cpu.regs.lr = 0x80001000;
+    guest_threads.push(GuestThread {
+        name: "Engine Monitor Thread",
+        cpu: eng_cpu,
+        active: true,
+        total_steps: 0,
+    });
+
+    println!("[+] Registered {} genuine Dashboard threads into 60 FPS guest scheduler:", guest_threads.len());
+    for t in &guest_threads {
+        println!("  - Thread '{}' -> Entry PC: 0x{:08X}, SP: 0x{:08X}", t.name, t.cpu.regs.pc, t.cpu.regs.gpr[1]);
+    }
+
+    // ==========================================================
     // MILESTONE 5: High-Definition GPU Video Display & Surface Rendering
     // ==========================================================
     println!("\n>>> [MILESTONE 5] GPU Video Output (1280x720 HD @ 60 FPS) <<<");
@@ -753,9 +822,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frame += 1;
         display.handle_input();
 
-        // Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
+        // 1. Feed live unified gamepad state (USB controller or keyboard) into HLE Kernel
+        let gp_state = display.get_current_gamepad_state();
+        kernel.update_gamepad(gp_state);
+
+        // 2. Interleave continuous guest execution of genuine dashboard threads
+        for thread in &mut guest_threads {
+            if !thread.active {
+                continue;
+            }
+            // Execute a timeslice of up to 100 instructions per thread per frame
+            for _ in 0..100 {
+                let current_pc = thread.cpu.regs.pc;
+                match bus.read_u32(current_pc) {
+                    Ok(_) => {
+                        match thread.cpu.step(&mut bus) {
+                            Ok(StepResult::Ok) => {
+                                thread.total_steps += 1;
+                            }
+                            Ok(StepResult::Syscall { lev: _, pc }) => {
+                                if let Some((lib, ordinal)) = thunk_map.get(&pc) {
+                                    let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
+                                    let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
+                                        || (*ordinal == 0x002B && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
+                                        || (*ordinal == 0x00B0 && lib.eq_ignore_ascii_case("xboxkrnl.exe"));
+
+                                    let args = [
+                                        thread.cpu.regs.gpr[3], thread.cpu.regs.gpr[4], thread.cpu.regs.gpr[5],
+                                        thread.cpu.regs.gpr[6], thread.cpu.regs.gpr[7], thread.cpu.regs.gpr[8],
+                                    ];
+                                    let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
+                                    thread.cpu.regs.gpr[3] = ret;
+                                    thread.cpu.regs.pc = thread.cpu.regs.lr;
+
+                                    if is_term {
+                                        thread.active = false;
+                                        break;
+                                    }
+                                    if is_yield {
+                                        // Yield timeslice to next thread or frame
+                                        break;
+                                    }
+                                } else {
+                                    thread.active = false;
+                                    break;
+                                }
+                            }
+                            Ok(StepResult::Halted) => {
+                                thread.active = false;
+                                break;
+                            }
+                            Err(_) => {
+                                thread.active = false;
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        thread.active = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 3. Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
         kernel.dispatch("xboxkrnl.exe", 0x025B, &[0x7000_0000, frame], &mut bus);
 
+        // 4. Render and present the display frame
         display.render_blades_dashboard("FFFE07D1", "2.0.4532.0");
         display.update()?;
 
@@ -766,9 +900,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if frame % 180 == 0 {
+            let total_guest_steps: u64 = guest_threads.iter().map(|t| t.total_steps).sum();
             println!(
-                "  [GPU] Frame {:05} | Active Blade: '{}' | 60 FPS",
-                frame, display.blades[display.active_blade].name
+                "  [GPU] Frame {:05} | Active Blade: '{}' | 60 FPS | Guest Code Executed: {} instructions",
+                frame, display.blades[display.active_blade].name, total_guest_steps
             );
         }
     }

@@ -134,8 +134,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n[*] Scanning for callers to Video Master Init (0x9210EA48):");
-    let mut ea_callers = Vec::new();
+    println!("\n[*] Resolving Input & UI subsystem thunks (xam.xex):");
+    let mut xam_ui_thunks = Vec::new();
+    for (&addr, (lib, ord)) in &thunk_map {
+        if lib.eq_ignore_ascii_case("xam.xex") {
+            if let Some(name) = kernel.resolve_xam(*ord) {
+                if name.contains("Input") || name.contains("User") || name.contains("Msg") || name.contains("App") {
+                    xam_ui_thunks.push((addr, *ord, name));
+                }
+            }
+        }
+    }
+    xam_ui_thunks.sort_by_key(|k| k.0);
+    for (addr, ord, name) in &xam_ui_thunks {
+        println!("    Thunk 0x{:08X} -> xam.xex!{} (#0x{:04X} / {})", addr, name, ord, ord);
+    }
+
+    // Scan for callers to NtYieldExecution (0x9268EDC4)
+    println!("\n[*] Scanning for callers to NtYieldExecution (0x9268EDC4):");
+    let mut yield_callers = Vec::new();
     for (idx, chunk) in text_bytes.chunks_exact(4).enumerate() {
         let insn = byteorder::BigEndian::read_u32(chunk);
         let pc = text_vaddr_start + (idx * 4) as u64;
@@ -145,15 +162,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 li |= !0x00FF_FFFF;
             }
             let target = (pc as i64 + (li as i64 * 4)) as u64;
-            if target == 0x9210EA48 {
-                ea_callers.push(pc);
+            if target == 0x9268EDC4 {
+                yield_callers.push(pc);
             }
         }
     }
-    println!("[+] Found {} caller(s) to 0x9210EA48:", ea_callers.len());
-    for c in &ea_callers {
+    println!("[+] Found {} caller(s) to NtYieldExecution:", yield_callers.len());
+    for c in &yield_callers {
         println!("    - Caller at 0x{:08X}", c);
-        // Find prologue
         let mut fn_start = *c;
         while fn_start > text_vaddr_start {
             let off = (fn_start - text_vaddr_start) as usize;
@@ -164,6 +180,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             fn_start -= 4;
         }
+    }
+
+    println!("\n[*] Disassembling 0x92107280 (NtYieldExecution caller routine):");
+    let yield_fn_off = (0x92107280u64 - text_vaddr_start) as usize;
+    for i in (0..0x60).step_by(4) {
+        let pc = 0x92107280u64 + i as u64;
+        let insn = BigEndian::read_u32(&text_bytes[yield_fn_off + i..yield_fn_off + i + 4]);
+        println!("    0x{:08X}: 0x{:08X}", pc, insn);
     }
 
     Ok(())
