@@ -18,6 +18,23 @@ pub fn ppc_mask32(mb: u32, me: u32) -> u32 {
     mask
 }
 
+/// PowerPC 64-bit mask generation according to PowerPC Architecture Manual
+/// (Bit 0 is MSB, Bit 63 is LSB)
+pub fn ppc_mask64(mb: u32, me: u32) -> u64 {
+    let mut mask = 0u64;
+    for i in 0..64 {
+        let inside = if mb <= me {
+            i >= mb && i <= me
+        } else {
+            i >= mb || i <= me
+        };
+        if inside {
+            mask |= 1u64 << (63 - i);
+        }
+    }
+    mask
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepResult {
     Ok,
@@ -445,6 +462,67 @@ impl Cpu {
                 }
             }
 
+            // Opcode 5: VMX128 VA-form (vperm128, vsel, vmaddfp, vnmsubfp, etc.)
+            5 => {
+                let xo = insn & 0x3F;
+                let vd = ((insn >> 21) & 0x1F) as usize;
+                let va = ((insn >> 16) & 0x1F) as usize;
+                let vb = ((insn >> 11) & 0x1F) as usize;
+                let vc = ((insn >> 6) & 0x1F) as usize;
+
+                match xo {
+                    // 37 (0x25) | 43 (0x2B): vperm128 / vperm (Vector Permute)
+                    37 | 43 => {
+                        let mut res = [0u8; 16];
+                        for i in 0..16 {
+                            let sel = (self.regs.vr[vc][i] & 0x1F) as usize;
+                            res[i] = if sel < 16 {
+                                self.regs.vr[va][sel]
+                            } else {
+                                self.regs.vr[vb][sel - 16]
+                            };
+                        }
+                        self.regs.vr[vd] = res;
+                    }
+
+                    // 42 (0x2A): vsel (Vector Select)
+                    42 => {
+                        let mut res = [0u8; 16];
+                        for i in 0..16 {
+                            let c = self.regs.vr[vc][i];
+                            let a = self.regs.vr[va][i];
+                            let b = self.regs.vr[vb][i];
+                            res[i] = (b & c) | (a & !c);
+                        }
+                        self.regs.vr[vd] = res;
+                    }
+
+                    // 46 (0x2E): vmaddfp (Vector Multiply-Add Single-Precision)
+                    46 => {
+                        for i in 0..4 {
+                            let a = f32::from_bits(u32::from_be_bytes(self.regs.vr[va][i * 4..i * 4 + 4].try_into().unwrap()));
+                            let b = f32::from_bits(u32::from_be_bytes(self.regs.vr[vb][i * 4..i * 4 + 4].try_into().unwrap()));
+                            let c = f32::from_bits(u32::from_be_bytes(self.regs.vr[vc][i * 4..i * 4 + 4].try_into().unwrap()));
+                            let r = (a * c) + b;
+                            self.regs.vr[vd][i * 4..i * 4 + 4].copy_from_slice(&r.to_bits().to_be_bytes());
+                        }
+                    }
+
+                    // 47 (0x2F): vnmsubfp (Vector Negative Multiply-Subtract Single-Precision)
+                    47 => {
+                        for i in 0..4 {
+                            let a = f32::from_bits(u32::from_be_bytes(self.regs.vr[va][i * 4..i * 4 + 4].try_into().unwrap()));
+                            let b = f32::from_bits(u32::from_be_bytes(self.regs.vr[vb][i * 4..i * 4 + 4].try_into().unwrap()));
+                            let c = f32::from_bits(u32::from_be_bytes(self.regs.vr[vc][i * 4..i * 4 + 4].try_into().unwrap()));
+                            let r = -((a * c) - b);
+                            self.regs.vr[vd][i * 4..i * 4 + 4].copy_from_slice(&r.to_bits().to_be_bytes());
+                        }
+                    }
+
+                    _ => return Err(format!("Unimplemented VMX128 opcode 5 xo {} (0x{:02X}) at PC=0x{:08X}", xo, xo, pc)),
+                }
+            }
+
             // Opcode 7: mulli (Multiply Low Immediate)
             7 => {
                 let rd = ((insn >> 21) & 0x1F) as usize;
@@ -763,24 +841,64 @@ impl Cpu {
                 self.regs.update_cr_cmpw(0, res as i32, 0);
             }
 
-            // Opcode 30: rldicr / sldi
+            // Opcode 30: 64-bit Rotate and Mask Instructions (rldicl, rldicr, rldic, rldimi, rldcl, rldcr)
             30 => {
                 let rs = ((insn >> 21) & 0x1F) as usize;
                 let ra = ((insn >> 16) & 0x1F) as usize;
-                let sh = ((insn >> 11) & 0x1F) | (((insn >> 1) & 0x1) << 5);
-                let me = ((insn >> 6) & 0x1F) | (((insn >> 5) & 0x1) << 5);
+                let sh = (((insn >> 11) & 0x1F) | (((insn >> 1) & 0x1) << 5)) as u32;
+                let m = (insn >> 5) & 0x3F; // MB or ME (bits 21..26)
                 let xo = (insn >> 2) & 0x7;
+                let rc = insn & 1;
 
-                if xo == 1 {
-                    let rot = self.regs.gpr[rs].rotate_left(sh);
-                    let mask = if me == 63 {
-                        !0u64
-                    } else {
-                        !0u64 << (63 - me)
-                    };
-                    self.regs.gpr[ra] = rot & mask;
-                } else {
-                    return Err(format!("Unimplemented opcode 30 xo {}", xo));
+                let res = match xo {
+                    // 0: rldicl (Rotate Left Doubleword Immediate then Clear Left) / clrldi / srdi
+                    0 => {
+                        let rot = self.regs.gpr[rs].rotate_left(sh);
+                        let mask = ppc_mask64(m, 63);
+                        rot & mask
+                    }
+                    // 1: rldicr (Rotate Left Doubleword Immediate then Clear Right) / clrrdi / sldi
+                    1 => {
+                        let rot = self.regs.gpr[rs].rotate_left(sh);
+                        let mask = ppc_mask64(0, m);
+                        rot & mask
+                    }
+                    // 2: rldic (Rotate Left Doubleword Immediate then Clear)
+                    2 => {
+                        let rot = self.regs.gpr[rs].rotate_left(sh);
+                        let me = 63u32.saturating_sub(sh);
+                        let mask = ppc_mask64(m, me);
+                        rot & mask
+                    }
+                    // 3: rldimi (Rotate Left Doubleword Immediate then Mask Insert)
+                    3 => {
+                        let rot = self.regs.gpr[rs].rotate_left(sh);
+                        let me = 63u32.saturating_sub(sh);
+                        let mask = ppc_mask64(m, me);
+                        (rot & mask) | (self.regs.gpr[ra] & !mask)
+                    }
+                    // 4: rldcl (Rotate Left Doubleword then Clear Left)
+                    4 => {
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let rsh = (self.regs.gpr[rb] & 0x3F) as u32;
+                        let rot = self.regs.gpr[rs].rotate_left(rsh);
+                        let mask = ppc_mask64(m, 63);
+                        rot & mask
+                    }
+                    // 5: rldcr (Rotate Left Doubleword then Clear Right)
+                    5 => {
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let rsh = (self.regs.gpr[rb] & 0x3F) as u32;
+                        let rot = self.regs.gpr[rs].rotate_left(rsh);
+                        let mask = ppc_mask64(0, m);
+                        rot & mask
+                    }
+                    _ => return Err(format!("Unimplemented opcode 30 xo {}", xo)),
+                };
+
+                self.regs.gpr[ra] = res;
+                if rc != 0 {
+                    self.regs.update_cr_cmpd(0, res as i64, 0);
                 }
             }
 
@@ -879,12 +997,52 @@ impl Cpu {
                         self.regs.cr = (self.regs.cr & !(0xFu32 << cr0_shift)) | (0b0010 << cr0_shift);
                     }
 
-                    // mr rA, rS
+                    // 444: or / mr (Move Register)
                     444 => {
                         let rs = ((insn >> 21) & 0x1F) as usize;
                         let ra = ((insn >> 16) & 0x1F) as usize;
                         let rb = ((insn >> 11) & 0x1F) as usize;
-                        self.regs.gpr[ra] = self.regs.gpr[rs] | self.regs.gpr[rb];
+                        let res = self.regs.gpr[rs] | self.regs.gpr[rb];
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 412: orc (OR with Complement)
+                    412 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let res = self.regs.gpr[rs] | (!self.regs.gpr[rb]);
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 476: nand (NAND)
+                    476 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let res = !(self.regs.gpr[rs] & self.regs.gpr[rb]);
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 284: eqv (Equivalent)
+                    284 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let res = !(self.regs.gpr[rs] ^ self.regs.gpr[rb]);
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
                     }
 
                     // mfspr (mflr, mfctr)
@@ -1142,6 +1300,12 @@ impl Cpu {
                         let sh = (insn >> 11) & 0x1F;
                         let val = self.regs.gpr[rs] as i32;
                         let res = (val >> sh) as i64 as u64;
+                        let ca = if sh > 0 && val < 0 && (val as u32 & ((1u32 << sh) - 1)) != 0 {
+                            1
+                        } else {
+                            0
+                        };
+                        self.regs.xer = (self.regs.xer & !(1 << 29)) | (ca << 29);
                         self.regs.gpr[ra] = res;
                         if (insn & 1) != 0 {
                             self.regs.update_cr_cmpw(0, res as i32, 0);
@@ -1162,9 +1326,98 @@ impl Cpu {
                         } else {
                             0u64
                         };
+                        let ca = if shift > 0 && shift < 32 && val < 0 && (val as u32 & ((1u32 << shift) - 1)) != 0 {
+                            1
+                        } else if shift >= 32 && val < 0 {
+                            1
+                        } else {
+                            0
+                        };
+                        self.regs.xer = (self.regs.xer & !(1 << 29)) | (ca << 29);
                         self.regs.gpr[ra] = res;
                         if (insn & 1) != 0 {
                             self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 27: sld (Shift Left Doubleword)
+                    27 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let shift = (self.regs.gpr[rb] & 0x7F) as u32;
+                        let res = if shift < 64 {
+                            self.regs.gpr[rs] << shift
+                        } else {
+                            0
+                        };
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpd(0, res as i64, 0);
+                        }
+                    }
+
+                    // 539: srd (Shift Right Doubleword)
+                    539 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let shift = (self.regs.gpr[rb] & 0x7F) as u32;
+                        let res = if shift < 64 {
+                            self.regs.gpr[rs] >> shift
+                        } else {
+                            0
+                        };
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpd(0, res as i64, 0);
+                        }
+                    }
+
+                    // 794: srad (Shift Right Algebraic Doubleword)
+                    794 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let shift = (self.regs.gpr[rb] & 0x7F) as u32;
+                        let val = self.regs.gpr[rs] as i64;
+                        let res = if shift < 64 {
+                            (val >> shift) as u64
+                        } else if val < 0 {
+                            !0u64
+                        } else {
+                            0u64
+                        };
+                        let ca = if shift > 0 && shift < 64 && val < 0 && (val as u64 & ((1u64 << shift) - 1)) != 0 {
+                            1
+                        } else if shift >= 64 && val < 0 {
+                            1
+                        } else {
+                            0
+                        };
+                        self.regs.xer = (self.regs.xer & !(1 << 29)) | (ca << 29);
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpd(0, res as i64, 0);
+                        }
+                    }
+
+                    // 826 / 827: sradi (Shift Right Algebraic Doubleword Immediate)
+                    826 | 827 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let sh = ((insn >> 11) & 0x1F) | (((insn >> 1) & 0x1) << 5);
+                        let val = self.regs.gpr[rs] as i64;
+                        let res = (val >> sh) as u64;
+                        let ca = if sh > 0 && val < 0 && (val as u64 & ((1u64 << sh) - 1)) != 0 {
+                            1
+                        } else {
+                            0
+                        };
+                        self.regs.xer = (self.regs.xer & !(1 << 29)) | (ca << 29);
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpd(0, res as i64, 0);
                         }
                     }
 
@@ -1496,6 +1749,16 @@ impl Cpu {
                         let ea = if ra == 0 { self.regs.gpr[rb] } else { self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]) };
                         let val = self.regs.fpr[frs].to_bits();
                         bus.write_u64(ea, val)?;
+                    }
+
+                    // 983: stfiwx (Store Floating-Point as Integer Word Indexed)
+                    983 => {
+                        let frs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let ea = if ra == 0 { self.regs.gpr[rb] } else { self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]) };
+                        let val = (self.regs.fpr[frs].to_bits() & 0xFFFF_FFFF) as u32;
+                        bus.write_u32(ea, val)?;
                     }
 
                     // 38: lvsl (Load Vector for Shift Left)

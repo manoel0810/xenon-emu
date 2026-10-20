@@ -18,6 +18,7 @@ pub const PM4_LOAD_ALU_CONSTANT: u8 = 0x2F;
 pub const PM4_WAIT_FOR_IDLE: u8 = 0x34;
 pub const PM4_MEM_WRITE: u8 = 0x38;
 pub const PM4_EXECUTE_INDIRECT: u8 = 0x3F;
+pub const PM4_ME_INIT: u8 = 0x48;
 
 // Key Xenos Registers
 pub const RB_COLOR_INFO: u32 = 0x2004;
@@ -124,6 +125,7 @@ impl Pm4Packet {
             PM4_WAIT_FOR_IDLE => "PM4_WAIT_FOR_IDLE",
             PM4_MEM_WRITE => "PM4_MEM_WRITE",
             PM4_EXECUTE_INDIRECT => "PM4_EXECUTE_INDIRECT",
+            PM4_ME_INIT => "PM4_ME_INIT",
             _ => "PM4_UNKNOWN_OPCODE",
         }
     }

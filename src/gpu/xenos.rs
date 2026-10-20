@@ -298,6 +298,36 @@ impl XenosGpu {
                             bus.write_u32(dest_addr, val)?;
                         }
                     }
+                    PM4_ME_INIT => {
+                        // Micro-engine initialization
+                    }
+                    PM4_EXECUTE_INDIRECT => {
+                        if data.len() >= 2 {
+                            let ib_addr = data[0] as u64;
+                            let ib_count = data[1] as usize;
+                            if ib_addr != 0 && ib_count > 0 {
+                                let mut words = Vec::with_capacity(ib_count);
+                                for i in 0..ib_count {
+                                    if let Ok(w) = bus.read_u32(ib_addr + (i * 4) as u64) {
+                                        words.push(w);
+                                    }
+                                }
+                                let mut cur = 0;
+                                while cur < words.len() {
+                                    match Pm4Packet::decode(&words[cur..]) {
+                                        Ok((sub_pkt, consumed)) => {
+                                            self.execute_packet(bus, &sub_pkt)?;
+                                            self.packets_executed += 1;
+                                            cur += consumed;
+                                        }
+                                        Err(_) => {
+                                            cur += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     _ => {
                         // Unhandled opcode
                     }

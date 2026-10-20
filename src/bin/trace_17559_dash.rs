@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut last_buf_ptr = bus.read_u32(0x929613B8).unwrap_or(0);
 
-    for step in 1..=200000 {
+    for step in 1..=1000000 {
         let pc = cpu.regs.pc;
         let insn = bus.read_u32(pc).unwrap_or(0);
         unique_pcs.insert(pc);
@@ -109,27 +109,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             last_buf_ptr = cur_buf;
         }
 
-        if step == 60505 {
-            println!("  [STRUCT 0x929613B8]:");
-            for i in 0..6 {
-                let off = 0x929613B8 + i * 4;
-                println!("    +0x{:02X} (0x{:08X}) = 0x{:08X}", i * 4, off, bus.read_u32(off).unwrap_or(0));
-            }
-            println!("  [BUFFER 0x70003560]:");
-            for i in 0..8 {
-                let off = 0x70003560 + i * 4;
-                println!("    +0x{:02X} (0x{:08X}) = 0x{:08X}", i * 4, off, bus.read_u32(off).unwrap_or(0));
-            }
-        }
-
         history.push((step, pc, insn, cpu.regs.lr, cpu.regs.ctr));
         if history.len() > 32 {
             history.remove(0);
         }
 
-        if step >= 97300 && step <= 97375 {
-            println!("  [CALLOC TRACE] Step {:05} | PC: 0x{:08X} | Insn: 0x{:08X} | r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r31=0x{:X}, LR=0x{:X}",
-                step, pc, insn, cpu.regs.gpr[3], cpu.regs.gpr[4], cpu.regs.gpr[5], cpu.regs.gpr[31], cpu.regs.lr);
+        if step % 25000 == 0 || (step >= 115030 && step <= 115060) {
+            println!("  [HEARTBEAT] Step {:06} | PC: 0x{:08X} | LR: 0x{:08X} | CTR: 0x{:08X}",
+                step, pc, cpu.regs.lr, cpu.regs.ctr);
         }
 
         match cpu.step(&mut bus) {
@@ -219,6 +206,216 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Syscalls Intercepted & Dispatched: {}", syscall_counts.len());
     for (k, v) in &syscall_counts {
         println!("    - {:<45}: {} calls", k, v);
+    }
+
+    println!("\n========================================================");
+    println!("  Hardware & Framebuffer State Analysis                 ");
+    println!("========================================================");
+
+    let fb_front = 0x90314000u64;
+    let fb_back = 0x906AC000u64;
+    let fb_size = 0x398000usize; // 1280 * 720 * 4 = 3,686,400 bytes
+
+    let mut front_non_zero = 0usize;
+    let mut back_non_zero = 0usize;
+    let mut front_sample = Vec::new();
+    let mut back_sample = Vec::new();
+
+    for i in 0..fb_size {
+        let b = bus.read_u8(fb_front + i as u64).unwrap_or(0);
+        if b != 0 {
+            front_non_zero += 1;
+            if front_sample.len() < 16 {
+                front_sample.push((i, b));
+            }
+        }
+        let b_back = bus.read_u8(fb_back + i as u64).unwrap_or(0);
+        if b_back != 0 {
+            back_non_zero += 1;
+            if back_sample.len() < 16 {
+                back_sample.push((i, b_back));
+            }
+        }
+    }
+
+    println!("[*] Frontbuffer @ 0x{:08X} ({} bytes):", fb_front, fb_size);
+    println!("    - Non-zero bytes: {} / {} ({:.2}%)", front_non_zero, fb_size, (front_non_zero as f64 / fb_size as f64) * 100.0);
+    if !front_sample.is_empty() {
+        print!("    - First non-zero samples (offset: byte): ");
+        for (off, val) in &front_sample {
+            print!("[0x{:X}: 0x{:02X}] ", off, val);
+        }
+        println!();
+    }
+
+    println!("[*] Backbuffer @ 0x{:08X} ({} bytes):", fb_back, fb_size);
+    println!("    - Non-zero bytes: {} / {} ({:.2}%)", back_non_zero, fb_size, (back_non_zero as f64 / fb_size as f64) * 100.0);
+    if !back_sample.is_empty() {
+        print!("    - First non-zero samples (offset: byte): ");
+        for (off, val) in &back_sample {
+            print!("[0x{:X}: 0x{:02X}] ", off, val);
+        }
+        println!();
+    }
+
+    // Inspect and decode PM4 packets in Ring Buffer
+    let rb_addr = 0x90104000u64;
+    println!("\n[*] Ring Buffer @ 0x{:08X}:", rb_addr);
+    let mut rb_words = Vec::new();
+    for i in (0..0x1000).step_by(4) {
+        rb_words.push(bus.read_u32(rb_addr + i as u64).unwrap_or(0));
+    }
+    
+    let mut idx = 0;
+    while idx < rb_words.len() {
+        let w = rb_words[idx];
+        if w == 0 {
+            idx += 1;
+            continue;
+        }
+        let ptype = (w >> 30) & 3;
+        match ptype {
+            0 => {
+                let base_reg = w & 0x7FFF;
+                let count = (((w >> 16) & 0x3FFF) + 1) as usize;
+                println!("  [PM4 Type 0] offset +0x{:04X} | Base Reg: 0x{:04X}, Count: {}", idx * 4, base_reg, count);
+                for c in 0..count.min(8) {
+                    if idx + 1 + c < rb_words.len() {
+                        println!("      Reg 0x{:04X} = 0x{:08X}", base_reg + c as u32, rb_words[idx + 1 + c]);
+                    }
+                }
+                idx += 1 + count;
+            }
+            1 => {
+                let reg1 = w & 0x7FF;
+                let reg2 = (w >> 11) & 0x7FF;
+                println!("  [PM4 Type 1] offset +0x{:04X} | Reg1: 0x{:04X}, Reg2: 0x{:04X}", idx * 4, reg1, reg2);
+                idx += 3;
+            }
+            2 => {
+                println!("  [PM4 Type 2 NOP] offset +0x{:04X}", idx * 4);
+                idx += 1;
+            }
+            3 => {
+                let opcode = ((w >> 8) & 0xFF) as u8;
+                let count = (((w >> 16) & 0x3FFF) + 1) as usize;
+                let opname = match opcode {
+                    0x10 => "NOP",
+                    0x21 => "SET_CONSTANT",
+                    0x22 => "SET_CONTEXT_REG",
+                    0x23 => "DRAW_INDX",
+                    0x24 => "DRAW_INDX_2",
+                    0x2A => "INDEX_TYPE",
+                    0x2F => "LOAD_ALU_CONSTANT",
+                    0x34 => "WAIT_FOR_IDLE",
+                    0x38 => "MEM_WRITE",
+                    0x3F => "EXECUTE_INDIRECT",
+                    0x48 => "ME_INIT",
+                    0x4C => "SURFACE_SYNC",
+                    _ => "UNKNOWN",
+                };
+                println!("  [PM4 Type 3] offset +0x{:04X} | Opcode: 0x{:02X} ({}) | Count: {}", idx * 4, opcode, opname, count);
+                for c in 0..count.min(16) {
+                    if idx + 1 + c < rb_words.len() {
+                        println!("      Data[{}] = 0x{:08X}", c, rb_words[idx + 1 + c]);
+                    }
+                }
+                idx += 1 + count;
+            }
+            _ => {
+                println!("  [Raw Word] offset +0x{:04X} = 0x{:08X}", idx * 4, w);
+                idx += 1;
+            }
+        }
+    }
+
+    // Inspect Indirect Command Buffers (IB) referenced by PM4_EXECUTE_INDIRECT
+    let ib_addrs = [0x1011C060u64, 0x1010C000u64, 0x9011C060u64, 0x9010C000u64];
+    for &ib in &ib_addrs {
+        let first = bus.read_u32(ib).unwrap_or(0);
+        println!("[*] Checking IB at 0x{:08X}: first word = 0x{:08X}", ib, first);
+        if first != 0 {
+            for k in 0..16 {
+                let w = bus.read_u32(ib + (k * 4)).unwrap_or(0);
+                let ptype = (w >> 30) & 3;
+                let op = ((w >> 8) & 0xFF) as u8;
+                let cnt = (((w >> 16) & 0x3FFF) + 1) as usize;
+                println!("    [IB+0x{:02X}] 0x{:08X} (type={}, op=0x{:02X}, cnt={})", k * 4, w, ptype, op, cnt);
+            }
+        }
+    }
+
+    use xenon_emu::gpu::{RingBuffer, XenosGpu};
+    let mut xenos_gpu = XenosGpu::new();
+    let mut ring_buffer = RingBuffer::new(rb_addr, 0x10000);
+    let mut last_non_zero = 0;
+    for i in (0..0x10000).step_by(4) {
+        if bus.read_u32(rb_addr + i as u64).unwrap_or(0) != 0 {
+            last_non_zero = (i / 4) + 1;
+        }
+    }
+    ring_buffer.wptr = last_non_zero;
+    println!("\n[*] Executing Xenos GPU Command Processor on guest ring buffer (wptr = {} dwords)...", ring_buffer.wptr);
+    match xenos_gpu.execute_ring(&mut bus, &mut ring_buffer) {
+        Ok(n) => {
+            println!("[+] Xenos GPU successfully executed {} PM4 packets from guest ring buffer!", n);
+            println!("    - Total packets: {}", xenos_gpu.packets_executed);
+            println!("    - Draw calls:    {}", xenos_gpu.draw_calls);
+            println!("    - Primitives:    {}", xenos_gpu.primitives_drawn);
+            println!("    - Registers set: {}", xenos_gpu.registers.len());
+            for (reg, val) in &xenos_gpu.registers {
+                println!("        Reg 0x{:04X} = 0x{:08X}", reg, val);
+            }
+        }
+        Err(e) => {
+            println!("[-] Xenos GPU execute_ring error: {}", e);
+        }
+    }
+
+    // Save frontbuffer or backbuffer if non-zero
+    let target_buffer = if back_non_zero > front_non_zero { fb_back } else { fb_front };
+    let non_zero_count = front_non_zero.max(back_non_zero);
+    if non_zero_count > 0 {
+        let mut img_buf = image::RgbaImage::new(1280, 720);
+        for y in 0..720 {
+            for x in 0..1280 {
+                let off = (y * 1280 + x) * 4;
+                let b0 = bus.read_u8(target_buffer + off as u64).unwrap_or(0);
+                let b1 = bus.read_u8(target_buffer + off as u64 + 1).unwrap_or(0);
+                let b2 = bus.read_u8(target_buffer + off as u64 + 2).unwrap_or(0);
+                let b3 = bus.read_u8(target_buffer + off as u64 + 3).unwrap_or(0);
+                // Assume ARGB/BGRA or RGBA
+                img_buf.put_pixel(x, y, image::Rgba([b1, b2, b3, b0]));
+            }
+        }
+        let out_path = "dash_17559_framebuffer.png";
+        img_buf.save(out_path)?;
+        println!("[+] Saved 1280x720 framebuffer to {}", out_path);
+    }
+
+    // Save Xenos GPU internal color buffer
+    let mut edram_non_zero = 0;
+    for &px in &xenos_gpu.color_buffer {
+        if px != 0 {
+            edram_non_zero += 1;
+        }
+    }
+    println!("[*] Xenos GPU Color Buffer non-zero pixels: {} / {}", edram_non_zero, xenos_gpu.color_buffer.len());
+    if edram_non_zero > 0 {
+        let mut edram_img = image::RgbaImage::new(1280, 720);
+        for y in 0..720 {
+            for x in 0..1280 {
+                let px = xenos_gpu.color_buffer[y * 1280 + x];
+                let a = ((px >> 24) & 0xFF) as u8;
+                let r = ((px >> 16) & 0xFF) as u8;
+                let g = ((px >> 8) & 0xFF) as u8;
+                let b = (px & 0xFF) as u8;
+                edram_img.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, if a == 0 { 255 } else { a }]));
+            }
+        }
+        let out_path = "dash_17559_gpu_edram.png";
+        edram_img.save(out_path)?;
+        println!("[+] Saved 1280x720 GPU EDRAM buffer to {}", out_path);
     }
 
     Ok(())
