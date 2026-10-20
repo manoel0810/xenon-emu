@@ -390,6 +390,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ==========================================================
+    // ETAPA 2: ATI Xenos GPU Command Processor (CP) & Primary Ring Buffer
+    // ==========================================================
+    println!("\n>>> [ETAPA 2] ATI Xenos GPU Command Processor (CP) & Primary Ring Buffer <<<");
+    use gpu::{
+        build_draw_indexed, build_load_alu_constant, build_set_context_reg, build_wait_for_idle,
+        RingBuffer, XenosGpu, PA_SC_WINDOW_OFFSET, RB_COLOR_INFO,
+    };
+
+    let ring_base: u64 = 0x1000_0000; // 256 MB in RAM
+    let ring_size: usize = 64 * 1024;  // 64 KB Primary Ring Buffer
+    let mut ring_buffer = RingBuffer::new(ring_base, ring_size);
+    let mut xenos_gpu = XenosGpu::new();
+    println!("[+] Initialized Xenos Primary Ring Buffer at 0x{:08X} (Size: {} KB)", ring_base, ring_size / 1024);
+
+    // CPU emits Direct3D / XUI PM4 packet stream to the Ring Buffer:
+    println!("[*] CPU emitting Direct3D / XUI PM4 packet stream into Ring Buffer:");
+    // 1. Set Context Register: RB_COLOR_INFO (RenderTarget: 1280x720 32-bit ARGB at 0x70000000)
+    let pkt_color = build_set_context_reg(RB_COLOR_INFO, 0x7000_0000);
+    ring_buffer.write_packet(&mut bus, &pkt_color)?;
+    println!("  [PM4 EMIT] SET_CONTEXT_REG (RB_COLOR_INFO: 0x70000000) [{} dwords]", pkt_color.len());
+
+    // 2. Set Context Register: PA_SC_WINDOW_OFFSET (Viewport: (0, 0))
+    let pkt_vport = build_set_context_reg(PA_SC_WINDOW_OFFSET, 0x0000_0000);
+    ring_buffer.write_packet(&mut bus, &pkt_vport)?;
+    println!("  [PM4 EMIT] SET_CONTEXT_REG (PA_SC_WINDOW_OFFSET: 0x0) [{} dwords]", pkt_vport.len());
+
+    // 3. Load ALU Constants (c0..c3: 4x4 Orthogonal Matrix for UI Projection)
+    let projection_matrix = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let pkt_constants = build_load_alu_constant(0, &projection_matrix);
+    ring_buffer.write_packet(&mut bus, &pkt_constants)?;
+    println!("  [PM4 EMIT] LOAD_ALU_CONSTANT (c0..c3: 4x4 Ortho Matrix) [{} dwords]", pkt_constants.len());
+
+    // 4. Index buffer setup in guest RAM at 0x10050000
+    let index_ptr: u32 = 0x1005_0000;
+    let indices: [u16; 6] = [0, 1, 2, 2, 3, 0]; // 2 Triangles for UI Quad
+    for (i, &idx) in indices.iter().enumerate() {
+        bus.write_u16(index_ptr as u64 + (i * 2) as u64, idx)?;
+    }
+
+    // 5. Emit Draw Call: PM4_DRAW_INDX (Primitive: Triangles, 6 indices)
+    let pkt_draw = build_draw_indexed(0x04, 6, index_ptr);
+    ring_buffer.write_packet(&mut bus, &pkt_draw)?;
+    println!("  [PM4 EMIT] DRAW_INDX (Primitive: Triangles, 6 Indices, Base: 0x{:08X}) [{} dwords]", index_ptr, pkt_draw.len());
+
+    // 6. Emit WAIT_FOR_IDLE fence
+    let pkt_idle = build_wait_for_idle();
+    ring_buffer.write_packet(&mut bus, &pkt_idle)?;
+    println!("  [PM4 EMIT] WAIT_FOR_IDLE (Pipeline Flush & Fence) [{} dwords]", pkt_idle.len());
+
+    println!("\n[*] Executing Xenos GPU Command Processor (CP) loop on Primary Ring Buffer...");
+    let executed_count = xenos_gpu.execute_ring(&mut bus, &mut ring_buffer)?;
+    println!("[+] Xenos GPU CP successfully processed {} PM4 packets from Ring Buffer!", executed_count);
+    println!("    - Total Packets Processed: {}", xenos_gpu.packets_executed);
+    println!("    - Draw Calls Executed:     {}", xenos_gpu.draw_calls);
+    println!("    - Primitives Drawn:        {}", xenos_gpu.primitives_drawn);
+
+    // ==========================================================
     // MILESTONE 5: High-Definition GPU Video Display & Surface Rendering
     // ==========================================================
     println!("\n>>> [MILESTONE 5] GPU Video Output (1280x720 HD @ 60 FPS) <<<");
