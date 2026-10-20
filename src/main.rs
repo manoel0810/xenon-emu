@@ -477,12 +477,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n[*] ========================================================");
     println!("    🎮 XBOX 360 INICIANDO: ANIMAÇÃO DE BOOT ATIVA!");
-    println!("    - A animação autêntica do Xbox 360 é reproduzida primeiro");
-    println!("    - Pressione (A) no controle ou ESPAÇO/ENTER para pular");
-    println!("    - Em seguida, a Dashboard das Blades surge em 720p HD");
-    println!("    - Setas Esquerda/Direita ou A/D: Alternar Blades");
-    println!("    - Setas Cima/Baixo ou W/S: Navegar nos itens");
-    println!("    - Controle Xbox USB: D-Pad, Thumbstick, LB/RB, A, B");
+    println!("    - A animacao de boot do Xbox 360 e reproduzida (~4.5s)");
+    println!("    - Pressione ESPACO ou (A) no controle para pular (apos 1s)");
+    println!("    - Em seguida, a Dashboard surge em 1280x720 HD @ 60 FPS");
+    println!("    - [TAB] ou Botao (Y): Alternar p/ Arvore Visual XUI (.XUR)");
+    println!("    - [X] ou [1..4]: Alternar Cenas XUI (BladeSkin, gamesSignedOut)");
+    println!("    - Setas / A,D ou D-Pad / Thumbstick: Alternar Blades");
+    println!("    - Setas / W,S ou D-Pad: Navegar nos itens do menu");
     println!("    - Pressione ESC ou clique no [X] para fechar a janela");
     println!("    ========================================================\n");
 

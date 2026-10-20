@@ -18,6 +18,12 @@ pub enum DisplayMode {
     Dashboard,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Blades,
+    XuiDirect,
+}
+
 #[derive(Debug, Clone)]
 pub struct BladeItem {
     pub title: String,
@@ -45,6 +51,10 @@ pub struct GpuDisplay {
     pub gamepad_mgr: GamepadManager,
     pub mode: DisplayMode,
     pub boot_frame: u32,
+    pub view_mode: ViewMode,
+    pub xui_scenes: Vec<crate::loader::XurScene>,
+    pub xus_table: Option<crate::loader::XusTable>,
+    pub current_scene_idx: usize,
 }
 
 impl GpuDisplay {
@@ -129,6 +139,10 @@ impl GpuDisplay {
             gamepad_mgr,
             mode: DisplayMode::BootAnimation,
             boot_frame: 0,
+            view_mode: ViewMode::Blades,
+            xui_scenes: Vec::new(),
+            xus_table: None,
+            current_scene_idx: 0,
         })
     }
 
@@ -143,26 +157,75 @@ impl GpuDisplay {
             return;
         }
 
-        // In Boot Animation mode, allow skipping immediately with A button or Space/Enter
+        // In Boot Animation mode, only allow skip after 60 frames (1 second minimum)
+        // to prevent terminal Enter bleed-through when launched via RODAR_EMULADOR.bat
         if self.mode == DisplayMode::BootAnimation {
             let mut skip = false;
-            if let Some(state) = self.gamepad_mgr.poll(0) {
-                if (state.gamepad.w_buttons & XINPUT_GAMEPAD_A) != 0 {
+            if self.boot_frame >= 60 {
+                if let Some(state) = self.gamepad_mgr.poll(0) {
+                    if (state.gamepad.w_buttons & XINPUT_GAMEPAD_A) != 0 {
+                        skip = true;
+                    }
+                }
+                if self.window.is_key_down(Key::Space) || self.window.is_key_down(Key::Escape) {
                     skip = true;
                 }
             }
-            if self.window.is_key_down(Key::Space)
-                || self.window.is_key_down(Key::Enter)
-                || self.window.is_key_down(Key::A)
-            {
-                skip = true;
-            }
 
             if skip {
-                println!("  [BOOTANIM] Botao de Skip pressionado -> Pulando animacao para a Dashboard!");
+                println!("  [BOOTANIM] Botao de Skip pressionado -> Transicao suave para a Dashboard!");
                 self.mode = DisplayMode::Dashboard;
-                self.key_cooldown = 15;
+                self.key_cooldown = 20;
             }
+            return;
+        }
+
+        // Toggle between Blades and Direct Microsoft XUI Scene Graph view (.xur)
+        let mut toggle_view = false;
+        let mut cycle_scene = false;
+
+        if let Some(state) = self.gamepad_mgr.poll(0) {
+            let btns = state.gamepad.w_buttons;
+            if (btns & crate::kernel::input::XINPUT_GAMEPAD_Y) != 0 {
+                toggle_view = true;
+            }
+            if (btns & crate::kernel::input::XINPUT_GAMEPAD_X) != 0 {
+                cycle_scene = true;
+            }
+        }
+
+        if self.window.is_key_down(Key::Tab) {
+            toggle_view = true;
+        }
+
+        if self.window.is_key_down(Key::Key1)
+            || self.window.is_key_down(Key::Key2)
+            || self.window.is_key_down(Key::Key3)
+            || self.window.is_key_down(Key::Key4)
+            || self.window.is_key_down(Key::X)
+        {
+            cycle_scene = true;
+        }
+
+        if toggle_view {
+            self.view_mode = match self.view_mode {
+                ViewMode::Blades => {
+                    println!("  [UI MODE] Modo de Visualizacao Direta da Arvore XUI da Microsoft (.XUR) ativado!");
+                    ViewMode::XuiDirect
+                }
+                ViewMode::XuiDirect => {
+                    println!("  [UI MODE] Modo Dashboard Blades ativado!");
+                    ViewMode::Blades
+                }
+            };
+            self.key_cooldown = 15;
+            return;
+        }
+
+        if cycle_scene && !self.xui_scenes.is_empty() {
+            self.current_scene_idx = (self.current_scene_idx + 1) % self.xui_scenes.len();
+            println!("  [XUI SCENE] Cena ativa alterada para: '{}'", self.xui_scenes[self.current_scene_idx].name);
+            self.key_cooldown = 15;
             return;
         }
 
@@ -269,6 +332,12 @@ impl GpuDisplay {
                 println!("  [BOOTANIM] Sequencia de boot do Xbox 360 concluida -> Carregando Dashboard ($flash_dash.xex)...");
                 self.mode = DisplayMode::Dashboard;
             }
+            return;
+        }
+
+        // If in XuiDirect mode, render authentic Microsoft XUI scene graph directly from dump
+        if self.view_mode == ViewMode::XuiDirect {
+            self.render_xui_direct_scene();
             return;
         }
 
@@ -599,11 +668,11 @@ impl GpuDisplay {
         draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Settings", 0x00FFFFFF, 1);
         bx += 135;
 
-        // Button (Y) Eject Disc
+        // Button (Y) / TAB: XUI Direct Scene
         draw_button_circle(&mut self.framebuffer, w, h, bx, by + 4, 0x00E0A000);
         draw_text(&mut self.framebuffer, w, h, bx - 3, by, "Y", 0x00FFFFFF, 1);
-        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "Eject Tray", 0x00FFFFFF, 1);
-        bx += 145;
+        draw_text(&mut self.framebuffer, w, h, bx + 16, by, "XUI .xur [TAB]", 0x0000FF7F, 1);
+        bx += 160;
 
         // Navigation hints
         draw_text(
@@ -612,7 +681,7 @@ impl GpuDisplay {
             h,
             bx,
             by,
-            "[<] [>] Change Blade (Arrows or A/D)",
+            "[<] [>] Alternar Blades (A/D ou Setas)",
             0x0090D0FF,
             1,
         );
@@ -979,6 +1048,8 @@ impl GpuDisplay {
 
     /// Injects authentic Microsoft XUI scenes (.xur) and localized string tables (.xus)
     pub fn apply_xui_locale(&mut self, xus: &crate::loader::XusTable, scenes: &[crate::loader::XurScene]) {
+        self.xus_table = Some(xus.clone());
+        self.xui_scenes = scenes.to_vec();
         println!("[+] GpuDisplay: Binding {} authentic XUI Scene(s) & Portuguese String Table (.xus)...", scenes.len());
 
         // Update Games Blade with genuine Portuguese strings directly from dump
@@ -1002,6 +1073,171 @@ impl GpuDisplay {
                 sc.name, sc.root.class_name, sc.root.children.len()
             );
         }
+    }
+
+    /// Renders the genuine Microsoft .xur (XUIB) scene graph directly using D3D9 barycentric cards & text
+    pub fn render_xui_direct_scene(&mut self) {
+        let w = self.width;
+        let h = self.height;
+
+        // Dark slate development / XUI canvas background with subtle grid
+        for y in 0..h {
+            for x in 0..w {
+                let grid = (x % 32 == 0 || y % 32 == 0) as u32;
+                let bg = if grid == 1 { 0x00141A22 } else { 0x000E1217 };
+                self.framebuffer[y * w + x] = bg;
+            }
+        }
+
+        // Top Header Bar
+        for y in 0..65 {
+            for x in 0..w {
+                self.framebuffer[y * w + x] = 0x001A241A;
+            }
+        }
+        for x in 0..w {
+            self.framebuffer[64 * w + x] = 0x0052D053; // Xbox Emerald Green line
+        }
+
+        draw_text(&mut self.framebuffer, w, h, 25, 18, "MICROSOFT XUI ENGINE [ARVORE VISUAL .XUR REAL]", 0x0052D053, 2);
+        draw_text(&mut self.framebuffer, w, h, 25, 42, "Direct3D 9 Barycentric Rasterizer | ATI Xenos EDRAM 1280x720 32-bit ARGB", 0x00A0B0A0, 1);
+
+        let scene_count = self.xui_scenes.len();
+        if scene_count == 0 {
+            draw_text(&mut self.framebuffer, w, h, 400, 340, "Nenhuma cena XUI carregada.", 0x00FF8080, 2);
+            return;
+        }
+
+        let scene = &self.xui_scenes[self.current_scene_idx % scene_count];
+
+        // Scene Selector Tabs on Top Right
+        let prompt = format!("[TAB / (Y)]: Voltar p/ Blades | [X / 1-{}]: Cena ({}/{})", scene_count, self.current_scene_idx + 1, scene_count);
+        draw_text(&mut self.framebuffer, w, h, w - 580, 24, &prompt, 0x00FFFFFF, 1);
+
+        // Scene Name Badge
+        let badge_text = format!("ARQUIVO: {}.xur (Magic: XUIB v{})", scene.name, scene.version);
+        draw_text(&mut self.framebuffer, w, h, w - 580, 42, &badge_text, 0x0000FF7F, 1);
+
+        // Left Panel: Scene Info & Hierarchy Tree
+        rasterize_rounded_card(
+            &mut self.framebuffer,
+            w,
+            h,
+            30.0,
+            85.0,
+            360.0,
+            560.0,
+            10.0,
+            0xE01A221A,
+            0xE00E140E,
+            0xFF2A8C2A,
+        );
+
+        draw_text(&mut self.framebuffer, w, h, 50, 105, "METADADOS DA CENA (.XUR)", 0x0052D053, 2);
+        let root_info = format!("Root Class: {}", scene.root.class_name);
+        draw_text(&mut self.framebuffer, w, h, 50, 135, &root_info, 0x00FFFFFF, 1);
+        let node_count = format!("Nos Visuais: {}", scene.root.children.len());
+        draw_text(&mut self.framebuffer, w, h, 50, 155, &node_count, 0x00E0E0E0, 1);
+        let class_count = format!("Classes XUI: {}", scene.classes.len());
+        draw_text(&mut self.framebuffer, w, h, 50, 175, &class_count, 0x00E0E0E0, 1);
+
+        draw_text(&mut self.framebuffer, w, h, 50, 210, "CLASSES REGISTRADAS:", 0x0000FF7F, 1);
+        for (i, c) in scene.classes.iter().take(6).enumerate() {
+            let line = format!("- {}", c);
+            draw_text(&mut self.framebuffer, w, h, 60, 230 + i * 18, &line, 0x00A0C0A0, 1);
+        }
+
+        draw_text(&mut self.framebuffer, w, h, 50, 360, "STRINGS PT-BR (.XUS):", 0x0000FF7F, 1);
+        if let Some(ref table) = self.xus_table {
+            for (i, s) in table.strings.iter().take(8).enumerate() {
+                let preview: String = s.chars().take(28).collect();
+                let line = format!("\"{}\"", preview);
+                draw_text(&mut self.framebuffer, w, h, 60, 385 + i * 20, &line, 0x00FFFFFF, 1);
+            }
+        }
+
+        // Center / Main Canvas: Render the visual nodes extracted from the .xur
+        rasterize_rounded_card(
+            &mut self.framebuffer,
+            w,
+            h,
+            415.0,
+            85.0,
+            835.0,
+            560.0,
+            12.0,
+            0xE0102010,
+            0xE0061006,
+            0xFF00FF7F,
+        );
+
+        let canvas_title = format!("RENDERIZACAO DA ARVORE VISUAL: {}", scene.name);
+        draw_text(&mut self.framebuffer, w, h, 440, 105, &canvas_title, 0x00FFFFFF, 2);
+
+        // Render each child visual node from the genuine .xur
+        let items = &scene.root.children;
+        if items.is_empty() {
+            draw_text(&mut self.framebuffer, w, h, 440, 160, "Container de cena raiz sem nós filhos diretos.", 0x00A0A0A0, 1);
+        } else {
+            for (idx, node) in items.iter().take(6).enumerate() {
+                let ny = 145.0 + idx as f32 * 75.0;
+                let nw = 785.0f32;
+                let nh = 62.0f32;
+                let nx = 440.0f32;
+
+                let fill_top = if idx % 2 == 0 { 0xF0183018 } else { 0xF0102410 };
+                let fill_bot = 0xF0081408;
+                let border = 0xFF52D053;
+
+                rasterize_rounded_card(
+                    &mut self.framebuffer,
+                    w,
+                    h,
+                    nx,
+                    ny,
+                    nw,
+                    nh,
+                    8.0,
+                    fill_top,
+                    fill_bot,
+                    border,
+                );
+
+                // Control Tag & ID
+                let node_title = format!("[#{:02}] {} - id=\"{}\"", idx + 1, node.class_name, node.id);
+                draw_text(&mut self.framebuffer, w, h, (nx + 20.0) as usize, (ny + 12.0) as usize, &node_title, 0x00FFFFFF, 1);
+
+                // Bound coordinates from VECT chunk
+                let bounds_str = format!("XUI Bounds: ({:.0}, {:.0}, {:.0}, {:.0}) | D3D9 Viewport Active", node.x, node.y, node.width, node.height);
+                draw_text(&mut self.framebuffer, w, h, (nx + 22.0) as usize, (ny + 34.0) as usize, &bounds_str, 0x00A0D0A0, 1);
+
+                // Associate with real Portuguese string if available
+                if let Some(ref table) = self.xus_table {
+                    if idx < table.strings.len() {
+                        let sample_s = &table.strings[idx];
+                        let txt_preview: String = sample_s.chars().take(30).collect();
+                        let mapped = format!("Texto: \"{}\"", txt_preview);
+                        draw_text(&mut self.framebuffer, w, h, (nx + nw - 340.0) as usize, (ny + 22.0) as usize, &mapped, 0x0000FF7F, 1);
+                    }
+                }
+            }
+        }
+
+        // Bottom Navigation Bar
+        for y in (h - 55)..h {
+            for x in 0..w {
+                self.framebuffer[y * w + x] = 0x00141C14;
+            }
+        }
+        for x in 0..w {
+            self.framebuffer[(h - 55) * w + x] = 0x0052D053;
+        }
+
+        draw_text(&mut self.framebuffer, w, h, 40, h - 38, "[TAB] Voltar para Blades", 0x00FFFFFF, 1);
+        draw_text(&mut self.framebuffer, w, h, 260, h - 38, "[X] / [1-4] Trocar Cena XUI", 0x0000FF7F, 1);
+        draw_text(&mut self.framebuffer, w, h, 520, h - 38, "[ESC] Fechar Emulador", 0x00A0A0A0, 1);
+        let status = format!("Xenos Ring Buffer: 0x10000000 | EDRAM Target: 0x70000000 (1280x720 60Hz)");
+        draw_text(&mut self.framebuffer, w, h, w - 460, h - 38, &status, 0x0080C080, 1);
     }
 }
 
