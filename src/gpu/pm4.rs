@@ -36,6 +36,8 @@ pub const SQ_VS_CONST_BASE: u32 = 0x2185;
 pub const SQ_PS_CONST_BASE: u32 = 0x2186;
 pub const VGT_DRAW_INITIATOR: u32 = 0x2191;
 pub const VGT_DMA_BASE: u32 = 0x2192;
+pub const VGT_DMA_SIZE: u32 = 0x2193;
+pub const VGT_DMA_STRIDE: u32 = 0x2194;
 pub const PA_SU_SC_MODE_CNTL: u32 = 0x2205;
 
 /// High-level representation of a decoded ATI Xenos PM4 Packet

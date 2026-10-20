@@ -653,7 +653,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n>>> [ETAPA 2] ATI Xenos GPU Command Processor (CP) & Primary Ring Buffer <<<");
     use gpu::{
         build_draw_indexed, build_load_alu_constant, build_set_context_reg, build_wait_for_idle,
-        RingBuffer, XenosGpu, PA_SC_WINDOW_OFFSET, RB_COLOR_INFO,
+        RingBuffer, XenosGpu, PA_SC_WINDOW_OFFSET, RB_COLOR_INFO, VGT_DMA_BASE, VGT_DMA_SIZE,
+        VGT_DMA_STRIDE,
     };
 
     let ring_base: u64 = 0x1000_0000; // 256 MB in RAM
@@ -661,6 +662,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ring_buffer = RingBuffer::new(ring_base, ring_size);
     let mut xenos_gpu = XenosGpu::new();
     println!("[+] Initialized Xenos Primary Ring Buffer at 0x{:08X} (Size: {} KB)", ring_base, ring_size / 1024);
+
+    // Load authentic Dashboard texture assets into TextureAtlas
+    xenos_gpu.load_atlas_from_dir("../extracted_xui");
+    let bound_logo = xenos_gpu.bind_texture_by_name(0, "xboxLogo");
+    println!("  [+] Texture 'xboxLogo' bound to Sampler Stage 0: {}", bound_logo);
 
     // Link Primary Ring Buffer with Xboxkrnl Video Subsystem
     let rb_ret = kernel.dispatch("xboxkrnl.exe", 0x01C3, &[ring_base, ring_size as u64], &mut bus);
@@ -690,19 +696,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ring_buffer.write_packet(&mut bus, &pkt_constants)?;
     println!("  [PM4 EMIT] LOAD_ALU_CONSTANT (c0..c4: Matrix + Diffuse Tint) [{} dwords]", pkt_constants.len());
 
-    // 4. Index buffer setup in guest RAM at 0x10050000
+    // 4. Stream Vertex Buffer in guest RAM at 0x10060000 (VGT DMA)
+    let vgt_addr: u64 = 0x1006_0000;
+    let raw_vertices: [([f32; 3], u32, [f32; 2]); 4] = [
+        ([380.0, 150.0, 0.0], 0xFFFF_FFFF, [0.0, 0.0]),
+        ([1180.0, 150.0, 0.0], 0xFFFF_FFFF, [1.0, 0.0]),
+        ([1180.0, 250.0, 0.0], 0xFFFF_FFFF, [1.0, 1.0]),
+        ([380.0, 250.0, 0.0], 0xFFFF_FFFF, [0.0, 1.0]),
+    ];
+    for (i, (pos, color, uv)) in raw_vertices.iter().enumerate() {
+        let v_base = vgt_addr + (i * 24) as u64;
+        bus.write_u32(v_base, pos[0].to_bits())?;
+        bus.write_u32(v_base + 4, pos[1].to_bits())?;
+        bus.write_u32(v_base + 8, pos[2].to_bits())?;
+        bus.write_u32(v_base + 12, *color)?;
+        bus.write_u32(v_base + 16, uv[0].to_bits())?;
+        bus.write_u32(v_base + 20, uv[1].to_bits())?;
+    }
+    let pkt_dma_base = build_set_context_reg(VGT_DMA_BASE, vgt_addr as u32);
+    let pkt_dma_size = build_set_context_reg(VGT_DMA_SIZE, 4);
+    let pkt_dma_stride = build_set_context_reg(VGT_DMA_STRIDE, 24);
+    ring_buffer.write_packet(&mut bus, &pkt_dma_base)?;
+    ring_buffer.write_packet(&mut bus, &pkt_dma_size)?;
+    ring_buffer.write_packet(&mut bus, &pkt_dma_stride)?;
+    println!("  [PM4 EMIT] SET_CONTEXT_REG (VGT_DMA_BASE: 0x{:08X}, Size: 4, Stride: 24)", vgt_addr);
+
+    // 5. Index buffer setup in guest RAM at 0x10050000
     let index_ptr: u32 = 0x1005_0000;
     let indices: [u16; 6] = [0, 1, 2, 2, 3, 0]; // 2 Triangles for UI Quad
     for (i, &idx) in indices.iter().enumerate() {
         bus.write_u16(index_ptr as u64 + (i * 2) as u64, idx)?;
     }
 
-    // 5. Emit Draw Call: PM4_DRAW_INDX (Primitive: Triangles, 6 indices)
+    // 6. Emit Draw Call: PM4_DRAW_INDX (Primitive: Triangles, 6 indices)
     let pkt_draw = build_draw_indexed(0x04, 6, index_ptr);
     ring_buffer.write_packet(&mut bus, &pkt_draw)?;
     println!("  [PM4 EMIT] DRAW_INDX (Primitive: Triangles, 6 Indices, Base: 0x{:08X}) [{} dwords]", index_ptr, pkt_draw.len());
 
-    // 6. Emit WAIT_FOR_IDLE fence
+    // 7. Emit WAIT_FOR_IDLE fence
     let pkt_idle = build_wait_for_idle();
     ring_buffer.write_packet(&mut bus, &pkt_idle)?;
     println!("  [PM4 EMIT] WAIT_FOR_IDLE (Pipeline Flush & Fence) [{} dwords]", pkt_idle.len());

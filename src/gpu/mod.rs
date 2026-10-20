@@ -13,8 +13,12 @@ pub use pm4::{
     build_set_shader_program, build_type0, build_type3, build_wait_for_idle, Pm4Packet,
     PA_CL_VPORT_XOFFSET, PA_CL_VPORT_XSCALE, PA_CL_VPORT_YOFFSET, PA_CL_VPORT_YSCALE,
     PA_SC_WINDOW_OFFSET, RB_COLOR_INFO, SQ_PROGRAM_CNTL, SQ_PS_PROGRAM_ADDR, SQ_VS_PROGRAM_ADDR,
+    VGT_DMA_BASE, VGT_DMA_SIZE, VGT_DMA_STRIDE,
 };
-pub use rasterizer::{blend_pixel, rasterize_gradient_quad, rasterize_rounded_card, rasterize_triangle};
+pub use rasterizer::{
+    blend_pixel, rasterize_gradient_quad, rasterize_rounded_card, rasterize_triangle,
+    rasterize_triangle_textured,
+};
 pub use ring_buffer::RingBuffer;
 pub use shader::{
     create_default_xui_pixel_shader, create_default_xui_vertex_shader, AluInstruction, AluOpcode,

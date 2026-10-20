@@ -5,6 +5,7 @@ use crate::gpu::shader::{
     create_default_xui_pixel_shader, create_default_xui_vertex_shader, PixelShader, VertexInput,
     VertexShader,
 };
+use crate::gpu::texture::{Texture, TextureAtlas};
 use crate::memory::MemoryBus;
 use std::collections::HashMap;
 
@@ -18,6 +19,18 @@ pub struct Vertex {
     pub y: f32,
     pub z: f32,
     pub color: u32,
+    pub u: f32,
+    pub v: f32,
+}
+
+impl Vertex {
+    pub fn new(x: f32, y: f32, z: f32, color: u32, u: f32, v: f32) -> Self {
+        Self { x, y, z, color, u, v }
+    }
+
+    pub fn pos_color(x: f32, y: f32, z: f32, color: u32) -> Self {
+        Self { x, y, z, color, u: 0.0, v: 0.0 }
+    }
 }
 
 /// ATI Xenos (Xbox 360) Command Processor and Graphics Engine
@@ -39,6 +52,15 @@ pub struct XenosGpu {
     pub vport_yscale: f32,
     pub vport_xoffset: f32,
     pub vport_yoffset: f32,
+    /// Texture Atlas of authentic Xbox 360 Dashboard assets
+    pub atlas: Option<TextureAtlas>,
+    /// Texture samplers (0..15)
+    pub samplers: [Option<Texture>; 16],
+    pub bound_texture_name: Option<String>,
+    /// VGT DMA Vertex Buffer Base in guest RAM
+    pub vgt_dma_base: u64,
+    pub vgt_dma_stride: usize,
+    pub vgt_dma_count: usize,
     /// On-chip internal color buffer (resolves into display framebuffer)
     pub color_buffer: Vec<u32>,
     /// Execution counters
@@ -76,10 +98,44 @@ impl XenosGpu {
             vport_yscale: -360.0,
             vport_xoffset: 640.0,
             vport_yoffset: 360.0,
+            atlas: None,
+            samplers: Default::default(),
+            bound_texture_name: None,
+            vgt_dma_base: 0,
+            vgt_dma_stride: 24,
+            vgt_dma_count: 0,
             color_buffer: vec![0u32; XENOS_WIDTH * XENOS_HEIGHT],
             packets_executed: 0,
             draw_calls: 0,
             primitives_drawn: 0,
+        }
+    }
+
+    /// Loads the texture atlas from directory containing Dashboard .XZP extracted assets
+    pub fn load_atlas_from_dir<P: AsRef<std::path::Path>>(&mut self, path: P) {
+        let atlas = TextureAtlas::load_from_dir(path);
+        println!("  [XENOS GPU] Loaded TextureAtlas with {} authentic Dashboard textures.", atlas.len());
+        self.atlas = Some(atlas);
+    }
+
+    /// Binds a texture by asset name into the specified sampler stage (e.g. 0)
+    pub fn bind_texture_by_name(&mut self, sampler_idx: usize, name: &str) -> bool {
+        if sampler_idx < 16 {
+            if let Some(ref atlas) = self.atlas {
+                if let Some(tex) = atlas.get(name) {
+                    self.samplers[sampler_idx] = Some(tex.clone());
+                    self.bound_texture_name = Some(name.to_string());
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Binds an existing texture directly into a sampler stage
+    pub fn bind_texture(&mut self, sampler_idx: usize, texture: Texture) {
+        if sampler_idx < 16 {
+            self.samplers[sampler_idx] = Some(texture);
         }
     }
 
@@ -198,6 +254,15 @@ impl XenosGpu {
                                         self.current_ps = Some(ps);
                                     }
                                 }
+                                VGT_DMA_BASE => {
+                                    self.vgt_dma_base = val as u64;
+                                }
+                                VGT_DMA_SIZE => {
+                                    self.vgt_dma_count = val as usize;
+                                }
+                                VGT_DMA_STRIDE => {
+                                    self.vgt_dma_stride = val as usize;
+                                }
                                 _ => {}
                             }
                         }
@@ -242,7 +307,8 @@ impl XenosGpu {
         Ok(())
     }
 
-    /// Executes an indexed draw call by reading indices, transforming vertices with shaders, and rasterizing triangles
+    /// Executes an indexed draw call by reading indices, streaming vertices (via VGT DMA if configured),
+    /// executing vertex/pixel shaders, and rasterizing triangles with optional bilinear texture filtering.
     fn execute_draw_indexed(&mut self, bus: &MemoryBus, data: &[u32]) -> Result<(), String> {
         if data.len() < 3 {
             return Ok(());
@@ -268,33 +334,80 @@ impl XenosGpu {
 
         let vs = self.current_vs.as_ref().unwrap_or(&self.default_vs);
 
-        // Convert base quad vertices into VertexInputs
-        let raw_inputs = [
-            VertexInput {
-                position: [380.0, 150.0, 0.0, 1.0],
-                color: [0.165, 0.549, 0.165, 1.0], // 0xFF2A8C2A
-                uv: [0.0, 0.0],
-                normal: [0.0, 0.0, 1.0],
-            },
-            VertexInput {
-                position: [1180.0, 150.0, 0.0, 1.0],
-                color: [0.106, 0.420, 0.106, 1.0], // 0xFF1B6B1B
-                uv: [1.0, 0.0],
-                normal: [0.0, 0.0, 1.0],
-            },
-            VertexInput {
-                position: [1180.0, 250.0, 0.0, 1.0],
-                color: [0.051, 0.231, 0.051, 1.0], // 0xFF0D3B0D
-                uv: [1.0, 1.0],
-                normal: [0.0, 0.0, 1.0],
-            },
-            VertexInput {
-                position: [380.0, 250.0, 0.0, 1.0],
-                color: [0.051, 0.231, 0.051, 1.0], // 0xFF0D3B0D
-                uv: [0.0, 1.0],
-                normal: [0.0, 0.0, 1.0],
-            },
-        ];
+        // Determine vertex inputs: Stream from VGT DMA buffer in guest RAM or fallback to default quad
+        let raw_inputs: Vec<VertexInput> = if self.vgt_dma_base > 0x1000 {
+            let count = if self.vgt_dma_count > 0 {
+                self.vgt_dma_count
+            } else {
+                (indices.iter().max().copied().unwrap_or(0) as usize) + 1
+            };
+            let stride = if self.vgt_dma_stride >= 16 {
+                self.vgt_dma_stride
+            } else {
+                24
+            };
+
+            let mut inputs = Vec::with_capacity(count);
+            for i in 0..count {
+                let v_addr = self.vgt_dma_base + (i * stride) as u64;
+                let px = f32::from_bits(bus.read_u32(v_addr).unwrap_or(0));
+                let py = f32::from_bits(bus.read_u32(v_addr + 4).unwrap_or(0));
+                let pz = f32::from_bits(bus.read_u32(v_addr + 8).unwrap_or(0));
+
+                let color_val = bus.read_u32(v_addr + 12).unwrap_or(0xFFFFFFFF);
+                let ca = ((color_val >> 24) & 0xFF) as f32 / 255.0;
+                let cr = ((color_val >> 16) & 0xFF) as f32 / 255.0;
+                let cg = ((color_val >> 8) & 0xFF) as f32 / 255.0;
+                let cb = (color_val & 0xFF) as f32 / 255.0;
+
+                let (u, v) = if stride >= 24 {
+                    let u_val = f32::from_bits(bus.read_u32(v_addr + 16).unwrap_or(0));
+                    let v_val = f32::from_bits(bus.read_u32(v_addr + 20).unwrap_or(0));
+                    (u_val, v_val)
+                } else {
+                    (0.0, 0.0)
+                };
+
+                inputs.push(VertexInput {
+                    position: [px, py, pz, 1.0],
+                    color: [cr, cg, cb, ca],
+                    uv: [u, v],
+                    normal: [0.0, 0.0, 1.0],
+                });
+            }
+            inputs
+        } else {
+            vec![
+                VertexInput {
+                    position: [380.0, 150.0, 0.0, 1.0],
+                    color: [0.165, 0.549, 0.165, 1.0], // 0xFF2A8C2A
+                    uv: [0.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                },
+                VertexInput {
+                    position: [1180.0, 150.0, 0.0, 1.0],
+                    color: [0.106, 0.420, 0.106, 1.0], // 0xFF1B6B1B
+                    uv: [1.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                },
+                VertexInput {
+                    position: [1180.0, 250.0, 0.0, 1.0],
+                    color: [0.051, 0.231, 0.051, 1.0], // 0xFF0D3B0D
+                    uv: [1.0, 1.0],
+                    normal: [0.0, 0.0, 1.0],
+                },
+                VertexInput {
+                    position: [380.0, 250.0, 0.0, 1.0],
+                    color: [0.051, 0.231, 0.051, 1.0], // 0xFF0D3B0D
+                    uv: [0.0, 1.0],
+                    normal: [0.0, 0.0, 1.0],
+                },
+            ]
+        };
+
+        if raw_inputs.is_empty() {
+            return Ok(());
+        }
 
         // Execute Vertex Shader for all vertices
         let mut vertices = Vec::with_capacity(raw_inputs.len());
@@ -308,36 +421,123 @@ impl XenosGpu {
                 self.vport_yoffset,
             );
 
-            // Modulate pixel color through Pixel Shader
-            let color = if let Some(ref ps) = self.current_ps {
-                ps.execute(v_out.color, v_out.uv, &self.alu_constants, None)
-            } else {
-                let ca = (v_out.color[3].clamp(0.0, 1.0) * 255.0) as u32;
-                let cr = (v_out.color[0].clamp(0.0, 1.0) * 255.0) as u32;
-                let cg = (v_out.color[1].clamp(0.0, 1.0) * 255.0) as u32;
-                let cb = (v_out.color[2].clamp(0.0, 1.0) * 255.0) as u32;
-                (ca << 24) | (cr << 16) | (cg << 8) | cb
-            };
+            let ca = (v_out.color[3].clamp(0.0, 1.0) * 255.0) as u32;
+            let cr = (v_out.color[0].clamp(0.0, 1.0) * 255.0) as u32;
+            let cg = (v_out.color[1].clamp(0.0, 1.0) * 255.0) as u32;
+            let cb = (v_out.color[2].clamp(0.0, 1.0) * 255.0) as u32;
+            let color = (ca << 24) | (cr << 16) | (cg << 8) | cb;
 
             vertices.push(Vertex {
                 x: v_out.screen_x,
                 y: v_out.screen_y,
                 z: v_out.clip_pos[2],
                 color,
+                u: v_out.uv[0],
+                v: v_out.uv[1],
             });
         }
 
-        // Rasterize triangles using D3D9 barycentric rasterizer
+        let active_tex = self.samplers[0].as_ref();
         let mut tris_count = 0;
-        if prim_type == 0x04 {
-            // Triangles (groups of 3 indices)
-            for chunk in indices.chunks_exact(3) {
-                let (i0, i1, i2) = (chunk[0] as usize % vertices.len(), chunk[1] as usize % vertices.len(), chunk[2] as usize % vertices.len());
-                let v0 = &vertices[i0];
-                let v1 = &vertices[i1];
-                let v2 = &vertices[i2];
-                rasterize_triangle(&mut self.color_buffer, XENOS_WIDTH, XENOS_HEIGHT, v0, v1, v2);
-                tris_count += 1;
+
+        match prim_type {
+            // D3DPT_TRIANGLELIST (0x04)
+            0x04 => {
+                for chunk in indices.chunks_exact(3) {
+                    let (i0, i1, i2) = (
+                        chunk[0] as usize % vertices.len(),
+                        chunk[1] as usize % vertices.len(),
+                        chunk[2] as usize % vertices.len(),
+                    );
+                    let v0 = &vertices[i0];
+                    let v1 = &vertices[i1];
+                    let v2 = &vertices[i2];
+                    rasterize_triangle_textured(
+                        &mut self.color_buffer,
+                        XENOS_WIDTH,
+                        XENOS_HEIGHT,
+                        v0,
+                        v1,
+                        v2,
+                        active_tex,
+                    );
+                    tris_count += 1;
+                }
+            }
+            // D3DPT_TRIANGLESTRIP (0x05)
+            0x05 => {
+                for i in 2..indices.len() {
+                    let (i0, i1, i2) = if i % 2 == 0 {
+                        (
+                            indices[i - 2] as usize % vertices.len(),
+                            indices[i - 1] as usize % vertices.len(),
+                            indices[i] as usize % vertices.len(),
+                        )
+                    } else {
+                        (
+                            indices[i - 1] as usize % vertices.len(),
+                            indices[i - 2] as usize % vertices.len(),
+                            indices[i] as usize % vertices.len(),
+                        )
+                    };
+                    let v0 = &vertices[i0];
+                    let v1 = &vertices[i1];
+                    let v2 = &vertices[i2];
+                    rasterize_triangle_textured(
+                        &mut self.color_buffer,
+                        XENOS_WIDTH,
+                        XENOS_HEIGHT,
+                        v0,
+                        v1,
+                        v2,
+                        active_tex,
+                    );
+                    tris_count += 1;
+                }
+            }
+            // D3DPT_TRIANGLEFAN (0x06)
+            0x06 => {
+                for i in 1..indices.len().saturating_sub(1) {
+                    let i0 = indices[0] as usize % vertices.len();
+                    let i1 = indices[i] as usize % vertices.len();
+                    let i2 = indices[i + 1] as usize % vertices.len();
+                    let v0 = &vertices[i0];
+                    let v1 = &vertices[i1];
+                    let v2 = &vertices[i2];
+                    rasterize_triangle_textured(
+                        &mut self.color_buffer,
+                        XENOS_WIDTH,
+                        XENOS_HEIGHT,
+                        v0,
+                        v1,
+                        v2,
+                        active_tex,
+                    );
+                    tris_count += 1;
+                }
+            }
+            _ => {
+                // Fallback for default indexed list
+                for chunk in indices.chunks_exact(3) {
+                    let (i0, i1, i2) = (
+                        chunk[0] as usize % vertices.len(),
+                        chunk[1] as usize % vertices.len(),
+                        chunk[2] as usize % vertices.len(),
+                    );
+                    let v0 = &vertices[i0];
+                    let v1 = &vertices[i1];
+                    let v2 = &vertices[i2];
+                    rasterize_triangle_textured(
+                        &mut self.color_buffer,
+                        XENOS_WIDTH,
+                        XENOS_HEIGHT,
+                        v0,
+                        v1,
+                        v2,
+                        active_tex,
+                    );
+                    tris_count += 1;
+                }
             }
         }
 

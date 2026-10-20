@@ -39,6 +39,68 @@ impl Texture {
         })
     }
 
+    /// Bilinear texture filtering given normalized coordinates (u, v) in 0.0..1.0
+    pub fn sample_bilinear(&self, u: f32, v: f32) -> u32 {
+        if self.width == 0 || self.height == 0 || self.pixels.is_empty() {
+            return 0;
+        }
+
+        let u_clamped = u.clamp(0.0, 1.0) * (self.width - 1) as f32;
+        let v_clamped = v.clamp(0.0, 1.0) * (self.height - 1) as f32;
+
+        let x0 = u_clamped.floor() as usize;
+        let y0 = v_clamped.floor() as usize;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+
+        let fx = u_clamped - x0 as f32;
+        let fy = v_clamped - y0 as f32;
+        let ifx = 1.0 - fx;
+        let ify = 1.0 - fy;
+
+        let p00 = self.pixels[y0 * self.width + x0];
+        let p10 = self.pixels[y0 * self.width + x1];
+        let p01 = self.pixels[y1 * self.width + x0];
+        let p11 = self.pixels[y1 * self.width + x1];
+
+        let w00 = ifx * ify;
+        let w10 = fx * ify;
+        let w01 = ifx * fy;
+        let w11 = fx * fy;
+
+        let a = (((p00 >> 24) & 0xFF) as f32 * w00
+            + ((p10 >> 24) & 0xFF) as f32 * w10
+            + ((p01 >> 24) & 0xFF) as f32 * w01
+            + ((p11 >> 24) & 0xFF) as f32 * w11) as u32;
+
+        let r = (((p00 >> 16) & 0xFF) as f32 * w00
+            + ((p10 >> 16) & 0xFF) as f32 * w10
+            + ((p01 >> 16) & 0xFF) as f32 * w01
+            + ((p11 >> 16) & 0xFF) as f32 * w11) as u32;
+
+        let g = (((p00 >> 8) & 0xFF) as f32 * w00
+            + ((p10 >> 8) & 0xFF) as f32 * w10
+            + ((p01 >> 8) & 0xFF) as f32 * w01
+            + ((p11 >> 8) & 0xFF) as f32 * w11) as u32;
+
+        let b = ((p00 & 0xFF) as f32 * w00
+            + (p10 & 0xFF) as f32 * w10
+            + (p01 & 0xFF) as f32 * w01
+            + (p11 & 0xFF) as f32 * w11) as u32;
+
+        (a.min(255) << 24) | (r.min(255) << 16) | (g.min(255) << 8) | b.min(255)
+    }
+
+    /// Point/nearest-neighbor texture sampling
+    pub fn sample_nearest(&self, u: f32, v: f32) -> u32 {
+        if self.width == 0 || self.height == 0 || self.pixels.is_empty() {
+            return 0;
+        }
+        let tx = ((u.clamp(0.0, 1.0) * (self.width - 1) as f32) as usize).min(self.width - 1);
+        let ty = ((v.clamp(0.0, 1.0) * (self.height - 1) as f32) as usize).min(self.height - 1);
+        self.pixels[ty * self.width + tx]
+    }
+
     /// Blits texture onto target framebuffer at (dx, dy) with per-pixel alpha blending
     pub fn draw(&self, fb: &mut [u32], fb_w: usize, fb_h: usize, dx: i32, dy: i32) {
         self.draw_scaled(fb, fb_w, fb_h, dx, dy, self.width, self.height, 1.0);
@@ -124,33 +186,67 @@ impl TextureAtlas {
         let mut textures = HashMap::new();
         let base = dir.as_ref();
 
-        let files = [
-            ("logo", "xboxLogo.png"),
-            ("jewel", "guide_jewel.png"),
-            ("live_logo", "livelogo.png"),
-            ("ico_console", "ico_32x_console.png"),
-            ("ico_network", "ico_32x_network.png"),
-            ("ico_parental", "ico_32x_parentalControl.png"),
-            ("ico_profiles", "ico_32x_Profiles.png"),
-            ("ico_system_set", "ico_32x_systemSet.png"),
-            ("ico_game", "ico_64x_Game.png"),
-            ("ico_games", "ico_64x_games.png"),
-            ("ico_music", "ico_64x_music.png"),
-            ("ico_system", "ico_64x_System.png"),
-            ("ico_trailers", "ico_64x_Trailers.png"),
-            ("art_themes", "themes.jpg"),
-            ("art_last_played", "lastPlayed.jpg"),
-            ("art_arcade", "myArcadeGames.jpg"),
-            ("art_media", "media.jpg"),
-            ("art_yak", "yak1.jpg"),
+        let mut candidate_dirs = vec![
+            base.to_path_buf(),
+            base.join("named"),
+            Path::new("../extracted_xui/named").to_path_buf(),
+            Path::new("extracted_xui/named").to_path_buf(),
+            Path::new("../../extracted_xui/named").to_path_buf(),
+            Path::new(r"D:\XBOX 360 - Firmeware Emulator\extracted_xui\named").to_path_buf(),
+            Path::new("../extracted_xui").to_path_buf(),
+            Path::new("extracted_xui").to_path_buf(),
         ];
 
-        for (key, file_name) in &files {
-            let p = base.join(file_name);
-            if p.exists() {
-                if let Some(tex) = Texture::load_file(&p) {
-                    textures.insert(key.to_string(), tex);
+        // 1. Scan directories for all valid PNG and JPG files
+        for dir_path in candidate_dirs.drain(..) {
+            if !dir_path.is_dir() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(&dir_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        if ext == "png" || ext == "jpg" || ext == "jpeg" {
+                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                                if !textures.contains_key(stem) {
+                                    if let Some(tex) = Texture::load_file(&path) {
+                                        textures.insert(stem.to_string(), tex.clone());
+                                        textures.insert(format!("{}.{}", stem, ext), tex);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
+            }
+        }
+
+        // 2. Standard Aliases
+        let aliases = [
+            ("logo", "xboxLogo"),
+            ("jewel", "guide_jewel"),
+            ("live_logo", "livelogo_hor"),
+            ("ico_console", "ico_32x_console"),
+            ("ico_network", "ico_32x_network"),
+            ("ico_parental", "ico_32x_parentalControl"),
+            ("ico_profiles", "ico_32x_Profiles"),
+            ("ico_system_set", "ico_32x_systemSet"),
+            ("ico_game", "ico_64x_Game"),
+            ("ico_games", "ico_64x_games"),
+            ("ico_music", "ico_64x_music"),
+            ("ico_system", "ico_64x_System"),
+            ("ico_trailers", "ico_64x_Trailers"),
+            ("art_themes", "themes"),
+            ("art_last_played", "lastPlayed"),
+            ("art_arcade", "myArcadeGames"),
+            ("art_media", "media"),
+            ("art_yak", "yak1"),
+        ];
+
+        for (alias, target) in &aliases {
+            if let Some(tex) = textures.get(*target).cloned() {
+                textures.insert(alias.to_string(), tex);
             }
         }
 
@@ -160,4 +256,13 @@ impl TextureAtlas {
     pub fn get(&self, key: &str) -> Option<&Texture> {
         self.textures.get(key)
     }
+
+    pub fn len(&self) -> usize {
+        self.textures.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.textures.is_empty()
+    }
 }
+

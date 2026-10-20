@@ -27,13 +27,15 @@ pub fn blend_pixel(src: u32, dst: u32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
+use crate::gpu::texture::Texture;
+
 /// Signed 2D edge function for barycentric triangle rasterization
 #[inline(always)]
 fn edge_func(ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) -> f32 {
     (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
 }
 
-/// Rasterizes a 2D/3D triangle onto the 32-bit color buffer
+/// Rasterizes a 2D/3D triangle onto the 32-bit color buffer (Untextured)
 pub fn rasterize_triangle(
     fb: &mut [u32],
     fb_width: usize,
@@ -41,6 +43,19 @@ pub fn rasterize_triangle(
     v0: &Vertex,
     v1: &Vertex,
     v2: &Vertex,
+) {
+    rasterize_triangle_textured(fb, fb_width, fb_height, v0, v1, v2, None);
+}
+
+/// Rasterizes a 2D/3D triangle with barycentric UV interpolation and optional texture sampling
+pub fn rasterize_triangle_textured(
+    fb: &mut [u32],
+    fb_width: usize,
+    fb_height: usize,
+    v0: &Vertex,
+    v1: &Vertex,
+    v2: &Vertex,
+    texture: Option<&Texture>,
 ) {
     let min_x = v0.x.min(v1.x).min(v2.x).max(0.0) as usize;
     let max_x = (v0.x.max(v1.x).max(v2.x).min((fb_width - 1) as f32)) as usize;
@@ -105,7 +120,27 @@ pub fn rasterize_triangle(
                 let cb = (l0 * b0 + l1 * b1 + l2 * b2) as u32;
                 let ca = (l0 * a0 + l1 * a1 + l2 * a2) as u32;
 
-                let src = (ca.min(255) << 24) | (cr.min(255) << 16) | (cg.min(255) << 8) | cb.min(255);
+                // Texture sampling and modulation if texture is bound
+                let src = if let Some(tex) = texture {
+                    let u = l0 * v0.u + l1 * v1.u + l2 * v2.u;
+                    let v = l0 * v0.v + l1 * v1.v + l2 * v2.v;
+                    let texel = tex.sample_bilinear(u, v);
+
+                    let ta = (texel >> 24) & 0xFF;
+                    let tr = (texel >> 16) & 0xFF;
+                    let tg = (texel >> 8) & 0xFF;
+                    let tb = texel & 0xFF;
+
+                    let final_a = ((ca * ta) / 255).min(255);
+                    let final_r = ((cr * tr) / 255).min(255);
+                    let final_g = ((cg * tg) / 255).min(255);
+                    let final_b = ((cb * tb) / 255).min(255);
+
+                    (final_a << 24) | (final_r << 16) | (final_g << 8) | final_b
+                } else {
+                    (ca.min(255) << 24) | (cr.min(255) << 16) | (cg.min(255) << 8) | cb.min(255)
+                };
+
                 let dst = fb[row_offset + x];
                 fb[row_offset + x] = blend_pixel(src, dst);
             }
@@ -125,10 +160,10 @@ pub fn rasterize_gradient_quad(
     color_top: u32,
     color_bottom: u32,
 ) {
-    let v0 = Vertex { x, y, z: 0.0, color: color_top };
-    let v1 = Vertex { x: x + width, y, z: 0.0, color: color_top };
-    let v2 = Vertex { x: x + width, y: y + height, z: 0.0, color: color_bottom };
-    let v3 = Vertex { x, y: y + height, z: 0.0, color: color_bottom };
+    let v0 = Vertex { x, y, z: 0.0, color: color_top, u: 0.0, v: 0.0 };
+    let v1 = Vertex { x: x + width, y, z: 0.0, color: color_top, u: 1.0, v: 0.0 };
+    let v2 = Vertex { x: x + width, y, z: 0.0, color: color_bottom, u: 1.0, v: 1.0 };
+    let v3 = Vertex { x, y: y + height, z: 0.0, color: color_bottom, u: 0.0, v: 1.0 };
 
     // Quad = 2 Triangles: (v0, v1, v2) and (v2, v3, v0)
     rasterize_triangle(fb, fb_width, fb_height, &v0, &v1, &v2);

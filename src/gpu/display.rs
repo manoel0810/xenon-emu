@@ -1060,11 +1060,11 @@ impl GpuDisplay {
         // -----------------------------------------------------------
         // PHASE 3: Authentic Xbox 360 Chrome Emblem & Logo (Frames 125 to 245)
         // -----------------------------------------------------------
-        if frame >= 125 {
+        if frame >= 125 && frame <= 275 {
             let alpha = if frame < 155 {
                 ((frame - 125) as f32 / 30.0).min(1.0)
             } else if frame > 235 {
-                ((275 - frame) as f32 / 40.0).max(0.0)
+                ((275.0f32 - frame as f32) / 40.0).clamp(0.0, 1.0)
             } else {
                 1.0
             };

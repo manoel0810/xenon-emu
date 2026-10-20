@@ -361,11 +361,7 @@ impl PixelShader {
         // Sample texture if bound
         if let Some(tex) = texture {
             if tex.width > 0 && tex.height > 0 {
-                let u = uv_in[0].clamp(0.0, 1.0);
-                let v = uv_in[1].clamp(0.0, 1.0);
-                let tx = ((u * (tex.width - 1) as f32) as usize).min(tex.width - 1);
-                let ty = ((v * (tex.height - 1) as f32) as usize).min(tex.height - 1);
-                let sample_color = tex.pixels[ty * tex.width + tx];
+                let sample_color = tex.sample_bilinear(uv_in[0], uv_in[1]);
 
                 let ta = ((sample_color >> 24) & 0xFF) as f32 / 255.0;
                 let tr = ((sample_color >> 16) & 0xFF) as f32 / 255.0;
