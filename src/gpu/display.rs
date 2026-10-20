@@ -11,6 +11,12 @@ use std::io::Write;
 pub const DISPLAY_WIDTH: usize = 1280;
 pub const DISPLAY_HEIGHT: usize = 720;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    BootAnimation,
+    Dashboard,
+}
+
 #[derive(Debug, Clone)]
 pub struct BladeItem {
     pub title: &'static str,
@@ -36,6 +42,8 @@ pub struct GpuDisplay {
     pub key_cooldown: u32,
     pub blades: Vec<BladeData>,
     pub gamepad_mgr: GamepadManager,
+    pub mode: DisplayMode,
+    pub boot_frame: u32,
 }
 
 impl GpuDisplay {
@@ -161,6 +169,8 @@ impl GpuDisplay {
             key_cooldown: 0,
             blades,
             gamepad_mgr,
+            mode: DisplayMode::BootAnimation,
+            boot_frame: 0,
         })
     }
 
@@ -172,6 +182,29 @@ impl GpuDisplay {
     pub fn handle_input(&mut self) {
         if self.key_cooldown > 0 {
             self.key_cooldown -= 1;
+            return;
+        }
+
+        // In Boot Animation mode, allow skipping immediately with A button or Space/Enter
+        if self.mode == DisplayMode::BootAnimation {
+            let mut skip = false;
+            if let Some(state) = self.gamepad_mgr.poll(0) {
+                if (state.gamepad.w_buttons & XINPUT_GAMEPAD_A) != 0 {
+                    skip = true;
+                }
+            }
+            if self.window.is_key_down(Key::Space)
+                || self.window.is_key_down(Key::Enter)
+                || self.window.is_key_down(Key::A)
+            {
+                skip = true;
+            }
+
+            if skip {
+                println!("  [BOOTANIM] Botao de Skip pressionado -> Pulando animacao para a Dashboard!");
+                self.mode = DisplayMode::Dashboard;
+                self.key_cooldown = 15;
+            }
             return;
         }
 
@@ -270,6 +303,17 @@ impl GpuDisplay {
 
     /// Renders the legendary authentic Xbox 360 "Blades" Dashboard UI
     pub fn render_blades_dashboard(&mut self, title_id: &str, dash_version: &str) {
+        // If in startup sequence, render the Xbox 360 boot animation
+        if self.mode == DisplayMode::BootAnimation {
+            self.render_boot_animation();
+            self.boot_frame += 1;
+            if self.boot_frame >= 280 {
+                println!("  [BOOTANIM] Sequencia de boot do Xbox 360 concluida -> Carregando Dashboard ($flash_dash.xex)...");
+                self.mode = DisplayMode::Dashboard;
+            }
+            return;
+        }
+
         let w = self.width;
         let h = self.height;
         let cur_blade = &self.blades[self.active_blade];
@@ -725,6 +769,285 @@ impl GpuDisplay {
         }
 
         Ok(())
+    }
+
+    /// Renders the iconic authentic Xbox 360 startup boot animation sequence
+    pub fn render_boot_animation(&mut self) {
+        let w = self.width;
+        let h = self.height;
+        let frame = self.boot_frame;
+
+        // Deep pure void black background
+        self.framebuffer.fill(0x00000000);
+
+        let cx = (w / 2) as f32;
+        let cy = (h / 2) as f32;
+
+        // -----------------------------------------------------------
+        // PHASE 1: Neon Green Aurora Spirals (Frames 0 to 145)
+        // -----------------------------------------------------------
+        if frame < 150 {
+            let fade_ribbon = if frame < 110 {
+                (frame as f32 / 30.0).min(1.0)
+            } else {
+                ((150 - frame) as f32 / 40.0).max(0.0)
+            };
+
+            let num_ribbons = 6;
+            for r in 0..num_ribbons {
+                let base_phase = r as f32 * (std::f32::consts::PI * 2.0 / num_ribbons as f32);
+                let num_samples = 240;
+                for s in 0..num_samples {
+                    let progress = s as f32 / num_samples as f32;
+                    let t = frame as f32 * 0.05 + base_phase;
+                    let rad = (1.0 - progress) * (520.0 - (frame as f32 * 2.2).min(380.0)) + 40.0;
+                    let angle = progress * 7.0 + t + (s as f32 * 0.015);
+
+                    // Perspective projection: slightly flattened Y for 3D orbital depth
+                    let px = (cx + rad * angle.cos()) as i32;
+                    let py = (cy + rad * angle.sin() * 0.65) as i32;
+
+                    let intensity = ((1.0 - progress) * fade_ribbon * 255.0) as u32;
+                    if intensity == 0 {
+                        continue;
+                    }
+
+                    // Additive luminous brush (3x3 with smooth distance falloff)
+                    for dy in -2..=2 {
+                        for dx in -2..=2 {
+                            let qx = px + dx;
+                            let qy = py + dy;
+                            if qx >= 0 && qx < w as i32 && qy >= 0 && qy < h as i32 {
+                                let idx = qy as usize * w + qx as usize;
+                                let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                                let falloff = (1.0 - dist / 3.0).max(0.0);
+                                let g_add = ((intensity as f32) * falloff) as u32;
+                                let r_add = g_add / 3;
+                                let b_add = g_add / 4;
+
+                                let cur = self.framebuffer[idx];
+                                let cur_r = (cur >> 16) & 0xFF;
+                                let cur_g = (cur >> 8) & 0xFF;
+                                let cur_b = cur & 0xFF;
+
+                                let new_r = (cur_r + r_add).min(255);
+                                let new_g = (cur_g + g_add).min(255);
+                                let new_b = (cur_b + b_add).min(255);
+
+                                self.framebuffer[idx] = (new_r << 16) | (new_g << 8) | new_b;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // -----------------------------------------------------------
+        // PHASE 2: Acoustic Radial Shockwave Rings (Frames 75 to 220)
+        // -----------------------------------------------------------
+        if frame >= 75 && frame <= 220 {
+            let num_waves = 3;
+            for w_idx in 0..num_waves {
+                let start_f = 75 + w_idx * 35;
+                if frame >= start_f {
+                    let wave_age = (frame - start_f) as f32;
+                    let wave_rad = wave_age * 9.5;
+                    let max_rad = 620.0f32;
+                    if wave_rad < max_rad {
+                        let alpha = (1.0 - wave_rad / max_rad).max(0.0);
+                        let num_ring_pts = (wave_rad * 3.14).min(1000.0) as usize;
+                        for i in 0..num_ring_pts {
+                            let theta = (i as f32 / num_ring_pts as f32) * std::f32::consts::PI * 2.0;
+                            let rx = (cx + wave_rad * theta.cos()) as i32;
+                            let ry = (cy + wave_rad * theta.sin() * 0.70) as i32;
+                            if rx >= 0 && rx < w as i32 && ry >= 0 && ry < h as i32 {
+                                let idx = ry as usize * w + rx as usize;
+                                let cur = self.framebuffer[idx];
+                                let g_add = (alpha * 120.0) as u32;
+                                let cur_g = (cur >> 8) & 0xFF;
+                                let new_g = (cur_g + g_add).min(255);
+                                self.framebuffer[idx] = (cur & 0xFFFF00FF) | (new_g << 8);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // -----------------------------------------------------------
+        // PHASE 3: 3D Ray-Traced Chrome Sphere & Ring of Light (Frames 85 to 280)
+        // -----------------------------------------------------------
+        if frame >= 85 {
+            // Target sphere center and radius:
+            // Settles at (cx, cy) with radius 88, then in frames 240..275 slides to (42, 35) with radius 22
+            let (scx, scy, sradius) = if frame < 240 {
+                let r = if frame < 120 {
+                    ((frame - 85) as f32 / 35.0) * 88.0
+                } else {
+                    88.0
+                };
+                (cx, cy, r)
+            } else {
+                let p = ((frame - 240) as f32 / 35.0).min(1.0);
+                let smooth_p = p * p * (3.0 - 2.0 * p); // smooth ease-in-out curve
+                let x = cx + (42.0 - cx) * smooth_p;
+                let y = cy + (35.0 - cy) * smooth_p;
+                let r = 88.0 + (22.0 - 88.0) * smooth_p;
+                (x, y, r)
+            };
+
+            let bound = (sradius + 26.0) as i32;
+            let min_y = ((scy - bound as f32) as i32).max(0) as usize;
+            let max_y = ((scy + bound as f32) as i32).min(h as i32 - 1) as usize;
+            let min_x = ((scx - bound as f32) as i32).max(0) as usize;
+            let max_x = ((scx + bound as f32) as i32).min(w as i32 - 1) as usize;
+
+            // RoL Quadrant Status:
+            // 85..170: Spinning Chase
+            // 170..185: Synchronous Flash of all 4 quads
+            // 185+: Quadrant 0 (Top-Left, Player 1) locked solid green!
+            let active_quad = if frame < 170 {
+                ((frame - 85) / 8) % 4
+            } else if frame <= 185 {
+                99 // All 4 quads flash
+            } else {
+                0 // Player 1 solid green
+            };
+
+            for y in min_y..=max_y {
+                let dy = y as f32 - scy;
+                for x in min_x..=max_x {
+                    let dx = x as f32 - scx;
+                    let dist = (dx * dx + dy * dy).sqrt();
+
+                    // Outer Ring of Light Bezel & 4 Quadrants
+                    let rol_inner = sradius + 5.0;
+                    let rol_outer = sradius + 19.0;
+                    if dist >= rol_inner && dist <= rol_outer {
+                        // Divider cross between quadrants
+                        if dx.abs() < 2.5 || dy.abs() < 2.5 {
+                            self.framebuffer[y * w + x] = 0x00141814;
+                        } else {
+                            let quad_idx = if dx < 0.0 && dy < 0.0 {
+                                0 // Top-Left (Player 1)
+                            } else if dx > 0.0 && dy < 0.0 {
+                                1 // Top-Right
+                            } else if dx > 0.0 && dy > 0.0 {
+                                2 // Bottom-Right
+                            } else {
+                                3 // Bottom-Left
+                            };
+
+                            let is_lit = active_quad == 99 || active_quad == quad_idx;
+                            if is_lit {
+                                let pulse = ((frame as f32 * 0.2).sin() * 0.08 + 0.92) as f32;
+                                let lr = (0x52 as f32 * pulse) as u32;
+                                let lg = (0xD0 as f32 * pulse) as u32;
+                                let lb = (0x53 as f32 * pulse) as u32;
+                                self.framebuffer[y * w + x] = (lr << 16) | (lg << 8) | lb;
+                            } else {
+                                self.framebuffer[y * w + x] = 0x001B331B;
+                            }
+                        }
+                    } else if dist >= rol_outer && dist <= rol_outer + 3.0 {
+                        self.framebuffer[y * w + x] = 0x00505A50;
+                    } else if dist < sradius {
+                        // 3D Ray-Traced Chrome Sphere Shading
+                        let nx = dx / sradius;
+                        let ny = dy / sradius;
+                        let nz = (1.0 - (nx * nx + ny * ny).min(1.0)).sqrt();
+
+                        // Main light direction (-0.45, -0.55, 0.70)
+                        let lx = -0.45f32;
+                        let ly = -0.55f32;
+                        let lz = 0.70f32;
+                        let dot = (nx * lx + ny * ly + nz * lz).max(0.0);
+
+                        // Specular Blinn-Phong highlight
+                        let hx = -0.32f32;
+                        let hy = -0.39f32;
+                        let hz = 0.86f32;
+                        let sdot = (nx * hx + ny * hy + nz * hz).max(0.0);
+                        let spec = sdot.powf(20.0);
+
+                        // Core glowing green energy inside the jewel
+                        let core = (1.0 - dist / sradius).powf(1.8);
+
+                        let r = ((25.0 * dot + 240.0 * spec + 15.0 * core) as u32).min(255);
+                        let g = ((65.0 * dot + 255.0 * spec + 230.0 * core) as u32).min(255);
+                        let b = ((30.0 * dot + 240.0 * spec + 25.0 * core) as u32).min(255);
+
+                        self.framebuffer[y * w + x] = (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
+        }
+
+        // -----------------------------------------------------------
+        // PHASE 4: Horizontal Lens Flare Burst (Frames 170 to 195)
+        // -----------------------------------------------------------
+        if frame >= 170 && frame <= 195 {
+            let flare_progress = (frame - 170) as f32 / 25.0;
+            let flare_alpha = (1.0 - flare_progress).max(0.0);
+            let streak_h = 35;
+            let sy_min = (cy as i32 - streak_h).max(0) as usize;
+            let sy_max = (cy as i32 + streak_h).min(h as i32 - 1) as usize;
+
+            for y in sy_min..=sy_max {
+                let dy = (y as f32 - cy).abs();
+                let v_falloff = (1.0 - dy / streak_h as f32).powf(2.0);
+                for x in 0..w {
+                    let dx = (x as f32 - cx).abs();
+                    let h_falloff = (1.0 - dx / (w as f32 * 0.65)).max(0.0);
+                    let intensity = (flare_alpha * v_falloff * h_falloff * 255.0) as u32;
+                    if intensity > 0 {
+                        let cur = self.framebuffer[y * w + x];
+                        let r = ((cur >> 16) & 0xFF) + intensity;
+                        let g = ((cur >> 8) & 0xFF) + intensity;
+                        let b = (cur & 0xFF) + intensity;
+                        self.framebuffer[y * w + x] = (r.min(255) << 16) | (g.min(255) << 8) | b.min(255);
+                    }
+                }
+            }
+        }
+
+        // -----------------------------------------------------------
+        // PHASE 5: Emblem "XBOX 360" & Subtitle (Frames 130 to 240)
+        // -----------------------------------------------------------
+        if frame >= 130 && frame < 245 {
+            let text_alpha = if frame < 165 {
+                (frame - 130) as f32 / 35.0
+            } else if frame > 235 {
+                (245 - frame) as f32 / 10.0
+            } else {
+                1.0
+            };
+
+            let brightness = (text_alpha * 255.0) as u32;
+            let text_color = (brightness << 16) | (brightness << 8) | brightness;
+            let shadow_color = (((brightness * 16) / 255) << 16) | (((brightness * 124) / 255) << 8) | ((brightness * 16) / 255);
+
+            let logo_text = "XBOX 360";
+            let logo_x = (w / 2) - 108;
+            let logo_y = (cy as usize) + 120;
+
+            // Glowing Green Shadow
+            draw_text(&mut self.framebuffer, w, h, logo_x + 2, logo_y + 2, logo_text, shadow_color, 3);
+            // Crisp White Chrome Logo
+            draw_text(&mut self.framebuffer, w, h, logo_x, logo_y, logo_text, text_color, 3);
+
+            let sub_text = "MICROSOFT CORPORATION";
+            let sub_x = (w / 2) - 95;
+            let sub_y = logo_y + 36;
+            let sub_color = (((brightness * 90) / 255) << 16) | (((brightness * 140) / 255) << 8) | ((brightness * 90) / 255);
+            draw_text(&mut self.framebuffer, w, h, sub_x, sub_y, sub_text, sub_color, 1);
+        }
+
+        // -----------------------------------------------------------
+        // PHASE 6: Subtle Skip Hint
+        // -----------------------------------------------------------
+        let skip_prompt = "PRESS (A) OR SPACE TO SKIP";
+        draw_text(&mut self.framebuffer, w, h, w - 240, h - 30, skip_prompt, 0x00406040, 1);
     }
 }
 

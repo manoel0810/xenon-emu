@@ -336,9 +336,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[+] Display Window opened: 1280x720 @ 60 FPS");
 
     println!("\n[*] ========================================================");
-    println!("    🎮 DASHBOARD INTERATIVA DO XBOX 360 ATIVA!");
-    println!("    - Setas Esquerda / Direita ou A / D: Alternar Blades");
-    println!("    - Setas Cima / Baixo ou W / S: Navegar nos itens");
+    println!("    🎮 XBOX 360 INICIANDO: ANIMAÇÃO DE BOOT ATIVA!");
+    println!("    - A animação autêntica do Xbox 360 é reproduzida primeiro");
+    println!("    - Pressione (A) no controle ou ESPAÇO/ENTER para pular");
+    println!("    - Em seguida, a Dashboard das Blades surge em 720p HD");
+    println!("    - Setas Esquerda/Direita ou A/D: Alternar Blades");
+    println!("    - Setas Cima/Baixo ou W/S: Navegar nos itens");
     println!("    - Controle Xbox USB: D-Pad, Thumbstick, LB/RB, A, B");
     println!("    - Pressione ESC ou clique no [X] para fechar a janela");
     println!("    ========================================================\n");
@@ -349,6 +352,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         display.handle_input();
         display.render_blades_dashboard("FFFE07D1", "2.0.4532.0");
         display.update()?;
+
+        if frame == 70 {
+            let _ = display.save_bmp("../bootanim_ribbons.bmp");
+        } else if frame == 180 {
+            let _ = display.save_bmp("../bootanim_sphere.bmp");
+        }
 
         if frame % 180 == 0 {
             println!(
