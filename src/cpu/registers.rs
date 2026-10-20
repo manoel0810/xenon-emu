@@ -15,6 +15,16 @@ pub struct Registers {
     pub xer: u64,
     /// Machine State Register
     pub msr: u64,
+    /// 32 Floating-Point Registers (64-bit IEEE 754 each)
+    pub fpr: [f64; 32],
+    /// Floating-Point Status and Control Register
+    pub fpscr: u64,
+    /// 128 Vector Registers (128-bit / 16 bytes each on Xenon VMX128)
+    pub vr: [[u8; 16]; 128],
+    /// Vector Status and Control Register
+    pub vscr: u32,
+    /// Vector Register Save Register
+    pub vrsave: u32,
 }
 
 impl Registers {
@@ -27,6 +37,11 @@ impl Registers {
             cr: 0,
             xer: 0,
             msr: 0,
+            fpr: [0.0; 32],
+            fpscr: 0,
+            vr: [[0u8; 16]; 128],
+            vscr: 0,
+            vrsave: 0,
         }
     }
 
@@ -64,6 +79,22 @@ impl Registers {
         let shift = (7 - crf) * 4;
         let mask = !(0xFu32 << shift);
         let bits = if a < b {
+            0b1000
+        } else if a > b {
+            0b0100
+        } else {
+            0b0010
+        };
+        self.cr = (self.cr & mask) | (bits << shift);
+    }
+
+    /// Update Condition Register Field (crf 0..7) comparing two 64-bit floating point numbers
+    pub fn update_cr_cmpf(&mut self, crf: u32, a: f64, b: f64) {
+        let shift = (7 - crf) * 4;
+        let mask = !(0xFu32 << shift);
+        let bits = if a.is_nan() || b.is_nan() {
+            0b0001
+        } else if a < b {
             0b1000
         } else if a > b {
             0b0100

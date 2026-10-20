@@ -1,0 +1,697 @@
+========================================================
+  Xenon-Emu: Tracing Dashboard Metro 17559 Execution    
+========================================================
+[+] Unpacked 2 basic blocks into complete PE image: 16941056 bytes (16 MB)!
+[+] Directly loaded 16941056 bytes (16 MB) of virtual image at 0x92000000!
+[*] Dashboard 17559 PE Sections:
+  - .rdata     VAddr: 0x00000400 (size 0x00145A70, RawPtr: 0x00000400, RawSize: 0x00145C00)
+  - .pdata     VAddr: 0x00146000 (size 0x000375F0, RawPtr: 0x00146000, RawSize: 0x00037600)
+  - .text      VAddr: 0x0017E000 (size 0x007C0C8C, RawPtr: 0x0017D600, RawSize: 0x007C0E00)
+  - NEONTEST   VAddr: 0x0093F000 (size 0x00000400, RawPtr: 0x00000000, RawSize: 0x00000000)
+  - .data      VAddr: 0x0093F400 (size 0x0013D5C8, RawPtr: 0x0093E400, RawSize: 0x0002A400)
+  - .XBMOVIE   VAddr: 0x00A7CA00 (size 0x0000000C, RawPtr: 0x00968800, RawSize: 0x00000200)
+  - .edata     VAddr: 0x00A7D000 (size 0x00001B66, RawPtr: 0x00968A00, RawSize: 0x00001C00)
+  - .idata     VAddr: 0x00A7F000 (size 0x00000D50, RawPtr: 0x0096A600, RawSize: 0x00000E00)
+  - .XBLD      VAddr: 0x00A80000 (size 0x000001A0, RawPtr: 0x0096B400, RawSize: 0x00000200)
+  - .reloc     VAddr: 0x00A80200 (size 0x0006191C, RawPtr: 0x0096B600, RawSize: 0x00061A00)
+[+] Setup Import Thunks: 806 function thunks hooked with HLE traps, 822 variables mapped across 3 libraries.
+[*] Initial value at 0x9200312C = 0x928B1818
+
+[*] Real Guest 17559 Entry Point: 0x92196610
+
+[*] Disassembling memmove 0x9219A200 - 0x9219A260:
+  [0x9219A200] = 0x7C032000
+  [0x9219A204] = 0x4DC20020
+  [0x9219A208] = 0x40E00008
+  [0x9219A20C] = 0x4BFFEE14
+  [0x9219A210] = 0x38050001
+  [0x9219A214] = 0x7C632A14
+  [0x9219A218] = 0x7C842A14
+  [0x9219A21C] = 0x7C0903A6
+  [0x9219A220] = 0x48000018
+  [0x9219A224] = 0x38A5FFFF
+  [0x9219A228] = 0x8804FFFF
+  [0x9219A22C] = 0x3884FFFF
+  [0x9219A230] = 0x9803FFFF
+  [0x9219A234] = 0x3863FFFF
+  [0x9219A238] = 0x70600003
+  [0x9219A23C] = 0x4002FFE8
+  [0x9219A240] = 0x54A0F0BF
+  [0x9219A244] = 0x41C20024
+  [0x9219A248] = 0x7C0903A6
+  [0x9219A24C] = 0x70800003
+  [0x9219A250] = 0x40C2003C
+  [0x9219A254] = 0x80E4FFFC
+  [0x9219A258] = 0x3884FFFC
+  [0x9219A25C] = 0x90E3FFFC
+
+[*] Disassembling 0x92806B00 - 0x92806B60:
+  [0x92806B00] = 0x419A0064
+  [0x92806B04] = 0x3BA00000
+  [0x92806B08] = 0x3BCBFFFF
+  [0x92806B0C] = 0x7D7EEA14
+  [0x92806B10] = 0x813C0004
+  [0x92806B14] = 0x815C0000
+  [0x92806B18] = 0x7F63DB78
+  [0x92806B1C] = 0x7D680E70
+  [0x92806B20] = 0x7D080194
+  [0x92806B24] = 0x7D670E70
+  [0x92806B28] = 0x7D2903A6
+  [0x92806B2C] = 0x5508083C
+  [0x92806B30] = 0x7D270194
+  [0x92806B34] = 0x7D685850
+  [0x92806B38] = 0x7FEB4A14
+  [0x92806B3C] = 0x57EB103A
+  [0x92806B40] = 0x7C8B5214
+  [0x92806B44] = 0x4E800421
+  [0x92806B48] = 0x2C030000
+  [0x92806B4C] = 0x41820040
+  [0x92806B50] = 0x2F030000
+  [0x92806B54] = 0x4099001C
+  [0x92806B58] = 0x3BBF0001
+  [0x92806B5C] = 0x7F1DF000
+
+[*] Stepping PowerPC 64 CPU core through real 17559 Dashboard instructions...
+    [SYSCALL] Step 253 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017C40, 0x93017D34, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70000000, Size=0x100000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 273 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017C44, 0x93017D3C, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70000000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 879 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0x70000618, 0x93017D3C, 0x60001000, 0x4])
+    [SYSCALL] Step 1246 | -> xboxkrnl.exe!XexCheckExecutablePrivilege (#0x0194) (args: [0xA, 0x70010000, 0x0, 0xF97])
+    [SYSCALL] Step 1250 | -> xam.xex!XGetAVPack (#0x03CB) (args: [0x1, 0x70010000, 0x0, 0xF97])
+    [SYSCALL] Step 1333 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992EE0, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1369 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992EFC, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1413 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992F18, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1449 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992F34, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1493 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992F50, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1529 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992F6C, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1565 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992F88, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1609 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992FA4, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1653 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992FC0, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1689 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992FDC, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1725 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92992FF8, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1769 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92993014, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1805 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x92993030, 0xFA0, 0x0, 0xF97])
+    [SYSCALL] Step 1841 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0x9299304C, 0xFA0, 0x0, 0xF97])
+    [TLS ALLOC] Step 2009 PC: 0x9293A92C, LR: 0x9219A898
+    [SYSCALL] Step 2009 | -> xboxkrnl.exe!KeTlsAlloc (#0x0152) (args: [0x1, 0xFA0, 0x0, 0xF97])
+    [TLS SET slot=1] Step 2368 val=0x700006A0, PC: 0x9293A90C, LR: 0x9219A8CC
+    [TLS SET] slot=1, val=0x700006A0
+    [SYSCALL] Step 2683 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70010000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 5106 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A20, 0x93017AC8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70020000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 6073 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AC4, 0x93017AC0, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70100000, Size=0x100000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 6092 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AC4, 0x93017ACC, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70100000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 7478 | -> xboxkrnl.exe!KeQuerySystemTime (#0x0084) (args: [0x93017D90, 0x0, 0x800, 0x70100860])
+    [SYSCALL] Step 7534 | -> xboxkrnl.exe!KeQuerySystemTime (#0x0084) (args: [0x93017D70, 0x0, 0x800, 0x70100860])
+    [SYSCALL] Step 7622 | -> xboxkrnl.exe!KeQueryPerformanceFrequency (#0x0083) (args: [0xFFFFFFFF9296D9B0, 0x0, 0x800, 0x70100860])
+    [SYSCALL] Step 7676 | -> xam.xex!XMsgInProcessCall (#0x01F4) (args: [0xFC, 0x58003, 0x0, 0x0])
+    [SYSCALL] Step 7735 | -> xam.xex!XMsgInProcessCall (#0x01F4) (args: [0xFC, 0x58003, 0x0, 0x0])
+    [SYSCALL] Step 8385 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF9296FADC, 0x0, 0x118, 0xFFFFFFFF9296FAC0])
+    [SYSCALL] Step 8400 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF9296FB28, 0x0, 0x118, 0xFFFFFFFF9296FAC0])
+    [SYSCALL] Step 8418 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF9296FB9C, 0x0, 0x118, 0xFFFFFFFF9296FAC0])
+    [SYSCALL] Step 9050 | -> xboxkrnl.exe!ExGetXConfigSetting (#0x0010) (args: [0x3, 0xC, 0x93017CA4, 0x4])
+    [SYSCALL] Step 9194 | -> xam.xex!XamPackageManagerGetExperienceMode (#0x0646) (args: [0x93017D00, 0x0, 0xFFFFFFFFFFFFFFFF, 0xFE])
+    [HLE XAM] Unhandled xam.xex ordinal 0x0646 (1606)
+    [SYSCALL] Step 9274 | -> xam.xex!XamUserFlushLogonQueue (#0x0220) (args: [0xFFFFFFFF9296DAF8, 0x0, 0x14, 0x10])
+    [HLE XAM] Unhandled xam.xex ordinal 0x0220 (544)
+    [SYSCALL] Step 9284 | -> xam.xex!XamGetLanguage (#0x03D2) (args: [0xFFFFFFFF9296D990, 0x0, 0x14, 0x10])
+    [HLE XAM] Unhandled xam.xex ordinal 0x03D2 (978)
+    [SYSCALL] Step 9287 | -> xam.xex!XamGetLocale (#0x04A9) (args: [0x0, 0x0, 0x14, 0x10])
+    [HLE XAM] Unhandled xam.xex ordinal 0x04A9 (1193)
+    [SYSCALL] Step 9318 | -> xam.xex!XamGetOnlineLanguageAndCountry (#0x058B) (args: [0x0, 0xFFFFFFFF9296FB8C, 0xFFFFFFFF9296FB8D, 0x10])
+    [HLE XAM] Unhandled xam.xex ordinal 0x058B (1419)
+    [SYSCALL] Step 9343 | -> xam.xex!XamBackgroundDownloadSetMode (#0x09C4) (args: [0x0, 0xFFFFFFFF9296FB8C, 0xFFFFFFFF9296FB8D, 0x10])
+    [SYSCALL] Step 9575 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF929698C4, 0x0, 0x7000FF30, 0x10])
+    [SYSCALL] Step 9578 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF929698E0, 0x0, 0x7000FF30, 0x10])
+    [SYSCALL] Step 9600 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF92969920, 0x0, 0x7000FF30, 0x10])
+    [TLS GET slot=1] Step 10351 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 10357 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [SYSCALL] Step 10592 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017720, 0x930177C8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70120000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS SET slot=1] Step 11107 val=0x7011FFC0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x7011FFC0
+    [TLS GET slot=1] Step 11176 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 11627 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92994688, 0x0, 0x7000FF30, 0x70120084])
+    [SYSCALL] Step 11977 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92994BF8, 0x0, 0x7000FF30, 0x70120084])
+    [SYSCALL] Step 12796 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996AD4, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12800 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92994750, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12804 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996860, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12808 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996844, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12812 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF929947A4, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12816 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996A24, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12820 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF929969FC, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12824 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF9299687C, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12828 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF9299476C, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12832 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996AB0, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 12836 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92994788, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 14808 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996B1C, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 14981 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996B48, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 15154 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996B74, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 15326 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92996F90, 0x0, 0x7000FF30, 0xFFFFFFFF92994C94])
+    [SYSCALL] Step 16471 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF929432BC, 0x0, 0x7000FF30, 0xFFFFFFFF929971E0])
+    [SYSCALL] Step 16862 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF92997640, 0x0, 0x7000FF30, 0xFFFFFFFF929975EC])
+    [TLS GET slot=1] Step 17934 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 17940 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 18296 val=0x701201B0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x701201B0
+    [SYSCALL] Step 18764 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF9299BC88, 0x701201B0, 0xC4, 0x70120274])
+    [SYSCALL] Step 19690 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF9299FDD8, 0x0, 0x701200A0, 0x10])
+    [SYSCALL] Step 19717 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF929C2E08, 0x0, 0x701200A0, 0x10])
+    [SYSCALL] Step 19936 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A17D9C, 0x0, 0x701200A0, 0x10])
+    [SYSCALL] Step 19940 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A17DB8, 0x0, 0x701200A0, 0x10])
+    [SYSCALL] Step 19944 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A17DD4, 0x0, 0x701200A0, 0x10])
+    [SYSCALL] Step 19948 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A17DF0, 0x0, 0x701200A0, 0x10])
+    [SYSCALL] Step 20101 | -> xboxkrnl.exe!EtxProducerRegister (#0x0334) (args: [0xFFFFFFFF9201C9F0, 0xFFFFFFFF9294B190, 0x9, 0x0])
+    [SYSCALL] Step 20127 | -> xboxkrnl.exe!ExCreateThread (#0x000D) (args: [0x93017CB0, 0x0, 0x0, 0xFFFFFFFF92198A80])
+    -> ExCreateThread: Created thread TID=0x1, Handle=0x1000, Entry=0xFFFFFFFF92261CE8, Param=0xFFFFFFFF929E63D0, Stack=0x10000
+    [SYSCALL] Step 20154 | -> xboxkrnl.exe!ObReferenceObjectByHandle (#0x0110) (args: [0x1000, 0x1001B, 0x93017CA0, 0xFFFFFFFF92198A80])
+    [SYSCALL] Step 20162 | -> xboxkrnl.exe!KeSetAffinityThread (#0x0097) (args: [0x0, 0x8, 0x93017CA4, 0xFFFFFFFF92198A80])
+    [SYSCALL] Step 20166 | -> xboxkrnl.exe!ObDereferenceObject (#0x0105) (args: [0x0, 0x8, 0x93017CA4, 0xFFFFFFFF92198A80])
+    [SYSCALL] Step 20184 | -> xam.xex!XamBackgroundDownloadNetworkStorageRegisterChangeCallback (#0x04E4) (args: [0xFFFFFFFF92260938, 0x8, 0x93017CA4, 0xFFFFFFFF92198A80])
+    [SYSCALL] Step 21120 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x930179A0, 0x93017A48, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70130000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 22079 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A44, 0x93017A40, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70200000, Size=0x200000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 22098 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A44, 0x93017A4C, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70200000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 22502 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 22508 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 22864 val=0x70200080, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x70200080
+    [TLS GET slot=1] Step 22933 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 23244 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x930179A0, 0x93017A48, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70220000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 23669 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 23675 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 24031 val=0x7021FF50, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x7021FF50
+    [TLS GET slot=1] Step 24100 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 24508 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017920, 0x930179C8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70230000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 25453 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x930179C4, 0x930179C0, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70400000, Size=0x400000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 25472 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x930179C4, 0x930179CC, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70400000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 25876 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 25882 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 26238 val=0x70400080, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x70400080
+    [TLS GET slot=1] Step 26307 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 26676 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017920, 0x930179C8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70420000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 27101 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 27107 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 27463 val=0x7041FF50, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x7041FF50
+    [TLS GET slot=1] Step 27532 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 27901 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017920, 0x930179C8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70430000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 28832 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x930179C4, 0x930179C0, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70800000, Size=0x800000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 28851 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x930179C4, 0x930179CC, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70800000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 29255 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 29261 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 29617 val=0x70800080, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x70800080
+    [TLS GET slot=1] Step 29686 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 30073 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017920, 0x930179C8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70820000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 30498 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 30504 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 30860 val=0x7081FF50, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x7081FF50
+    [TLS GET slot=1] Step 30929 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 31152 | -> xboxkrnl.exe!ExGetXConfigSetting (#0x0010) (args: [0x7, 0x4, 0x93017C94, 0x4])
+    [SYSCALL] Step 31165 | -> xboxkrnl.exe!XUsbcamGetState (#0x021D) (args: [0x0, 0x4, 0x93017C94, 0x4])
+    [SYSCALL] Step 31389 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41494, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31415 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A414C8, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31444 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A414FC, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31470 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41530, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31499 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41564, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31525 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41598, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31554 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A415CC, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31580 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41600, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31609 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41634, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31635 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41668, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31664 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A4169C, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31690 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A416D0, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31719 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41704, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31745 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41738, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31774 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A4176C, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31800 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A417A0, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31829 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A417D4, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31855 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41808, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31884 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A4183C, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 31910 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A41870, 0x0, 0x701200A0, 0x4])
+    [SYSCALL] Step 33654 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x70830000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 34571 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017AD0, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x71000000, Size=0x1000000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 34590 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017ADC, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x71000000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 34994 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 35000 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 35356 val=0x710000D0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x710000D0
+    [TLS GET slot=1] Step 35425 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 35982 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x71020000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 36407 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 36413 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 36769 val=0x7101FFA0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x7101FFA0
+    [TLS GET slot=1] Step 36838 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 37395 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x71030000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 38298 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017AD0, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x72000000, Size=0x2000000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 38317 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017ADC, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x72000000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 38721 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 38727 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 39083 val=0x720000D0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x720000D0
+    [TLS GET slot=1] Step 39152 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 39727 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x72020000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 40114 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 40120 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 40476 val=0x72020080, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x72020080
+    [TLS GET slot=1] Step 40545 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 41120 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x72030000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 41557 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 41563 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 41919 val=0x71F436A0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x71F436A0
+    [TLS GET slot=1] Step 41988 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 42563 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x72040000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 43480 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017AD0, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x74000000, Size=0x4000000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 43499 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017ADC, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x74000000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 43903 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 43909 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 44265 val=0x740000D0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x740000D0
+    [TLS GET slot=1] Step 44334 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 44927 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x74020000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 45352 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 45358 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 45714 val=0x7401FFA0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x7401FFA0
+    [TLS GET slot=1] Step 45783 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 46376 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x74030000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 47251 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017AD0, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x78000000, Size=0x8000000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 47270 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017ADC, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x78000000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 47674 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 47680 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 48036 val=0x780000D0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x780000D0
+    [TLS GET slot=1] Step 48105 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 48716 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x78020000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [TLS GET slot=1] Step 49141 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 49147 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 49503 val=0x7801FFA0, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x7801FFA0
+    [TLS GET slot=1] Step 49572 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 50183 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017A30, 0x93017AD8, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x78030000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 51044 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017AD0, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x80000000, Size=0x10000000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 51063 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017AD4, 0x93017ADC, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x80000000, Size=0x20000 (Type=0x60001000, Prot=0x4)
+    [SYSCALL] Step 51181 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017920, 0x93017928, 0x60002000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x90000000, Size=0x100000 (Type=0x60002000, Prot=0x4)
+    [SYSCALL] Step 51194 | -> xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC) (args: [0x93017920, 0x93017924, 0x60001000, 0x4])
+    -> NtAllocateVirtualMemory: Base=0x90000000, Size=0x10000 (Type=0x60001000, Prot=0x4)
+  [STRUCT 0x929613B8]:
+    +0x00 (0x929613B8) = 0x00000000
+    +0x04 (0x929613BC) = 0x92806A50
+    +0x08 (0x929613C0) = 0x00000000
+    +0x0C (0x929613C4) = 0x00000000
+    +0x10 (0x929613C8) = 0x00000000
+    +0x14 (0x929613CC) = 0x00000000
+  [BUFFER 0x70003560]:
+    +0x00 (0x70003560) = 0x90003570
+    +0x04 (0x70003564) = 0x00000000
+    +0x08 (0x70003568) = 0x00000000
+    +0x0C (0x7000356C) = 0x00000000
+    +0x10 (0x70003570) = 0x90003580
+    +0x14 (0x70003574) = 0x00000000
+    +0x18 (0x70003578) = 0x00000000
+    +0x1C (0x7000357C) = 0x00000000
+    [TLS GET slot=1] Step 67916 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 67922 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 68212 val=0x700001F8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x700001F8
+    [TLS GET slot=1] Step 68281 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS GET slot=1] Step 68762 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 68768 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 69058 val=0x700001F8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x700001F8
+    [TLS GET slot=1] Step 69127 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS GET slot=1] Step 69577 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 69583 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 69879 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 69948 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS GET slot=1] Step 70398 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 70404 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 70694 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 70763 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 71505 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF92A48280, 0x0, 0x701200A0, 0xCC])
+    [SYSCALL] Step 71508 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF92A482B8, 0x0, 0x701200A0, 0xCC])
+    [SYSCALL] Step 72270 | -> xam.xex!XamGetStagingMode (#0x076F) (args: [0xFFFFFFFF92A485C4, 0x0, 0x0, 0x6])
+    [SYSCALL] Step 72484 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF92A48618, 0x0, 0x701200A0, 0x6])
+    [SYSCALL] Step 72487 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF92A48650, 0x0, 0x701200A0, 0x6])
+    [SYSCALL] Step 72871 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A48384, 0x0, 0x701200A0, 0xFFFFFFFF92A487A0])
+    [SYSCALL] Step 72874 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A483A0, 0x0, 0x701200A0, 0xFFFFFFFF92A487A0])
+    [SYSCALL] Step 72877 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF92A483BC, 0x0, 0x701200A0, 0xFFFFFFFF92A487A0])
+    [SYSCALL] Step 72880 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A483F4, 0x0, 0x701200A0, 0xFFFFFFFF92A487A0])
+    [SYSCALL] Step 72883 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A48410, 0x0, 0x701200A0, 0xFFFFFFFF92A487A0])
+    [SYSCALL] Step 72908 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A4849C, 0x0, 0x701200A0, 0xFFFFFFFF92A487A0])
+    [SYSCALL] Step 72915 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A484C8, 0x0, 0x701200A0, 0xFFFFFFFF92A487A0])
+    [SYSCALL] Step 72931 | -> xam.xex!XamFitnessClearBodyProfileRecords (#0x04C1) (args: [0x93017CB0, 0x0, 0x701200A0, 0xFFFFFFFF92A487A0])
+    [TLS GET slot=1] Step 73346 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 73352 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 73642 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 73711 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS GET slot=1] Step 74628 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 74634 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 74924 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [SYSCALL] Step 76377 | -> xam.xex!XamGetStagingMode (#0x076F) (args: [0xFFFFFFFF92A4889C, 0x0, 0x0, 0x6])
+    [SYSCALL] Step 77380 | -> xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011) (args: [0xFFFFFFFF92A5B894, 0x0, 0x8, 0x6])
+    [SYSCALL] Step 77727 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0xFFFFFFFF92A5BDD4, 0x0, 0x8, 0x6])
+    [SYSCALL] Step 77748 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 77793 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 78009 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0xFFFFFFFF92A5BE34, 0x0, 0x8, 0x7FFFFFFF])
+    [SYSCALL] Step 78030 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 78075 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 78621 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF9294E270, 0x0, 0x8, 0x7FFFFFFF])
+    [SYSCALL] Step 78794 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF9294E290, 0x0, 0x8, 0x7FFFFFFF])
+    [SYSCALL] Step 79003 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0xFFFFFFFF92A5C200, 0x0, 0x8, 0x7FFFFFFF])
+    [SYSCALL] Step 79024 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017C40, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 79069 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017C40, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 80083 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0xFFFFFFFF92A5E49C, 0x0, 0x8, 0xFFFFFFFF92A5E428])
+    [SYSCALL] Step 80104 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 80149 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 80856 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A5E538, 0x0, 0x8, 0xFFFFFFFF92A5E494])
+    [SYSCALL] Step 81375 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0xFFFFFFFF92A5E7C0, 0x0, 0x8, 0xFFFFFFFF92A5E494])
+    [SYSCALL] Step 81396 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 81441 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 81776 | -> xboxkrnl.exe!XeCryptRandom (#0x018A) (args: [0xFFFFFFFF92A5E7FC, 0x10, 0x8, 0x7FFFFFFF])
+    [HLE KERNEL] Unhandled xboxkrnl.exe ordinal 0x018A (394)
+    [SYSCALL] Step 81798 | -> xboxkrnl.exe!KeQueryPerformanceFrequency (#0x0083) (args: [0x93017D90, 0x10, 0x8, 0x7FFFFFFF])
+    [SYSCALL] Step 82359 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A5EED8, 0xF68D9DBA, 0x2D1FF669, 0xAA33ED4F])
+    [SYSCALL] Step 82531 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A5EEF8, 0x0, 0x8, 0xAA33ED4F])
+    [SYSCALL] Step 82864 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A5EF14, 0x0, 0x8, 0xAA33ED4F])
+    [SYSCALL] Step 83050 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0xFFFFFFFF92A5F098, 0x0, 0x8, 0xAA33ED4F])
+    [SYSCALL] Step 83071 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 83116 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 83510 | -> xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F) (args: [0xFFFFFFFF92A5F958, 0x0, 0x8, 0x7FFFFFFF])
+    [SYSCALL] Step 83531 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 83576 | -> xboxkrnl.exe!NtCreateSemaphore (#0x00D5) (args: [0x93017CA0, 0x0, 0x0, 0x7FFFFFFF])
+    [SYSCALL] Step 89854 | -> xboxkrnl.exe!EtxProducerRegister (#0x0334) (args: [0xFFFFFFFF920FBFB0, 0xFFFFFFFF9295B1C0, 0x3, 0x0])
+    [SYSCALL] Step 90048 | -> xboxkrnl.exe!EtxProducerRegister (#0x0334) (args: [0xFFFFFFFF920FC00C, 0xFFFFFFFF9295B248, 0x2, 0x0])
+    [SYSCALL] Step 90229 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A77AC0, 0x0, 0x8, 0x0])
+    [SYSCALL] Step 90804 | -> xam.xex!XMsgInProcessCall (#0x01F4) (args: [0xFC, 0x58003, 0x0, 0x0])
+    [TLS GET slot=1] Step 91232 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 91238 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 91528 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 91597 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 91656 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A78100, 0x8, 0xC4, 0xCC])
+    [SYSCALL] Step 93240 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF929613C8, 0x0, 0x8, 0xCC])
+    [SYSCALL] Step 93414 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF929615AC, 0x0, 0x8, 0xCC])
+    [SYSCALL] Step 94647 | -> xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E) (args: [0xFFFFFFFF92A7BF28, 0x0, 0x8, 0x10])
+    [SYSCALL] Step 95214 | -> xam.xex!XamSetDashContext (#0x01CC) (args: [0x0, 0x0, 0x0, 0x10])
+    [HLE XAM] Unhandled xam.xex ordinal 0x01CC (460)
+    [SYSCALL] Step 95222 | -> xboxkrnl.exe!XexGetModuleHandle (#0x0195) (args: [0x0, 0x93017D50, 0x0, 0x10])
+    [SYSCALL] Step 95230 | -> xboxkrnl.exe!RtlNtStatusToDosError (#0x0135) (args: [0x92000000, 0x93017D50, 0x0, 0x10])
+    [SYSCALL] Step 95260 | -> xam.xex!XamLoaderGetLaunchData (#0x01A8) (args: [0xFFFFFFFF9296DB1C, 0x3FC, 0x0, 0x10])
+    -> XamLoaderGetLaunchData: Returned clean boot launch state (STATUS_SUCCESS)
+    [SYSCALL] Step 95271 | -> xam.xex!XdfInitialize (#0x0650) (args: [0x0, 0x3FC, 0x0, 0x10])
+    [SYSCALL] Step 95358 | -> xboxkrnl.exe!EtxProducerRegister (#0x0334) (args: [0xFFFFFFFF9201E5F0, 0xFFFFFFFF9294B3B8, 0x1A, 0x0])
+    [SYSCALL] Step 95449 | -> xboxkrnl.exe!EtxProducerRegister (#0x0334) (args: [0xFFFFFFFF9201C968, 0xFFFFFFFF9294B088, 0x6, 0x0])
+    [SYSCALL] Step 95465 | -> xam.xex!XamGetLocale (#0x04A9) (args: [0x0, 0xFFFFFFFF9294B088, 0x6, 0x0])
+    [HLE XAM] Unhandled xam.xex ordinal 0x04A9 (1193)
+    [SYSCALL] Step 95469 | -> xboxkrnl.exe!VdSetStudioRGBMode (#0x0379) (args: [0x0, 0xFFFFFFFF9294B088, 0x6, 0x0])
+    [SYSCALL] Step 95513 | -> xboxkrnl.exe!FscSetCacheElementCount (#0x0021) (args: [0x0, 0x100, 0x6, 0x0])
+    [TLS GET slot=1] Step 95727 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 95733 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 96023 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 96092 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS GET slot=1] Step 96338 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 96344 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 96634 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 96703 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS GET slot=1] Step 97073 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 97079 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+  [CALLOC TRACE] Step 97300 | PC: 0x92198CF0 | Insn: 0x54A0F7BF | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97301 | PC: 0x92198CF4 | Insn: 0x41C20028 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97302 | PC: 0x92198CF8 | Insn: 0x7C0903A6 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97303 | PC: 0x92198CFC | Insn: 0x90860000 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97304 | PC: 0x92198D00 | Insn: 0x38C60004 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97305 | PC: 0x92198D04 | Insn: 0x43400018 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97306 | PC: 0x92198D1C | Insn: 0x70A00003 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97307 | PC: 0x92198D20 | Insn: 0x7C0903A6 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97308 | PC: 0x92198D24 | Insn: 0x4DE20020 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97309 | PC: 0x92195474 | Insn: 0x480000FC | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97310 | PC: 0x92195570 | Insn: 0x7D084378 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97311 | PC: 0x92195574 | Insn: 0x399F0140 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97312 | PC: 0x92195578 | Insn: 0x48000039 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x92195474
+  [CALLOC TRACE] Step 97313 | PC: 0x921955B0 | Insn: 0xFBE1FFF8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97314 | PC: 0x921955B4 | Insn: 0x3BECFEC0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97315 | PC: 0x921955B8 | Insn: 0xFB81FFF0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97316 | PC: 0x921955BC | Insn: 0xFAC1FFE8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97317 | PC: 0x921955C0 | Insn: 0x7D8802A6 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97318 | PC: 0x921955C4 | Insn: 0x9181FFE0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97319 | PC: 0x921955C8 | Insn: 0x9421FF90 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97320 | PC: 0x921955CC | Insn: 0x2B160000 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97321 | PC: 0x921955D0 | Insn: 0x419A000C | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97322 | PC: 0x921955DC | Insn: 0x80210000 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97323 | PC: 0x921955E0 | Insn: 0xEBE1FFF8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97324 | PC: 0x921955E4 | Insn: 0xEB81FFF0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97325 | PC: 0x921955E8 | Insn: 0xEAC1FFE8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97326 | PC: 0x921955EC | Insn: 0x8181FFE0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97327 | PC: 0x921955F0 | Insn: 0x7D8803A6 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97328 | PC: 0x921955F4 | Insn: 0x4E800020 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97329 | PC: 0x9219557C | Insn: 0x807F0064 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97330 | PC: 0x92195580 | Insn: 0x383F0140 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97331 | PC: 0x92195584 | Insn: 0x480036DC | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97332 | PC: 0x92198C60 | Insn: 0xEAC1FFA8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97333 | PC: 0x92198C64 | Insn: 0xEAE1FFB0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97334 | PC: 0x92198C68 | Insn: 0xEB01FFB8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97335 | PC: 0x92198C6C | Insn: 0xEB21FFC0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97336 | PC: 0x92198C70 | Insn: 0xEB41FFC8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97337 | PC: 0x92198C74 | Insn: 0xEB61FFD0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97338 | PC: 0x92198C78 | Insn: 0xEB81FFD8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97339 | PC: 0x92198C7C | Insn: 0xEBA1FFE0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97340 | PC: 0x92198C80 | Insn: 0xEBC1FFE8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97341 | PC: 0x92198C84 | Insn: 0xEBE1FFF0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x93017580, LR=0x9219557C
+  [CALLOC TRACE] Step 97342 | PC: 0x92198C88 | Insn: 0x8181FFF8 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219557C
+  [CALLOC TRACE] Step 97343 | PC: 0x92198C8C | Insn: 0x7D8803A6 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219557C
+  [CALLOC TRACE] Step 97344 | PC: 0x92198C90 | Insn: 0x4E800020 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97345 | PC: 0x9219F4E8 | Insn: 0x28030000 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97346 | PC: 0x9219F4EC | Insn: 0x40820048 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97347 | PC: 0x9219F534 | Insn: 0x38210080 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97348 | PC: 0x9219F538 | Insn: 0x4BFF9740 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97349 | PC: 0x92198C78 | Insn: 0xEB81FFD8 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97350 | PC: 0x92198C7C | Insn: 0xEBA1FFE0 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97351 | PC: 0x92198C80 | Insn: 0xEBC1FFE8 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97352 | PC: 0x92198C84 | Insn: 0xEBE1FFF0 | r3=0x8, r4=0x0, r5=0xC4, r31=0xC4, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97353 | PC: 0x92198C88 | Insn: 0x8181FFF8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97354 | PC: 0x92198C8C | Insn: 0x7D8803A6 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219F4E8
+  [CALLOC TRACE] Step 97355 | PC: 0x92198C90 | Insn: 0x4E800020 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219BBF8
+  [CALLOC TRACE] Step 97356 | PC: 0x9219BBF8 | Insn: 0x7C7F1B79 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219BBF8
+  [CALLOC TRACE] Step 97357 | PC: 0x9219BBFC | Insn: 0x40820028 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219BBF8
+  [CALLOC TRACE] Step 97358 | PC: 0x9219BC24 | Insn: 0x7FE3FB78 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219BBF8
+  [CALLOC TRACE] Step 97359 | PC: 0x9219BC28 | Insn: 0x38210070 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219BBF8
+  [CALLOC TRACE] Step 97360 | PC: 0x9219BC2C | Insn: 0x8181FFF8 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219BBF8
+  [CALLOC TRACE] Step 97361 | PC: 0x9219BC30 | Insn: 0x7D8803A6 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219BBF8
+  [CALLOC TRACE] Step 97362 | PC: 0x9219BC34 | Insn: 0xEBE1FFF0 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219A670
+  [CALLOC TRACE] Step 97363 | PC: 0x9219BC38 | Insn: 0x4E800020 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219A670
+  [CALLOC TRACE] Step 97364 | PC: 0x9219A670 | Insn: 0x7C7F1B79 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219A670
+  [CALLOC TRACE] Step 97365 | PC: 0x9219A674 | Insn: 0x807EF870 | r3=0x8, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219A670
+  [CALLOC TRACE] Step 97366 | PC: 0x9219A678 | Insn: 0x41820054 | r3=0x1, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219A670
+  [CALLOC TRACE] Step 97367 | PC: 0x9219A67C | Insn: 0x7FE4FB78 | r3=0x1, r4=0x0, r5=0xC4, r31=0x8, LR=0x9219A670
+  [CALLOC TRACE] Step 97368 | PC: 0x9219A680 | Insn: 0x487A028D | r3=0x1, r4=0x8, r5=0xC4, r31=0x8, LR=0x9219A670
+  [CALLOC TRACE] Step 97369 | PC: 0x9293A90C | Insn: 0x44000042 | r3=0x1, r4=0x8, r5=0xC4, r31=0x8, LR=0x9219A684
+    [TLS SET slot=1] Step 97369 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+  [CALLOC TRACE] Step 97370 | PC: 0x9219A684 | Insn: 0x2C030000 | r3=0x1, r4=0x8, r5=0xC4, r31=0x8, LR=0x9219A684
+  [CALLOC TRACE] Step 97371 | PC: 0x9219A688 | Insn: 0x41820034 | r3=0x1, r4=0x8, r5=0xC4, r31=0x8, LR=0x9219A684
+  [CALLOC TRACE] Step 97372 | PC: 0x9219A68C | Insn: 0x3D609200 | r3=0x1, r4=0x8, r5=0xC4, r31=0x8, LR=0x9219A684
+  [CALLOC TRACE] Step 97373 | PC: 0x9219A690 | Insn: 0x39400000 | r3=0x1, r4=0x8, r5=0xC4, r31=0x8, LR=0x9219A684
+  [CALLOC TRACE] Step 97374 | PC: 0x9219A694 | Insn: 0x396B61A0 | r3=0x1, r4=0x8, r5=0xC4, r31=0x8, LR=0x9219A684
+  [CALLOC TRACE] Step 97375 | PC: 0x9219A698 | Insn: 0x39200001 | r3=0x1, r4=0x8, r5=0xC4, r31=0x8, LR=0x9219A684
+    [TLS GET slot=1] Step 97438 PC: 0x9293A8FC, LR: 0x9219A648
+  [WATCHPOINT BUF_PTR 0x929613B8] Step 97497 | PC: 0x922BC124 changed buf ptr from 0x00000000 to 0x00730070!
+  [WATCHPOINT COUNT 0x929613C0] Step 97511 | PC: 0x922BCF78 changed count from 0 to 1!
+    [SYSCALL] Step 97548 | -> xam.xex!XamUserGetGamerTag (#0x020C) (args: [0x8, 0xC4, 0xCC, 0xCC])
+    [SYSCALL] Step 97571 | -> xam.xex!XamUserGetIndexFromXUID (#0x0211) (args: [0xC4, 0xCC, 0xCC, 0xCC])
+    [TLS GET slot=1] Step 97781 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 97787 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 98077 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 98146 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS GET slot=1] Step 98392 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 98398 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 98688 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 98757 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 98893 | -> xam.xex!XamSetCountry (#0x0B43) (args: [0x730070, 0x730070, 0xC4, 0xCC])
+    [SYSCALL] Step 98903 | -> xam.xex!XamSetCountry (#0x0B43) (args: [0x730070, 0x730070, 0xC4, 0xCC])
+    [SYSCALL] Step 98941 | -> xam.xex!XamSetConsoleFriendlyName (#0x050C) (args: [0x730070, 0x730070, 0xC4, 0xCC])
+    [SYSCALL] Step 98953 | -> xam.xex!XamGetConsoleFriendlyName (#0x050B) (args: [0x730070, 0x730070, 0xC4, 0xCC])
+    [SYSCALL] Step 98974 | -> xam.xex!XamSetConsoleFriendlyName (#0x050C) (args: [0x730070, 0x730070, 0xC4, 0xCC])
+    [TLS GET slot=1] Step 99184 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 99190 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 99480 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 99549 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS GET slot=1] Step 99795 PC: 0x9293A8FC, LR: 0x9219A648
+    [TLS SET slot=1] Step 99801 val=0x1, PC: 0x9293A90C, LR: 0x9219A65C
+    [TLS SET] slot=1, val=0x1
+    [TLS SET slot=1] Step 100091 val=0x8, PC: 0x9293A90C, LR: 0x9219A684
+    [TLS SET] slot=1, val=0x8
+    [TLS GET slot=1] Step 100160 PC: 0x9293A8FC, LR: 0x9219A648
+    [SYSCALL] Step 100295 | -> xam.xex!XamLoaderRebootToServerDash (#0x0B45) (args: [0x800000D0, 0x730070, 0xC4, 0xCC])
+  [CPU ERROR] Step 100303 at PC 0x00000000: "Unimplemented PowerPC opcode: 0 (0x00) at PC=0x0000000000000000"
+    LR: 0x0000000092806A94 | CTR: 0x0000000000000000
+    GPRs: r3=0x580062, r4=0x730070, r5=0xC4, r6=0xCC, r9=0x0, r10=0x0, r11=0x0, r12=0x92806B48
+    Recent instruction history before failure:
+      Step 100272 | PC: 0x92806B18 | Insn: 0x7F63DB78 | LR: 0x92806AE0 | CTR: 0x00000000
+      Step 100273 | PC: 0x92806B1C | Insn: 0x7D680E70 | LR: 0x92806AE0 | CTR: 0x00000000
+      Step 100274 | PC: 0x92806B20 | Insn: 0x7D080194 | LR: 0x92806AE0 | CTR: 0x00000000
+      Step 100275 | PC: 0x92806B24 | Insn: 0x7D670E70 | LR: 0x92806AE0 | CTR: 0x00000000
+      Step 100276 | PC: 0x92806B28 | Insn: 0x7D2903A6 | LR: 0x92806AE0 | CTR: 0x00000000
+      Step 100277 | PC: 0x92806B2C | Insn: 0x5508083C | LR: 0x92806AE0 | CTR: 0x92806A50
+      Step 100278 | PC: 0x92806B30 | Insn: 0x7D270194 | LR: 0x92806AE0 | CTR: 0x92806A50
+      Step 100279 | PC: 0x92806B34 | Insn: 0x7D685850 | LR: 0x92806AE0 | CTR: 0x92806A50
+      Step 100280 | PC: 0x92806B38 | Insn: 0x7FEB4A14 | LR: 0x92806AE0 | CTR: 0x92806A50
+      Step 100281 | PC: 0x92806B3C | Insn: 0x57EB103A | LR: 0x92806AE0 | CTR: 0x92806A50
+      Step 100282 | PC: 0x92806B40 | Insn: 0x7C8B5214 | LR: 0x92806AE0 | CTR: 0x92806A50
+      Step 100283 | PC: 0x92806B44 | Insn: 0x4E800421 | LR: 0x92806AE0 | CTR: 0x92806A50
+      Step 100284 | PC: 0x92806A50 | Insn: 0x7D8802A6 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100285 | PC: 0x92806A54 | Insn: 0x9181FFF8 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100286 | PC: 0x92806A58 | Insn: 0xFBE1FFF0 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100287 | PC: 0x92806A5C | Insn: 0x9421FFA0 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100288 | PC: 0x92806A60 | Insn: 0x80630000 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100289 | PC: 0x92806A64 | Insn: 0x7C9F2378 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100290 | PC: 0x92806A68 | Insn: 0x81630000 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100291 | PC: 0x92806A6C | Insn: 0x816B0008 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100292 | PC: 0x92806A70 | Insn: 0x7D6903A6 | LR: 0x92806B48 | CTR: 0x92806A50
+      Step 100293 | PC: 0x92806A74 | Insn: 0x4E800421 | LR: 0x92806B48 | CTR: 0x92182FC0
+      Step 100294 | PC: 0x92182FC0 | Insn: 0x487B7BDC | LR: 0x92806A78 | CTR: 0x92182FC0
+      Step 100295 | PC: 0x9293AB9C | Insn: 0x44000042 | LR: 0x92806A78 | CTR: 0x92182FC0
+      Step 100296 | PC: 0x92806A78 | Insn: 0x817F0000 | LR: 0x92806A78 | CTR: 0x92182FC0
+      Step 100297 | PC: 0x92806A7C | Insn: 0x7C7F1B78 | LR: 0x92806A78 | CTR: 0x92182FC0
+      Step 100298 | PC: 0x92806A80 | Insn: 0x7D635B78 | LR: 0x92806A78 | CTR: 0x92182FC0
+      Step 100299 | PC: 0x92806A84 | Insn: 0x814B0000 | LR: 0x92806A78 | CTR: 0x92182FC0
+      Step 100300 | PC: 0x92806A88 | Insn: 0x816A0008 | LR: 0x92806A78 | CTR: 0x92182FC0
+      Step 100301 | PC: 0x92806A8C | Insn: 0x7D6903A6 | LR: 0x92806A78 | CTR: 0x92182FC0
+      Step 100302 | PC: 0x92806A90 | Insn: 0x4E800421 | LR: 0x92806A78 | CTR: 0x00000000
+      Step 100303 | PC: 0x00000000 | Insn: 0x00050000 | LR: 0x92806A94 | CTR: 0x00000000
+    VR[0]: [00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+
+========================================================
+  Summary of Dashboard 17559 Real Execution Trajectory   
+========================================================
+  Total Instructions Executed: 99600
+  Unique Instruction Addresses: 8484
+  Syscalls Intercepted & Dispatched: 46
+    - xboxkrnl.exe!FscSetCacheElementCount (#0x0021): 1 calls
+    - xam.xex!XGetAVPack (#0x03CB)                 : 1 calls
+    - xam.xex!XamGetLanguage (#0x03D2)             : 1 calls
+    - xboxkrnl.exe!KeQuerySystemTime (#0x0084)     : 2 calls
+    - xboxkrnl.exe!ObReferenceObjectByHandle (#0x0110): 1 calls
+    - xboxkrnl.exe!KeSetAffinityThread (#0x0097)   : 1 calls
+    - xboxkrnl.exe!NtAllocateVirtualMemory (#0x00CC): 41 calls
+    - xam.xex!XamLoaderRebootToServerDash (#0x0B45): 1 calls
+    - xam.xex!XamGetOnlineLanguageAndCountry (#0x058B): 1 calls
+    - xboxkrnl.exe!XUsbcamGetState (#0x021D)       : 1 calls
+    - xam.xex!XamUserGetGamerTag (#0x020C)         : 1 calls
+    - xam.xex!XamUserGetIndexFromXUID (#0x0211)    : 1 calls
+    - xam.xex!XamLoaderGetLaunchData (#0x01A8)     : 1 calls
+    - xboxkrnl.exe!RtlLeaveCriticalSection (#0x0130): 188 calls
+    - xboxkrnl.exe!KeQueryPerformanceFrequency (#0x0083): 2 calls
+    - xboxkrnl.exe!KeTlsSetValue (#0x0155)         : 63 calls
+    - xboxkrnl.exe!ExCreateThread (#0x000D)        : 1 calls
+    - xboxkrnl.exe!KeGetCurrentProcessType (#0x0066): 1 calls
+    - xboxkrnl.exe!ExInitializeReadWriteLock (#0x0011): 9 calls
+    - xboxkrnl.exe!KeTlsGetValue (#0x0154)         : 60 calls
+    - xboxkrnl.exe!XexGetModuleHandle (#0x0195)    : 1 calls
+    - xboxkrnl.exe!KeTlsAlloc (#0x0152)            : 1 calls
+    - xboxkrnl.exe!ExGetXConfigSetting (#0x0010)   : 2 calls
+    - xboxkrnl.exe!VdSetStudioRGBMode (#0x0379)    : 1 calls
+    - xam.xex!XamGetConsoleFriendlyName (#0x050B)  : 1 calls
+    - xboxkrnl.exe!NtCreateSemaphore (#0x00D5)     : 14 calls
+    - xam.xex!XamSetDashContext (#0x01CC)          : 1 calls
+    - xam.xex!XamGetStagingMode (#0x076F)          : 2 calls
+    - xam.xex!XamFitnessClearBodyProfileRecords (#0x04C1): 1 calls
+    - xam.xex!XamSetCountry (#0x0B43)              : 2 calls
+    - xboxkrnl.exe!RtlEnterCriticalSection (#0x0125): 189 calls
+    - xam.xex!XamSetConsoleFriendlyName (#0x050C)  : 2 calls
+    - xboxkrnl.exe!RtlInitializeCriticalSection (#0x012E): 67 calls
+    - xam.xex!XamPackageManagerGetExperienceMode (#0x0646): 1 calls
+    - xboxkrnl.exe!XexCheckExecutablePrivilege (#0x0194): 1 calls
+    - xam.xex!XMsgInProcessCall (#0x01F4)          : 3 calls
+    - xam.xex!XamUserFlushLogonQueue (#0x0220)     : 1 calls
+    - xam.xex!XamGetLocale (#0x04A9)               : 2 calls
+    - xam.xex!XamBackgroundDownloadSetMode (#0x09C4): 1 calls
+    - xboxkrnl.exe!EtxProducerRegister (#0x0334)   : 5 calls
+    - xboxkrnl.exe!XeCryptRandom (#0x018A)         : 1 calls
+    - xboxkrnl.exe!RtlNtStatusToDosError (#0x0135) : 1 calls
+    - xam.xex!XdfInitialize (#0x0650)              : 1 calls
+    - xam.xex!XamBackgroundDownloadNetworkStorageRegisterChangeCallback (#0x04E4): 1 calls
+    - xboxkrnl.exe!RtlInitializeCriticalSectionAndSpinCount (#0x012F): 21 calls
+    - xboxkrnl.exe!ObDereferenceObject (#0x0105)   : 1 calls

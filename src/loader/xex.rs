@@ -42,6 +42,12 @@ pub struct PeSectionHeader {
     pub characteristics: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct BasicBlock {
+    pub data_size: u32,
+    pub zero_size: u32,
+}
+
 pub struct XexFile {
     pub magic: [u8; 4],
     pub module_flags: u32,
@@ -60,6 +66,7 @@ pub struct XexFile {
     pub window_size: u32,
     pub first_block_size: u32,
     pub first_block_hash: [u8; 20],
+    pub basic_blocks: Vec<BasicBlock>,
     pub import_libraries: Vec<ImportLibrary>,
     pub pe_sections: Vec<PeSectionHeader>,
 }
@@ -153,18 +160,34 @@ impl XexFile {
         let mut window_size = 0;
         let mut first_block_size = 0;
         let mut first_block_hash = [0u8; 20];
+        let mut basic_blocks = Vec::new();
 
         if let Some(&fmt_off) = optional_headers.get(&0x000003FF) {
             let f_off = fmt_off as usize;
-            if f_off + 12 <= data.len() {
+            if f_off + 8 <= data.len() {
+                let info_size = BigEndian::read_u32(&data[f_off..f_off + 4]);
                 encryption_type = BigEndian::read_u16(&data[f_off + 4..f_off + 6]);
                 compression_type = BigEndian::read_u16(&data[f_off + 6..f_off + 8]);
-                window_size = BigEndian::read_u32(&data[f_off + 8..f_off + 12]);
-                if f_off + 16 <= data.len() {
-                    first_block_size = BigEndian::read_u32(&data[f_off + 12..f_off + 16]);
-                }
-                if f_off + 36 <= data.len() {
-                    first_block_hash.copy_from_slice(&data[f_off + 16..f_off + 36]);
+                if compression_type == 1 {
+                    let block_count = if info_size >= 8 { (info_size as usize - 8) / 8 } else { 0 };
+                    for b in 0..block_count {
+                        let b_off = f_off + 8 + b * 8;
+                        if b_off + 8 <= data.len() {
+                            let data_size = BigEndian::read_u32(&data[b_off..b_off + 4]);
+                            let zero_size = BigEndian::read_u32(&data[b_off + 4..b_off + 8]);
+                            basic_blocks.push(BasicBlock { data_size, zero_size });
+                        }
+                    }
+                } else if compression_type == 2 {
+                    if f_off + 12 <= data.len() {
+                        window_size = BigEndian::read_u32(&data[f_off + 8..f_off + 12]);
+                    }
+                    if f_off + 16 <= data.len() {
+                        first_block_size = BigEndian::read_u32(&data[f_off + 12..f_off + 16]);
+                    }
+                    if f_off + 36 <= data.len() {
+                        first_block_hash.copy_from_slice(&data[f_off + 16..f_off + 36]);
+                    }
                 }
             }
         }
@@ -254,6 +277,7 @@ impl XexFile {
             window_size,
             first_block_size,
             first_block_hash,
+            basic_blocks,
             import_libraries,
             pe_sections: Vec::new(),
         })
@@ -264,6 +288,10 @@ impl XexFile {
         let pe_off = self.pe_offset as usize;
         if pe_off >= raw_xex_data.len() {
             return Err("PE offset out of bounds".into());
+        }
+
+        if self.encryption_type == 0 {
+            return Ok(raw_xex_data[pe_off..].to_vec());
         }
 
         let mut payload = raw_xex_data[pe_off..].to_vec();
@@ -367,57 +395,116 @@ impl XexFile {
         Ok(chunks)
     }
 
-    /// Decompresses all LZX chunks into the final uncompressed PE executable image.
+    /// Decompresses the executable image according to compression_type.
     pub fn decompress_image(&self, decrypted_payload: &[u8]) -> Result<Vec<u8>, String> {
-        let chunks = self.extract_lzx_chunks(decrypted_payload)?;
-
-        // Map window size to lzxd::WindowSize
-        let window_size = match self.window_size {
-            0x8000 => lzxd::WindowSize::KB32,
-            0x10000 => lzxd::WindowSize::KB64,
-            0x20000 => lzxd::WindowSize::KB128,
-            0x40000 => lzxd::WindowSize::KB256,
-            0x80000 => lzxd::WindowSize::KB512,
-            0x100000 => lzxd::WindowSize::MB1,
-            0x200000 => lzxd::WindowSize::MB2,
-            _ => lzxd::WindowSize::KB32,
-        };
-
-        let mut decoder = lzxd::Lzxd::new(window_size);
-        let mut uncompressed_image = Vec::with_capacity(self.image_size as usize);
-        let target_size = self.image_size as usize;
-
-        for (idx, chunk) in chunks.iter().enumerate() {
-            let remaining = target_size.saturating_sub(uncompressed_image.len());
-            if remaining == 0 {
-                break;
-            }
-            let output_len = std::cmp::min(remaining, 32 * 1024);
-
-            match decoder.decompress_next(chunk, output_len) {
-                Ok(decompressed) => {
-                    uncompressed_image.extend_from_slice(decompressed);
+        match self.compression_type {
+            0 => {
+                let target_size = self.image_size as usize;
+                let mut uncompressed_image = Vec::with_capacity(target_size);
+                let copy_len = std::cmp::min(decrypted_payload.len(), target_size);
+                uncompressed_image.extend_from_slice(&decrypted_payload[..copy_len]);
+                if uncompressed_image.len() < target_size {
+                    uncompressed_image.resize(target_size, 0);
                 }
-                Err(e) => {
-                    return Err(format!(
-                        "LZX decode error on chunk {}/{}: {:?} (decompressed so far: {} bytes)",
-                        idx + 1, chunks.len(), e, uncompressed_image.len()
-                    ));
-                }
+                println!(
+                    "[+] Copied uncompressed PE image: {} bytes ({} MB)!",
+                    uncompressed_image.len(),
+                    uncompressed_image.len() / (1024 * 1024)
+                );
+                Ok(uncompressed_image)
             }
+            1 => {
+                let target_size = self.image_size as usize;
+                let mut uncompressed_image = vec![0u8; target_size];
+                let mut src_offset = 0;
+                let mut dst_offset = 0;
+
+                for (idx, block) in self.basic_blocks.iter().enumerate() {
+                    let d_sz = block.data_size as usize;
+                    let z_sz = block.zero_size as usize;
+
+                    if src_offset + d_sz > decrypted_payload.len() {
+                        return Err(format!(
+                            "Basic block {} read overflow: src_offset {} + {} > payload {}",
+                            idx, src_offset, d_sz, decrypted_payload.len()
+                        ));
+                    }
+                    if dst_offset + d_sz > target_size {
+                        return Err(format!(
+                            "Basic block {} write overflow: dst_offset {} + {} > image_size {}",
+                            idx, dst_offset, d_sz, target_size
+                        ));
+                    }
+
+                    uncompressed_image[dst_offset..dst_offset + d_sz]
+                        .copy_from_slice(&decrypted_payload[src_offset..src_offset + d_sz]);
+
+                    src_offset += d_sz;
+                    dst_offset += d_sz + z_sz;
+                }
+
+                println!(
+                    "[+] Unpacked {} basic blocks into complete PE image: {} bytes ({} MB)!",
+                    self.basic_blocks.len(),
+                    uncompressed_image.len(),
+                    uncompressed_image.len() / (1024 * 1024)
+                );
+
+                Ok(uncompressed_image)
+            }
+            2 => {
+                let chunks = self.extract_lzx_chunks(decrypted_payload)?;
+
+                // Map window size to lzxd::WindowSize
+                let window_size = match self.window_size {
+                    0x8000 => lzxd::WindowSize::KB32,
+                    0x10000 => lzxd::WindowSize::KB64,
+                    0x20000 => lzxd::WindowSize::KB128,
+                    0x40000 => lzxd::WindowSize::KB256,
+                    0x80000 => lzxd::WindowSize::KB512,
+                    0x100000 => lzxd::WindowSize::MB1,
+                    0x200000 => lzxd::WindowSize::MB2,
+                    _ => lzxd::WindowSize::KB32,
+                };
+
+                let mut decoder = lzxd::Lzxd::new(window_size);
+                let mut uncompressed_image = Vec::with_capacity(self.image_size as usize);
+                let target_size = self.image_size as usize;
+
+                for (idx, chunk) in chunks.iter().enumerate() {
+                    let remaining = target_size.saturating_sub(uncompressed_image.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    let output_len = std::cmp::min(remaining, 32 * 1024);
+
+                    match decoder.decompress_next(chunk, output_len) {
+                        Ok(decompressed) => {
+                            uncompressed_image.extend_from_slice(decompressed);
+                        }
+                        Err(e) => {
+                            return Err(format!(
+                                "LZX decode error on chunk {}/{}: {:?} (decompressed so far: {} bytes)",
+                                idx + 1, chunks.len(), e, uncompressed_image.len()
+                            ));
+                        }
+                    }
+                }
+
+                // Pad to image_size if needed
+                if uncompressed_image.len() < target_size {
+                    uncompressed_image.resize(target_size, 0);
+                }
+
+                println!(
+                    "[+] Successfully decompressed complete PE image: {} bytes ({} MB)!",
+                    uncompressed_image.len(), uncompressed_image.len() / (1024 * 1024)
+                );
+
+                Ok(uncompressed_image)
+            }
+            other => Err(format!("Unsupported compression type: {}", other)),
         }
-
-        // Pad to image_size if needed
-        if uncompressed_image.len() < target_size {
-            uncompressed_image.resize(target_size, 0);
-        }
-
-        println!(
-            "[+] Successfully decompressed complete PE image: {} bytes ({} MB)!",
-            uncompressed_image.len(), uncompressed_image.len() / (1024 * 1024)
-        );
-
-        Ok(uncompressed_image)
     }
 
     pub fn print_summary(&self) {
@@ -495,13 +582,12 @@ impl XexFile {
                 let addr = record_addr as u64;
                 if let Ok(record_val) = bus.read_u32(addr) {
                     let ord = (record_val & 0xFFFF) as u16;
+                    let record_type = (record_val >> 24) & 0xFF;
 
-                    // Descriptors reside in data/rdata (< code section), while thunks reside in .text
-                    let is_thunk = addr >= (self.load_address as u64 + 0x0001_0000)
-                        || ((record_val >> 24) & 0xFF) == 1;
+                    let is_thunk = record_type == 1;
 
                     if !is_thunk {
-                        // Import descriptor in data / rdata
+                        // Import descriptor / variable in data / rdata
                         last_desc = Some((record_addr, ord));
                         total_vars += 1;
                     } else {

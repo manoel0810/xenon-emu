@@ -46,29 +46,41 @@ impl XzpPackage {
             let fnlen = bytes[bufpos + 8] as usize;
             bufpos += 9;
 
-            // Filenames can be UTF-16 BE or ASCII
-            let name_bytes_len = fnlen * 2;
-            if bufpos + name_bytes_len > bytes.len() {
+            let (name, advance) = if bufpos + fnlen <= bytes.len() {
+                if let Ok(s) = std::str::from_utf8(&bytes[bufpos..bufpos + fnlen]) {
+                    if s.chars().all(|c| c.is_ascii_graphic() || c == ' ' || c == '\0') {
+                        (s.trim_matches('\0').to_string(), fnlen)
+                    } else if bufpos + fnlen * 2 <= bytes.len() {
+                        let u16_chars: Vec<u16> = bytes[bufpos..bufpos + fnlen * 2]
+                            .chunks_exact(2)
+                            .map(|c| BigEndian::read_u16(c))
+                            .collect();
+                        (String::from_utf16_lossy(&u16_chars).trim_matches('\0').to_string(), fnlen * 2)
+                    } else {
+                        (s.trim_matches('\0').to_string(), fnlen)
+                    }
+                } else if bufpos + fnlen * 2 <= bytes.len() {
+                    let u16_chars: Vec<u16> = bytes[bufpos..bufpos + fnlen * 2]
+                        .chunks_exact(2)
+                        .map(|c| BigEndian::read_u16(c))
+                        .collect();
+                    (String::from_utf16_lossy(&u16_chars).trim_matches('\0').to_string(), fnlen * 2)
+                } else {
+                    ("<unknown>".to_string(), fnlen)
+                }
+            } else {
                 break;
-            }
+            };
 
-            let name_raw = &bytes[bufpos..bufpos + name_bytes_len];
-            bufpos += name_bytes_len;
+            bufpos += advance;
 
-            // Decode UTF-16 BE
-            let u16_chars: Vec<u16> = name_raw
-                .chunks_exact(2)
-                .map(|c| BigEndian::read_u16(c))
-                .collect();
-            let name = String::from_utf16_lossy(&u16_chars)
-                .trim_matches(char::from(0))
-                .to_string();
-
-            // Extract payload
-            let file_start = fptr as usize;
+            // Extract payload relative to data_ptr
+            let file_start = data_ptr as usize + fptr as usize;
             let file_end = file_start + flen as usize;
             let data = if file_end <= bytes.len() && file_start < bytes.len() {
                 bytes[file_start..file_end].to_vec()
+            } else if (fptr as usize + flen as usize) <= bytes.len() {
+                bytes[fptr as usize..fptr as usize + flen as usize].to_vec()
             } else {
                 Vec::new()
             };

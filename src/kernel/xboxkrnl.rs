@@ -107,10 +107,12 @@ impl KernelDispatcher {
             self.resolve_xam(ordinal).unwrap_or("UnknownExport")
         };
 
-        println!(
-            "  [HLE SYSCALL] {}!{} (#0x{:04X} / {}) with args: {:016X?}",
-            library, func_name, ordinal, ordinal, args
-        );
+        if std::env::var("XENON_LOG_SYSCALLS").is_ok() {
+            println!(
+                "  [HLE SYSCALL] {}!{} (#0x{:04X} / {}) with args: {:016X?}",
+                library, func_name, ordinal, ordinal, args
+            );
+        }
 
         if is_krnl {
             self.dispatch_xboxkrnl(ordinal, func_name, args, bus)
@@ -212,11 +214,26 @@ impl KernelDispatcher {
                 0 // STATUS_SUCCESS
             }
 
+            // 0x0011: ExInitializeReadWriteLock
+            0x0011 => {
+                if let Some(&p_lock) = args.first() {
+                    if p_lock != 0 {
+                        for off in (0..16).step_by(4) {
+                            let _ = bus.write_u32(p_lock + off, 0);
+                        }
+                    }
+                }
+                0
+            }
+
             // 0x0019: ExTerminateThread
             0x0019 => {
                 println!("    -> ExTerminateThread: Thread exited cleanly.");
                 0
             }
+
+            // 0x0021: FscSetCacheElementCount
+            0x0021 => 0,
 
             // 0x0024: HalOpenCloseODDTray
             0x0024 => 0,
@@ -325,8 +342,29 @@ impl KernelDispatcher {
             // 0x0088: KeReleaseSemaphore
             0x0088 => 1,
 
-            // 0x0084: KeAcquireSpinLockAtRaisedIrql | 0x0089: KeReleaseSpinLockFromRaisedIrql
-            0x0084 | 0x0089 => 0,
+            // 0x0083: KeQueryPerformanceFrequency (pFrequency)
+            0x0083 => {
+                if let Some(&p_freq) = args.first() {
+                    if p_freq != 0 {
+                        let _ = bus.write_u64(p_freq, 50_000_000);
+                    }
+                }
+                1 // TRUE
+            }
+
+            // 0x0084: KeQuerySystemTime (pCurrentTime)
+            0x0084 => {
+                if let Some(&p_time) = args.first() {
+                    if p_time != 0 {
+                        let ft = 133_000_000_000_000_000u64 + (self.next_handle as u64 * 10_000_000);
+                        let _ = bus.write_u64(p_time, ft);
+                    }
+                }
+                0
+            }
+
+            // 0x0089: KeReleaseSpinLockFromRaisedIrql
+            0x0089 => 0,
 
             // 0x008F: KeResetEvent
             0x008F => {
@@ -441,29 +479,46 @@ impl KernelDispatcher {
             0x00C5 => 0x1000,
 
             // 0x00CC: NtAllocateVirtualMemory
-            // (pBase, zeroBits, pSize, allocType, protect)
+            // (IN OUT PVOID *BaseAddress, IN OUT PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect, ULONG ZeroBits)
             0x00CC => {
-                let p_base = args.first().copied().unwrap_or(0);
-                let p_size = args.get(2).copied().unwrap_or(0);
-                let mut size = 0x1000u64;
-                if p_size != 0 {
-                    if let Ok(sz) = bus.read_u32(p_size) {
-                        if sz > 0 {
-                            size = sz as u64;
-                        }
-                    }
-                }
-                let aligned = (size + 0xFFF) & !0xFFF;
-                let addr = self.valloc_bump;
-                self.valloc_bump += aligned;
+                let p_base = args.get(0).copied().unwrap_or(0);
+                let p_size = args.get(1).copied().unwrap_or(0);
+                let alloc_type = args.get(2).copied().unwrap_or(0);
+                let protect = args.get(3).copied().unwrap_or(0);
+
+                let cur_base = if p_base != 0 {
+                    bus.read_u32(p_base).unwrap_or(0) as u64
+                } else {
+                    0
+                };
+
+                let req_size = if p_size != 0 {
+                    bus.read_u32(p_size).unwrap_or(0x1000) as u64
+                } else {
+                    0x1000
+                };
+
+                let aligned_size = (req_size.max(0x1000) + 0xFFF) & !0xFFF;
+
+                let target_addr = if cur_base != 0 {
+                    cur_base
+                } else {
+                    let addr = self.valloc_bump;
+                    self.valloc_bump += aligned_size;
+                    addr
+                };
 
                 if p_base != 0 {
-                    let _ = bus.write_u32(p_base, addr as u32);
+                    let _ = bus.write_u32(p_base, target_addr as u32);
                 }
                 if p_size != 0 {
-                    let _ = bus.write_u32(p_size, aligned as u32);
+                    let _ = bus.write_u32(p_size, aligned_size as u32);
                 }
-                println!("    -> NtAllocateVirtualMemory: Allocated 0x{:X} bytes at 0x{:08X}", aligned, addr);
+
+                println!(
+                    "    -> NtAllocateVirtualMemory: Base=0x{:08X}, Size=0x{:X} (Type=0x{:X}, Prot=0x{:X})",
+                    target_addr, aligned_size, alloc_type, protect
+                );
                 0 // STATUS_SUCCESS
             }
 
@@ -512,6 +567,18 @@ impl KernelDispatcher {
                     }
                 }
                 0
+            }
+
+            // 0x00D5: NtCreateSemaphore
+            0x00D5 => {
+                let handle = self.next_handle;
+                self.next_handle += 4;
+                if let Some(&p_h) = args.first() {
+                    if p_h != 0 {
+                        let _ = bus.write_u32(p_h, handle);
+                    }
+                }
+                0 // STATUS_SUCCESS
             }
 
             // 0x00DC: NtFreeVirtualMemory
@@ -611,8 +678,8 @@ impl KernelDispatcher {
             // 0x0101: NtYieldExecution
             0x0101 => 0,
 
-            // 0x0103: ObCreateSymbolicLink | 0x0104: ObDeleteSymbolicLink
-            0x0103 | 0x0104 => 0,
+            // 0x0103: ObCreateSymbolicLink | 0x0104: ObDeleteSymbolicLink | 0x0105: ObDereferenceObject
+            0x0103 | 0x0104 | 0x0105 => 0,
 
             // 0x010B: ObLookupThreadByThreadId
             0x010B => {
@@ -668,8 +735,59 @@ impl KernelDispatcher {
             // 0x012B: RtlImageXexHeaderField
             0x012B => 0,
 
-            // 0x012E: RtlInitializeCriticalSection
-            0x012E => {
+            // 0x012C: RtlInitAnsiString (DestinationString, SourceString)
+            0x012C => {
+                let dst = args.first().copied().unwrap_or(0);
+                let src = args.get(1).copied().unwrap_or(0);
+                if dst != 0 {
+                    if src == 0 {
+                        let _ = bus.write_u16(dst, 0);
+                        let _ = bus.write_u16(dst + 2, 0);
+                        let _ = bus.write_u32(dst + 4, 0);
+                    } else {
+                        let mut len = 0u16;
+                        while len < 0xFFFE {
+                            if bus.read_u8(src + len as u64).unwrap_or(0) == 0 {
+                                break;
+                            }
+                            len += 1;
+                        }
+                        let _ = bus.write_u16(dst, len);
+                        let _ = bus.write_u16(dst + 2, len.saturating_add(1));
+                        let _ = bus.write_u32(dst + 4, src as u32);
+                    }
+                }
+                0
+            }
+
+            // 0x012D: RtlInitUnicodeString (DestinationString, SourceString)
+            0x012D => {
+                let dst = args.first().copied().unwrap_or(0);
+                let src = args.get(1).copied().unwrap_or(0);
+                if dst != 0 {
+                    if src == 0 {
+                        let _ = bus.write_u16(dst, 0);
+                        let _ = bus.write_u16(dst + 2, 0);
+                        let _ = bus.write_u32(dst + 4, 0);
+                    } else {
+                        let mut len_bytes = 0u16;
+                        while len_bytes < 0xFFFC {
+                            let ch = bus.read_u16(src + len_bytes as u64).unwrap_or(0);
+                            if ch == 0 {
+                                break;
+                            }
+                            len_bytes += 2;
+                        }
+                        let _ = bus.write_u16(dst, len_bytes);
+                        let _ = bus.write_u16(dst + 2, len_bytes.saturating_add(2));
+                        let _ = bus.write_u32(dst + 4, src as u32);
+                    }
+                }
+                0
+            }
+
+            // 0x012E: RtlInitializeCriticalSection | 0x012F: RtlInitializeCriticalSectionAndSpinCount
+            0x012E | 0x012F => {
                 if let Some(&ptr) = args.first() {
                     if ptr != 0 {
                         for off in (0..28).step_by(4) {
@@ -694,6 +812,59 @@ impl KernelDispatcher {
 
             // 0x013A: _snprintf | 0x013B: sprintf
             0x013A | 0x013B => 0,
+
+            // 0x0140: RtlFreeAnsiString | 0x0141: RtlFreeUnicodeString
+            0x0140 | 0x0141 => {
+                let str_ptr = args.first().copied().unwrap_or(0);
+                if str_ptr != 0 {
+                    let _ = bus.write_u16(str_ptr, 0);
+                    let _ = bus.write_u16(str_ptr + 2, 0);
+                    let _ = bus.write_u32(str_ptr + 4, 0);
+                }
+                0
+            }
+
+            // 0x0142: RtlUnicodeStringToAnsiString (DestinationString, SourceString, AllocateDestinationString)
+            0x0142 => {
+                let dst = args.first().copied().unwrap_or(0);
+                let src = args.get(1).copied().unwrap_or(0);
+                let alloc_dest = args.get(2).copied().unwrap_or(0) != 0;
+
+                if dst == 0 || src == 0 {
+                    0xC000000D // STATUS_INVALID_PARAMETER
+                } else {
+                    let src_len = bus.read_u16(src).unwrap_or(0);
+                    let src_buf = bus.read_u32(src + 4).unwrap_or(0) as u64;
+                    let char_count = (src_len / 2) as usize;
+
+                    let mut ansi_bytes = Vec::with_capacity(char_count);
+                    for i in 0..char_count {
+                        let wch = bus.read_u16(src_buf + (i * 2) as u64).unwrap_or(0);
+                        ansi_bytes.push(if wch < 0x80 { wch as u8 } else { b'?' });
+                    }
+
+                    let dst_buf = if alloc_dest {
+                        let alloc_size = ((char_count + 1 + 31) & !31) as u64;
+                        let ptr = self.valloc_bump;
+                        self.valloc_bump += alloc_size;
+                        let _ = bus.write_u16(dst + 2, (char_count + 1) as u16);
+                        let _ = bus.write_u32(dst + 4, ptr as u32);
+                        ptr
+                    } else {
+                        bus.read_u32(dst + 4).unwrap_or(0) as u64
+                    };
+
+                    let _ = bus.write_u16(dst, char_count as u16);
+                    if dst_buf != 0 {
+                        for (i, &b) in ansi_bytes.iter().enumerate() {
+                            let _ = bus.write_u8(dst_buf + i as u64, b);
+                        }
+                        let _ = bus.write_u8(dst_buf + char_count as u64, 0);
+                    }
+
+                    0 // STATUS_SUCCESS
+                }
+            }
 
             // 0x0143: RtlUnicodeToMultiByteN
             0x0143 => 0,
@@ -724,6 +895,9 @@ impl KernelDispatcher {
             0x0155 => {
                 let slot = args.first().copied().unwrap_or(0) as u32;
                 let val = args.get(1).copied().unwrap_or(0);
+                if slot == 1 {
+                    println!("    [TLS SET] slot=1, val=0x{:X}", val);
+                }
                 self.tls_slots.insert(slot, val);
                 1 // TRUE
             }
@@ -855,8 +1029,8 @@ impl KernelDispatcher {
             // 0x01F3..0x0200: XAudio Handlers
             0x01F3 | 0x01F4 | 0x01F5 | 0x01F7 | 0x01F8 | 0x01FA | 0x01FB | 0x01FC | 0x0200 => 0,
 
-            // 0x021C: XUsbcamSetConfig | 0x0221: XUsbcamGetView
-            0x021C | 0x0221 => 0,
+            // 0x021C: XUsbcamSetConfig | 0x021D: XUsbcamGetState | 0x0221: XUsbcamGetView
+            0x021C | 0x021D | 0x0221 => 0,
 
             // 0x0224: XMACreateContext | 0x0226: XMAReleaseContext
             0x0224 => 0x0000_3000,
@@ -910,6 +1084,12 @@ impl KernelDispatcher {
 
             // 0x02E1: RmcDeviceRequest
             0x02E1 => 0,
+
+            // 0x0334: EtxProducerRegister
+            0x0334 => 0,
+
+            // 0x0379: VdSetStudioRGBMode
+            0x0379 => 0,
 
             _ => {
                 println!("    [HLE KERNEL] Unhandled xboxkrnl.exe ordinal 0x{:04X} ({})", ordinal, ordinal);
@@ -1046,8 +1226,37 @@ impl KernelDispatcher {
             // 0x01CF: XamGetCurrentTitleId
             0x01CF => 0xFFFE_07D1, // Dashboard Title ID
 
+            // 0x01D1: XamAllocHeapFreeSpace
+            0x01D1 => 64 * 1024 * 1024,
+
             // 0x01D2: XamSetDashContextEx
             0x01D2 => 0,
+
+            // 0x01EA: XamAlloc (size)
+            // 0x01EB: XamAllocEx (size, ...)
+            0x01EA | 0x01EB => {
+                let requested_size = args.first().copied().unwrap_or(64) as u32;
+                let size = if requested_size == 0 { 64 } else { requested_size };
+                let aligned_size = (size + 31) & !31;
+                let ptr = self.valloc_bump;
+                self.valloc_bump += aligned_size as u64;
+
+                for i in 0..aligned_size {
+                    let _ = bus.write_u8(ptr + i as u64, 0);
+                }
+
+                println!("    -> XamAlloc/Ex: Allocated 0x{:X} bytes at guest pointer 0x{:08X}", size, ptr);
+                ptr
+            }
+
+            // 0x01EC: XamFree
+            0x01EC => 0,
+
+            // 0x01ED: XamAllocSize
+            0x01ED => 64,
+
+            // 0x01F4: XMsgInProcessCall
+            0x01F4 => 0,
 
             // 0x01F5: XamGetExecutionId / XMsgCompleteIORequest
             // Writes genuine Dashboard XEX_EXECUTION_ID (24 bytes)
@@ -1055,8 +1264,8 @@ impl KernelDispatcher {
                 if let Some(&p_exec) = args.first() {
                     if p_exec != 0 {
                         let _ = bus.write_u32(p_exec + 0, 0x0000_0000); // media_id
-                        let _ = bus.write_u32(p_exec + 4, 0x2011_B400); // version (2.0.4532.0)
-                        let _ = bus.write_u32(p_exec + 8, 0x2011_B400); // base_version
+                        let _ = bus.write_u32(p_exec + 4, 0x2044_9700); // version (2.0.17559.0)
+                        let _ = bus.write_u32(p_exec + 8, 0x2044_9700); // base_version
                         let _ = bus.write_u32(p_exec + 12, 0xFFFE_07D1); // title_id
                         let _ = bus.write_u8(p_exec + 16, 1);           // platform (Xbox 360)
                         let _ = bus.write_u8(p_exec + 17, 0);           // executable_table
@@ -1094,14 +1303,28 @@ impl KernelDispatcher {
                 0
             }
 
+
             // 0x0210: XamUserGetSigninState (userIndex)
             0x0210 => self.signin_state as u64, // 1 = Signed in locally
+
+            // 0x0211: XamUserGetIndexFromXUID (xuid, pUserIndex)
+            0x0211 => {
+                if let Some(&p_idx) = args.get(1) {
+                    if p_idx != 0 {
+                        let _ = bus.write_u32(p_idx, 0);
+                    }
+                }
+                0
+            }
 
             // 0x021B: XamUserGetMembershipTier
             0x021B => 6, // Gold Membership
 
             // 0x0230: XamProfileCreate | 0x0234: XamProfileGetCreationStatus
             0x0230 | 0x0234 => 0,
+
+            // 0x0246: XamAppUnloadStack
+            0x0246 => 0,
 
             // 0x0250: XamEnumerate
             0x0250 => 0x0000_0103, // STATUS_NO_MORE_FILES
@@ -1173,6 +1396,9 @@ impl KernelDispatcher {
             // 0x02BC..0x031D: System UI Blading and Dialog Services
             0x02BC | 0x02BE | 0x02BF | 0x02D1 | 0x02E3 | 0x02E4 | 0x02F0 | 0x02F8 | 0x02FC | 0x030A | 0x031D => 0,
 
+            // 0x03CB: XGetAVPack
+            0x03CB => 6, // XAVPACK_HDMI
+
             // 0x03D1: XGetVideoMode
             0x03D1 => {
                 if let Some(&p_mode) = args.first() {
@@ -1187,8 +1413,42 @@ impl KernelDispatcher {
                 0
             }
 
+            // 0x04C1: XamFitnessClearBodyProfileRecords
+            0x04C1 => 0,
+
+            // 0x04E4: XamBackgroundDownloadNetworkStorageRegisterChangeCallback
+            0x04E4 => 0,
+
+            // 0x050B: XamGetConsoleFriendlyName
+            0x050B => {
+                if let Some(&p_buf) = args.first() {
+                    if p_buf != 0 {
+                        let name = "Xbox 360\0";
+                        for (i, c) in name.encode_utf16().enumerate() {
+                            let _ = bus.write_u16(p_buf + (i * 2) as u64, c);
+                        }
+                    }
+                }
+                0
+            }
+
+            // 0x050C: XamSetConsoleFriendlyName
+            0x050C => 0,
+
+            // 0x0650: XdfInitialize
+            0x0650 => 0,
+
+            // 0x076F: XamGetStagingMode
+            0x076F => 0,
+
             // 0x09C4: XamBackgroundDownloadSetMode
             0x09C4 => 0,
+
+            // 0x0B43: XamSetCountry
+            0x0B43 => 0,
+
+            // 0x0B45: XamLoaderRebootToServerDash
+            0x0B45 => 0,
 
             _ => {
                 println!("    [HLE XAM] Unhandled xam.xex ordinal 0x{:04X} ({})", ordinal, ordinal);
