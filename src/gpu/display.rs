@@ -382,6 +382,31 @@ impl GpuDisplay {
         gp
     }
 
+    /// Presents the frame using genuine hardware simulation:
+    /// - During boot: Plays genuine Xbox 360 ribbon boot animation
+    /// - When finished: 100% ATI Xenos GPU resolved framebuffer driven by Guest PowerPC execution
+    /// - Or when user toggles ViewMode::XuiDirect: Presents direct Microsoft XUI scene graph from dump (.xur)
+    pub fn present_gpu_framebuffer(&mut self, gpu_color_buffer: &[u32]) {
+        if self.mode == DisplayMode::BootAnimation {
+            self.render_boot_animation();
+            self.boot_frame += 1;
+            if self.boot_frame >= 280 {
+                println!("  [BOOTANIM] Sequencia de boot do Xbox 360 concluida -> Apresentando GPU da Dashboard ($flash_dash.xex)...");
+                self.mode = DisplayMode::Dashboard;
+            }
+            return;
+        }
+
+        if self.view_mode == ViewMode::XuiDirect {
+            self.render_xui_direct_scene();
+            return;
+        }
+
+        // Direct Presentation: 100% ATI Xenos GPU Framebuffer driven by Guest PowerPC execution
+        let len = self.framebuffer.len().min(gpu_color_buffer.len());
+        self.framebuffer[..len].copy_from_slice(&gpu_color_buffer[..len]);
+    }
+
     /// Renders the legendary authentic Xbox 360 "Blades" Dashboard UI
     pub fn render_blades_dashboard(&mut self, _title_id: &str, _dash_version: &str) {
         // If in startup sequence, render the Xbox 360 boot animation

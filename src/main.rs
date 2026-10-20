@@ -952,8 +952,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !thread.active {
                 continue;
             }
-            // Execute a timeslice of up to 100 instructions per thread per frame
-            for _ in 0..100 {
+            // Execute a timeslice of up to 1,000 instructions per thread per frame
+            for _ in 0..1000 {
                 let current_pc = thread.cpu.regs.pc;
                 match bus.read_u32(current_pc) {
                     Ok(_) => {
@@ -1022,21 +1022,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // 4. Execute pending PM4 packets in the Primary Ring Buffer with Xenos GPU CP
-        if let Ok(executed) = xenos_gpu.execute_ring(&mut bus, &mut ring_buffer) {
-            if executed > 0 && display.mode == gpu::DisplayMode::Dashboard {
-                for (dst, &src) in display.framebuffer.iter_mut().zip(&xenos_gpu.color_buffer) {
-                    if src != 0 {
-                        *dst = src;
-                    }
-                }
-            }
-        }
+        let _ = xenos_gpu.execute_ring(&mut bus, &mut ring_buffer);
 
         // 5. Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
         kernel.dispatch("xboxkrnl.exe", 0x025B, &[0x7000_0000, frame], &mut bus);
 
-        // 6. Render and present the display frame
-        display.render_blades_dashboard("FFFE07D1", "2.0.4532.0");
+        // 6. Direct Presentation: Boot Animation -> Direct ATI Xenos GPU Framebuffer
+        display.present_gpu_framebuffer(&xenos_gpu.color_buffer);
         display.update()?;
 
         if frame == 70 {
@@ -1050,8 +1042,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if frame % 180 == 0 {
             let total_guest_steps: u64 = guest_threads.iter().map(|t| t.total_steps).sum();
             println!(
-                "  [GPU] Frame {:05} | Active Blade: '{}' | 60 FPS | Guest Code Executed: {} instructions",
-                frame, display.blades[display.active_blade].name, total_guest_steps
+                "  [GPU] Frame {:05} | Direct GPU Presentation | 60 FPS | Guest Code Executed: {} instructions",
+                frame, total_guest_steps
             );
         }
     }

@@ -64,10 +64,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut unique_pcs: HashSet<u64> = HashSet::new();
     let mut total_instructions = 0usize;
 
+    println!("\n[*] Disassembling Entry Point 0x9210D308 - 0x9210D380:");
+    for addr in (0x9210D308..=0x9210D360).step_by(4) {
+        let insn = bus.read_u32(addr).unwrap_or(0);
+        println!("  Disasm [0x{:08X}] = 0x{:08X}", addr, insn);
+    }
+
     println!("[*] Stepping PowerPC 64 CPU core through real Dashboard DllMain instructions...");
     for step in 1..=50 {
         let pc = cpu.regs.pc;
+        let insn = bus.read_u32(pc).unwrap_or(0);
         unique_pcs.insert(pc);
+        println!("  [ENTRY] Step {:02} | PC: 0x{:08X} | Insn: 0x{:08X} | SP: 0x{:08X}", step, pc, insn, cpu.regs.gpr[1]);
 
         match cpu.step(&mut bus) {
             Ok(StepResult::Ok) => {
@@ -108,9 +116,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n[*] Disassembling 0x9210DF58:");
-    for i in 0..10 {
-        let addr = 0x9210DF58 + (i * 4) as u64;
+    println!("\n[*] Disassembling 0x9210D608 - 0x9210D6B0:");
+    for addr in (0x9210D608..=0x9210D6A0).step_by(4) {
         let insn = bus.read_u32(addr).unwrap_or(0);
         println!("  Disasm [0x{:08X}] = 0x{:08X}", addr, insn);
     }
@@ -134,11 +141,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match cpu.step(&mut bus) {
             Ok(StepResult::Ok) => {
                 total_instructions += 1;
-                if step <= 20 || step % 50 == 0 {
-                    println!("  [PHASE 2] Step {:02} | PC: 0x{:08X} | Insn: 0x{:08X} | SP: 0x{:08X}",
-                        step, pc, raw_insn, cpu.regs.gpr[1]
-                    );
-                }
+                println!("  [PHASE 2] Step {:02} | PC: 0x{:08X} | Insn: 0x{:08X} | SP: 0x{:08X}",
+                    step, pc, raw_insn, cpu.regs.gpr[1]
+                );
             }
             Ok(StepResult::Syscall { lev: _, pc: call_pc }) => {
                 if let Some((lib, ordinal)) = thunk_map.get(&call_pc) {
@@ -159,6 +164,213 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
                         println!("  [DASH] Master Initializer complete! Step: {}, Total Insns: {}", step, total_instructions);
+                        break;
+                    }
+
+                    cpu.regs.gpr[3] = ret;
+                    cpu.regs.pc = cpu.regs.lr;
+                } else {
+                    println!("  [!] Unmapped syscall at 0x{:08X}", call_pc);
+                    break;
+                }
+            }
+            Ok(StepResult::Halted) => {
+                println!("  [!] CPU halted at 0x{:08X}", pc);
+                break;
+            }
+            Err(e) => {
+                println!("  [!] Execution error at 0x{:08X}: {}", pc, e);
+                break;
+            }
+        }
+    }
+
+    // ==========================================================
+    // PHASE 3: Dashboard Main Sequence @ 0x921088A0
+    // ==========================================================
+    println!("\n[*] [PHASE 3] Stepping Dashboard Main Sequence (0x921088A0)...");
+    let stack_top3 = stack_top - 0x40000;
+    cpu.regs.pc = 0x921088A0;
+    cpu.regs.gpr[1] = stack_top3;
+    cpu.regs.gpr[3] = 0;
+    cpu.regs.gpr[4] = 1;
+    cpu.regs.gpr[13] = kpcr_base;
+    cpu.regs.lr = 0x80001000;
+    bus.write_u32(stack_top3 - 8, 0x80001000)?;
+    bus.write_u32(stack_top3 + 0x80 - 8, 0x80001000)?;
+
+    for step in 1..=500 {
+        let pc = cpu.regs.pc;
+        unique_pcs.insert(pc);
+        let raw_insn = bus.read_u32(pc).unwrap_or(0);
+
+        match cpu.step(&mut bus) {
+            Ok(StepResult::Ok) => {
+                total_instructions += 1;
+                if step <= 10 || step % 100 == 0 {
+                    println!("  [PHASE 3] Step {:03} | PC: 0x{:08X} | Insn: 0x{:08X} | SP: 0x{:08X}",
+                        step, pc, raw_insn, cpu.regs.gpr[1]
+                    );
+                }
+            }
+            Ok(StepResult::Syscall { lev: _, pc: call_pc }) => {
+                if let Some((lib, ordinal)) = thunk_map.get(&call_pc) {
+                    let fname = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                        kernel.resolve_xboxkrnl(*ordinal).unwrap_or("Unknown")
+                    } else {
+                        kernel.resolve_xam(*ordinal).unwrap_or("Unknown")
+                    };
+                    let key = format!("{}!{} (#0x{:04X})", lib, fname, ordinal);
+                    *syscall_counts.entry(key.clone()).or_insert(0) += 1;
+
+                    let args = [
+                        cpu.regs.gpr[3], cpu.regs.gpr[4], cpu.regs.gpr[5],
+                        cpu.regs.gpr[6], cpu.regs.gpr[7], cpu.regs.gpr[8],
+                    ];
+                    let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
+                    println!("  [PHASE 3 SYSCALL] {}!{} (#0x{:04X}) -> ret 0x{:X}", lib, fname, ordinal, ret);
+
+                    if *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                        println!("  [DASH] Phase 3 sequence completed! Step: {}, Total Insns: {}", step, total_instructions);
+                        break;
+                    }
+
+                    cpu.regs.gpr[3] = ret;
+                    cpu.regs.pc = cpu.regs.lr;
+                } else {
+                    println!("  [!] Unmapped syscall at 0x{:08X}", call_pc);
+                    break;
+                }
+            }
+            Ok(StepResult::Halted) => {
+                println!("  [!] CPU halted at 0x{:08X}", pc);
+                break;
+            }
+            Err(e) => {
+                println!("  [!] Execution error at 0x{:08X}: {}", pc, e);
+                break;
+            }
+        }
+    }
+
+    // ==========================================================
+    // PHASE 4: Graphics Subsystem Init @ 0x9212A34C
+    // ==========================================================
+    println!("\n[*] [PHASE 4] Stepping Graphics Subsystem Init (0x9212A34C)...");
+    let stack_top4 = stack_top - 0x60000;
+    cpu.regs.pc = 0x9212A34C;
+    cpu.regs.gpr[1] = stack_top4;
+    cpu.regs.gpr[3] = vaddr_base;
+    cpu.regs.gpr[4] = 0;
+    cpu.regs.gpr[13] = kpcr_base;
+    cpu.regs.lr = 0x80001000;
+    bus.write_u32(stack_top4 - 8, 0x80001000)?;
+    bus.write_u32(stack_top4 + 0xA0 - 8, 0x80001000)?;
+
+    for step in 1..=500 {
+        let pc = cpu.regs.pc;
+        unique_pcs.insert(pc);
+        let raw_insn = bus.read_u32(pc).unwrap_or(0);
+
+        match cpu.step(&mut bus) {
+            Ok(StepResult::Ok) => {
+                total_instructions += 1;
+                if step <= 10 || step % 100 == 0 {
+                    println!("  [PHASE 4] Step {:03} | PC: 0x{:08X} | Insn: 0x{:08X} | SP: 0x{:08X}",
+                        step, pc, raw_insn, cpu.regs.gpr[1]
+                    );
+                }
+            }
+            Ok(StepResult::Syscall { lev: _, pc: call_pc }) => {
+                if let Some((lib, ordinal)) = thunk_map.get(&call_pc) {
+                    let fname = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                        kernel.resolve_xboxkrnl(*ordinal).unwrap_or("Unknown")
+                    } else {
+                        kernel.resolve_xam(*ordinal).unwrap_or("Unknown")
+                    };
+                    let key = format!("{}!{} (#0x{:04X})", lib, fname, ordinal);
+                    *syscall_counts.entry(key.clone()).or_insert(0) += 1;
+
+                    let args = [
+                        cpu.regs.gpr[3], cpu.regs.gpr[4], cpu.regs.gpr[5],
+                        cpu.regs.gpr[6], cpu.regs.gpr[7], cpu.regs.gpr[8],
+                    ];
+                    let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
+                    println!("  [PHASE 4 SYSCALL] {}!{} (#0x{:04X}) -> ret 0x{:X}", lib, fname, ordinal, ret);
+
+                    if *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                        println!("  [DASH] Phase 4 Graphics Init completed! Step: {}, Total Insns: {}", step, total_instructions);
+                        break;
+                    }
+
+                    cpu.regs.gpr[3] = ret;
+                    cpu.regs.pc = cpu.regs.lr;
+                } else {
+                    println!("  [!] Unmapped syscall at 0x{:08X}", call_pc);
+                    break;
+                }
+            }
+            Ok(StepResult::Halted) => {
+                println!("  [!] CPU halted at 0x{:08X}", pc);
+                break;
+            }
+            Err(e) => {
+                println!("  [!] Execution error at 0x{:08X}: {}", pc, e);
+                break;
+            }
+        }
+    }
+
+    // ==========================================================
+    // PHASE 5: Genuine Dashboard VdInitializeEngines Master Sequence @ 0x9210EA48
+    // ==========================================================
+    println!("\n[*] [PHASE 5] Stepping VdInitializeEngines Master Sequence (0x9210EA48)...");
+    let stack_top5 = stack_top - 0x80000;
+    bus.write_u32(0x926E95C4, 0x926E95C4)?;
+    bus.write_u32(0x926E95C8, 0x926E95C4)?;
+
+    cpu.regs.pc = 0x9210EA48;
+    cpu.regs.gpr[1] = stack_top5;
+    cpu.regs.gpr[3] = 0;
+    cpu.regs.gpr[4] = 0;
+    cpu.regs.gpr[13] = kpcr_base;
+    cpu.regs.lr = 0x80001000;
+    bus.write_u32(stack_top5 - 8, 0x80001000)?;
+    bus.write_u32(stack_top5 + 0x80 - 8, 0x80001000)?;
+
+    for step in 1..=500 {
+        let pc = cpu.regs.pc;
+        unique_pcs.insert(pc);
+        let raw_insn = bus.read_u32(pc).unwrap_or(0);
+
+        match cpu.step(&mut bus) {
+            Ok(StepResult::Ok) => {
+                total_instructions += 1;
+                if step <= 10 || step % 100 == 0 {
+                    println!("  [PHASE 5] Step {:03} | PC: 0x{:08X} | Insn: 0x{:08X} | SP: 0x{:08X}",
+                        step, pc, raw_insn, cpu.regs.gpr[1]
+                    );
+                }
+            }
+            Ok(StepResult::Syscall { lev: _, pc: call_pc }) => {
+                if let Some((lib, ordinal)) = thunk_map.get(&call_pc) {
+                    let fname = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                        kernel.resolve_xboxkrnl(*ordinal).unwrap_or("Unknown")
+                    } else {
+                        kernel.resolve_xam(*ordinal).unwrap_or("Unknown")
+                    };
+                    let key = format!("{}!{} (#0x{:04X})", lib, fname, ordinal);
+                    *syscall_counts.entry(key.clone()).or_insert(0) += 1;
+
+                    let args = [
+                        cpu.regs.gpr[3], cpu.regs.gpr[4], cpu.regs.gpr[5],
+                        cpu.regs.gpr[6], cpu.regs.gpr[7], cpu.regs.gpr[8],
+                    ];
+                    let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
+                    println!("  [PHASE 5 SYSCALL] {}!{} (#0x{:04X}) -> ret 0x{:X}", lib, fname, ordinal, ret);
+
+                    if *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                        println!("  [DASH] Phase 5 VdInitializeEngines completed! Step: {}, Total Insns: {}", step, total_instructions);
                         break;
                     }
 

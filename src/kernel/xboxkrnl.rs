@@ -949,7 +949,8 @@ impl KernelDispatcher {
 
             // 0x0004..0x0018: Network calls
             0x0004 | 0x0005 | 0x0006 | 0x0007 | 0x0009 | 0x000A | 0x000B | 0x000D | 0x000E
-            | 0x000F | 0x0010 | 0x0011 | 0x0012 | 0x0013 | 0x0014 | 0x0016 | 0x0017 | 0x0018 => 0,
+            | 0x000F | 0x0010 | 0x0011 | 0x0012 | 0x0013 | 0x0014 | 0x0016 | 0x0017 | 0x0018
+            | 0x006C | 0x006D | 0x006E | 0x006F => 0,
 
             // 0x005F: XamAppRegister (appId, pAppObj)
             0x005F => {
@@ -1029,8 +1030,15 @@ impl KernelDispatcher {
             // 0x01B9: XamInputSendStayAliveRequest
             0x01B9 => 0,
 
-            // 0x01C5: XamGetDefaultSystemImage
-            0x01C5 => 0,
+            // 0x01C5: XamGetDefaultSystemImage (phImage)
+            0x01C5 => {
+                if let Some(&p_img) = args.first() {
+                    if p_img != 0 {
+                        let _ = bus.write_u32(p_img, 0x0000_0001);
+                    }
+                }
+                0
+            }
 
             // 0x01C7: XamSetPowerMode
             0x01C7 => 0,
