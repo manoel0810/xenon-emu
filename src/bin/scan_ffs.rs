@@ -1,5 +1,4 @@
 use std::fs;
-use byteorder::{BigEndian, ByteOrder};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nand_path = "../Corona 16mb/Corona_053679523709_1685af93d3ac27ccd76b0c82a67d95b2.bin";

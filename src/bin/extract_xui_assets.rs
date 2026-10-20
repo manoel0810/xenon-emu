@@ -1,4 +1,3 @@
-use byteorder::{BigEndian, ByteOrder};
 use std::fs;
 use std::path::Path;
 use xenon_emu::loader::{StfsPackage, XexFile, XzpPackage};
@@ -64,9 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("    -> Extracted: {:<38} ({} bytes)", sanitized_name, entry.data.len());
                 }
             }
-            Err(e) => {
+            Err(_) => {
                 // Some occurrences might be nested or partial
-                // println!("    Skipping offset 0x{:08X}: {}", offset, e);
             }
         }
     }

@@ -43,8 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let flags = BigEndian::read_u16(&nand_data[b_off + 4..b_off + 6]);
                 let entry = BigEndian::read_u32(&nand_data[b_off + 6..b_off + 10]);
                 let size = BigEndian::read_u32(&nand_data[b_off + 10..b_off + 14]);
-                println!("  [Block 0x{:03X} / Offset 0x{:08X}] Bootloader: {} Build: {} | Flags: 0x{:04X} | Size: 0x{:X}", 
-                    b, b_off, name, build, flags, size
+                println!("  [Block 0x{:03X} / Offset 0x{:08X}] Bootloader: {} Build: {} | Entry: 0x{:08X} | Flags: 0x{:04X} | Size: 0x{:X}", 
+                    b, b_off, name, build, entry, flags, size
                 );
             }
         }

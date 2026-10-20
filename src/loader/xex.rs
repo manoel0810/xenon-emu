@@ -489,24 +489,36 @@ impl XexFile {
         let mut total_vars = 0;
 
         for lib in &self.import_libraries {
+            let mut last_desc: Option<(u32, u16)> = None;
+
             for &record_addr in &lib.import_table {
                 let addr = record_addr as u64;
                 if let Ok(record_val) = bus.read_u32(addr) {
-                    let record_type = ((record_val >> 24) & 0xFF) as u8;
-                    let ordinal = (record_val & 0xFFFF) as u16;
+                    let ord = (record_val & 0xFFFF) as u16;
 
-                    if record_type == 1 {
+                    // Descriptors reside in data/rdata (< code section), while thunks reside in .text
+                    let is_thunk = addr >= (self.load_address as u64 + 0x0001_0000)
+                        || ((record_val >> 24) & 0xFF) == 1;
+
+                    if !is_thunk {
+                        // Import descriptor in data / rdata
+                        last_desc = Some((record_addr, ord));
+                        total_vars += 1;
+                    } else {
                         // Function Thunk:
+                        let thunk_ord = if let Some((_, d_ord)) = last_desc.take() {
+                            d_ord
+                        } else {
+                            ord
+                        };
+
                         // Overwrite with:
                         //   sc 2  (0x44000042)
                         //   blr   (0x4E800020)
                         bus.write_u32(addr, 0x44000042)?;
                         bus.write_u32(addr + 4, 0x4E800020)?;
-                        thunk_map.insert(addr, (lib.name.clone(), ordinal));
+                        thunk_map.insert(addr, (lib.name.clone(), thunk_ord));
                         total_thunks += 1;
-                    } else if record_type == 0 {
-                        // Variable import
-                        total_vars += 1;
                     }
                 }
             }

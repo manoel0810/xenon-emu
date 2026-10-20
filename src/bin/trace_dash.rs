@@ -1,4 +1,3 @@
-use byteorder::{BigEndian, ByteOrder};
 use std::fs;
 use xenon_emu::cpu::{Cpu, StepResult};
 use xenon_emu::kernel::KernelDispatcher;
@@ -56,109 +55,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pe_image.load_into_memory(&uncompressed_pe, vaddr_base, &mut bus)?;
     let mut thunk_map = dash_xex.setup_import_thunks(&mut bus)?;
 
-    // Trampolines
-    bus.write_u32(0x80000000, 0x44000042)?; // sc 1
-    bus.write_u32(0x80000004, 0x4E800020)?; // blr
-    thunk_map.insert(0x80000000, ("xboxkrnl.exe".to_string(), 41)); // ExTerminateThread
-    thunk_map.insert(0x00000000, ("xboxkrnl.exe".to_string(), 41));
+    // Trampolines (place at 0x80001000 to avoid physical address 0)
+    bus.write_u32(0x80001000, 0x44000042)?; // sc 1
+    bus.write_u32(0x80001004, 0x4E800020)?; // blr
+    thunk_map.insert(0x80001000, ("xboxkrnl.exe".to_string(), 0x0019)); // ExTerminateThread (0x19 = 25)
 
-    let kernel = KernelDispatcher::new();
-    println!("[*] Thunk 0x9268E9C4: {:?}", thunk_map.get(&0x9268E9C4));
-    println!("\n[*] Listing Thunks from 0x9268EA00 to 0x9268EC00:");
-    let mut sorted_thunks: Vec<_> = thunk_map.iter().collect();
+    let mut kernel = KernelDispatcher::new();
+    println!("[*] Listing sample thunks:");
+    let mut sorted_thunks: Vec<_> = thunk_map.clone().into_iter().collect();
     sorted_thunks.sort_by_key(|k| k.0);
-    for (addr, (lib, ord)) in sorted_thunks {
-        if *addr >= 0x9268EA00 && *addr <= 0x9268ECC0 {
+    for (addr, (lib, ord)) in &sorted_thunks {
+        if *addr >= 0x9268EA00 && *addr <= 0x9268EB00 {
             let func_name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
-                kernel.resolve_xboxkrnl(*ord).map(|f| f.name).unwrap_or("unknown")
+                kernel.resolve_xboxkrnl(*ord).unwrap_or("unknown")
             } else {
-                kernel.resolve_xam(*ord).map(|f| f.name).unwrap_or("unknown")
+                kernel.resolve_xam(*ord).unwrap_or("unknown")
             };
-            println!("  0x{:08X} -> {}!#{:<4} ({})", addr, lib, ord, func_name);
-        }
-    }
-
-    println!("\n[*] All Import Libraries and Ordinals:");
-    for lib in &dash_xex.import_libraries {
-        let mut ords = Vec::new();
-        for &rec_addr in &lib.import_table {
-            if let Some((_, ord)) = thunk_map.get(&(rec_addr as u64)) {
-                let name = if lib.name.eq_ignore_ascii_case("xboxkrnl.exe") {
-                    kernel.resolve_xboxkrnl(*ord).map(|f| f.name).unwrap_or("UNKNOWN")
-                } else {
-                    kernel.resolve_xam(*ord).map(|f| f.name).unwrap_or("UNKNOWN")
-                };
-                ords.push((*ord, name));
-            }
-        }
-        ords.sort_by_key(|k| k.0);
-        println!("  - Library '{}' ({} functions):", lib.name, ords.len());
-        for (ord, name) in ords {
-            println!("      #{:<4} -> {}", ord, name);
+            println!("  0x{:08X} -> {}!#{:<4} (0x{:04X}) ({})", addr, lib, ord, ord, func_name);
         }
     }
 
     let entry_vaddr = dash_xex.entry_point as u64;
-    let target_vaddr = 0x921088A0u64;
-    println!("\n[*] Disassembly of 0x921088A0 to 0x92108920 (Main Dash Caller):");
-    for off in (0..0x80).step_by(4) {
-        let addr = target_vaddr + off;
-        let insn = bus.read_u32(addr)?;
-        let op = (insn >> 26) & 0x3F;
-        println!("    0x{:08X}: {:08X} (op {:02})", addr, insn, op);
-    }
+    println!("\n[*] Executing $flash_dash.xex from Entry Point 0x{:08X}...", entry_vaddr);
 
-    let target_func = 0x9210D608i64;
-    println!("\n[*] Scanning .text section for callers of 0x{:08X}:", target_func);
-    let text_start = 0x92105000u64;
-    let text_end = text_start + 0x0058A894;
+    let stack_top = vaddr_base + dash_xex.image_size as u64 - 0x10000;
 
-    for addr in (text_start..text_end).step_by(4) {
-        if let Ok(insn) = bus.read_u32(addr) {
-            let op = (insn >> 26) & 0x3F;
-            if op == 18 {
-                let lk = insn & 0x1;
-                if lk == 1 {
-                    let li = (insn & 0x03FF_FFFC) as i32;
-                    let li = ((li << 6) >> 6) as i64;
-                    let aa = (insn >> 1) & 0x1;
-                    let target = if aa != 0 { li } else { addr as i64 + li };
-                    if target == target_func {
-                        println!("  [CALLER OF 0x9210D608] at 0x{:08X} (bl 0x{:08X})", addr, target);
-                    }
-                }
-            }
-        }
-    }
+    // Setup KPCR at 0x7FE00000
+    let kpcr_base = 0x7FE00000u64;
+    let tls_base = 0x7FE01000u64;
+    bus.write_u32(kpcr_base + 0x00, tls_base as u32)?; // tls_ptr
+    bus.write_u32(kpcr_base + 0x30, kpcr_base as u32)?; // pcr_ptr
+    bus.write_u32(kpcr_base + 0x70, stack_top as u32)?; // stack_base_ptr
+    bus.write_u32(kpcr_base + 0x74, (stack_top - 0x40000) as u32)?; // stack_end_ptr
+    bus.write_u32(kpcr_base + 0x100, (kpcr_base + 0x200) as u32)?; // current_thread
+    bus.write_u8(kpcr_base + 0x10C, 0)?; // current_cpu = 0
+    bus.write_u32(kpcr_base + 0x14C, 1)?; // thread_id = 1
+    bus.write_u32(kpcr_base + 0x150, 0)?; // dpc_active = 0
+    bus.write_u32(kpcr_base + 0x160, 0)?; // last_error = 0
 
-    let mut cpu = Cpu::new(0x9210DFD0);
-    cpu.regs.gpr[1] = vaddr_base + dash_xex.image_size as u64 - 0x10000;
-    cpu.regs.lr = 0x80000000;
+    let mut cpu = Cpu::new(entry_vaddr);
+    cpu.regs.gpr[1] = stack_top;
+    cpu.regs.gpr[3] = vaddr_base; // hModule (0x92000000)
+    cpu.regs.gpr[4] = 1;          // DLL_PROCESS_ATTACH (1)
+    cpu.regs.gpr[5] = 0;          // lpReserved (0)
+    cpu.regs.gpr[13] = kpcr_base; // r13: KPCR
+    cpu.regs.lr = 0x80001000;
+
+    // In PowerPC 64 ELF/PE ABI, caller's LR is saved in stack frame
+    bus.write_u32(stack_top - 8, 0x80001000)?;
+    bus.write_u32(stack_top + 0x90 - 8, 0x80001000)?;
 
     let mut total_steps = 0;
-    for step in 1..=1000 {
+    for step in 1..=2000 {
         let pc = cpu.regs.pc;
         match bus.read_u32(pc) {
             Ok(insn) => {
                 match cpu.step(&mut bus) {
                     Ok(StepResult::Ok) => {
                         total_steps += 1;
-                        if step <= 40 || step % 50 == 0 {
+                        if step <= 60 || step % 50 == 0 {
                             println!("  [{:04}] PC: 0x{:08X} | Opcode: 0x{:08X} | SP: 0x{:08X}", step, pc, insn, cpu.regs.gpr[1]);
                         }
                     }
                     Ok(StepResult::Syscall { lev, pc: call_pc }) => {
                         if let Some((lib, ord)) = thunk_map.get(&call_pc) {
-                            println!("  [SYSCALL #{:04}] lev={} -> {}!#{}", step, lev, lib, ord);
-                            if *ord == 41 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
-                                println!("  -> ExTerminateThread called! DllMain routine completed successfully!");
+                            let name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                kernel.resolve_xboxkrnl(*ord).unwrap_or("Unknown")
+                            } else {
+                                kernel.resolve_xam(*ord).unwrap_or("Unknown")
+                            };
+                            println!("  [SYSCALL #{:04}] lev={} -> {}!{} (#0x{:04X} / {})", step, lev, lib, name, ord, ord);
+                            if *ord == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                println!("  -> ExTerminateThread called! Execution sequence completed successfully!");
                                 break;
                             }
                             let args = [
                                 cpu.regs.gpr[3], cpu.regs.gpr[4], cpu.regs.gpr[5],
                                 cpu.regs.gpr[6], cpu.regs.gpr[7], cpu.regs.gpr[8],
                             ];
-                            let ret = kernel.dispatch(lib, *ord, &args);
+                            let ret = kernel.dispatch(lib, *ord, &args, &mut bus);
                             cpu.regs.gpr[3] = ret;
                             cpu.regs.pc = cpu.regs.lr;
                         } else {
@@ -182,7 +157,145 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    println!("[+] Trace completed. Total instructions executed: {}", total_steps);
+    println!("[+] Phase 1 (DllMain) completed in {} steps with status r3={}", total_steps, cpu.regs.gpr[3]);
+
+    // ==========================================================
+    // PHASE 2: Execute Master Dashboard Initializer (0x9210D608)
+    // ==========================================================
+    println!("\n[*] Executing Dashboard Master Initializer (0x9210D608)...");
+    let mut dash_main_cpu = Cpu::new(0x9210D608);
+    let stack_top2 = stack_top - 0x20000;
+    dash_main_cpu.regs.gpr[1] = stack_top2;
+    dash_main_cpu.regs.gpr[3] = 0; // r3: 0
+    dash_main_cpu.regs.gpr[4] = 1; // r4: 1
+    dash_main_cpu.regs.gpr[5] = 0; // r5: 0
+    dash_main_cpu.regs.gpr[6] = 0; // r6: 0
+    dash_main_cpu.regs.gpr[13] = kpcr_base;
+    dash_main_cpu.regs.lr = 0x80001000;
+    bus.write_u32(stack_top2 - 8, 0x80001000)?;
+    bus.write_u32(stack_top2 + 0x90 - 8, 0x80001000)?;
+
+    let mut phase2_steps = 0;
+    for step in 1..=5000 {
+        let pc = dash_main_cpu.regs.pc;
+        match bus.read_u32(pc) {
+            Ok(insn) => {
+                match dash_main_cpu.step(&mut bus) {
+                    Ok(StepResult::Ok) => {
+                        phase2_steps += 1;
+                        if step <= 60 || step % 100 == 0 {
+                            println!("  [DASH INIT {:04}] PC: 0x{:08X} | Opcode: 0x{:08X} | SP: 0x{:08X}", step, pc, insn, dash_main_cpu.regs.gpr[1]);
+                        }
+                    }
+                    Ok(StepResult::Syscall { lev, pc: call_pc }) => {
+                        if let Some((lib, ord)) = thunk_map.get(&call_pc) {
+                            let name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                kernel.resolve_xboxkrnl(*ord).unwrap_or("Unknown")
+                            } else {
+                                kernel.resolve_xam(*ord).unwrap_or("Unknown")
+                            };
+                            println!("  [DASH INIT SYSCALL #{:04}] lev={} -> {}!{} (#0x{:04X} / {})", step, lev, lib, name, ord, ord);
+                            if *ord == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                println!("  -> ExTerminateThread called! Dashboard Initialization routine completed!");
+                                break;
+                            }
+                            let args = [
+                                dash_main_cpu.regs.gpr[3], dash_main_cpu.regs.gpr[4], dash_main_cpu.regs.gpr[5],
+                                dash_main_cpu.regs.gpr[6], dash_main_cpu.regs.gpr[7], dash_main_cpu.regs.gpr[8],
+                            ];
+                            let ret = kernel.dispatch(lib, *ord, &args, &mut bus);
+                            dash_main_cpu.regs.gpr[3] = ret;
+                            dash_main_cpu.regs.pc = dash_main_cpu.regs.lr;
+                        } else {
+                            println!("  [UNMAPPED SYSCALL] PC: 0x{:016X}", call_pc);
+                            break;
+                        }
+                    }
+                    Ok(StepResult::Halted) => {
+                        println!("  [HALTED] at PC: 0x{:016X}", pc);
+                        break;
+                    }
+                    Err(e) => {
+                        println!("  [TRAP] PC: 0x{:08X} Opcode: 0x{:08X}: {}", pc, insn, e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  [BUS ERROR] at 0x{:08X}: {}", pc, e);
+                break;
+            }
+        }
+    }
+    println!("[+] Phase 2 completed. Total instructions executed: {}", phase2_steps);
+
+    // ==========================================================
+    // PHASE 3: Execute Main Dashboard Loop Caller (0x921088A0)
+    // ==========================================================
+    println!("\n[*] Executing Dashboard Main Sequence (0x921088A0)...");
+    let mut dash_loop_cpu = Cpu::new(0x921088A0);
+    let stack_top3 = stack_top - 0x40000;
+    dash_loop_cpu.regs.gpr[1] = stack_top3;
+    dash_loop_cpu.regs.gpr[3] = 0;
+    dash_loop_cpu.regs.gpr[4] = 1;
+    dash_loop_cpu.regs.gpr[13] = kpcr_base;
+    dash_loop_cpu.regs.lr = 0x80001000;
+    bus.write_u32(stack_top3 - 8, 0x80001000)?;
+    bus.write_u32(stack_top3 + 0x80 - 8, 0x80001000)?;
+
+    let mut phase3_steps = 0;
+    for step in 1..=5000 {
+        let pc = dash_loop_cpu.regs.pc;
+        match bus.read_u32(pc) {
+            Ok(insn) => {
+                match dash_loop_cpu.step(&mut bus) {
+                    Ok(StepResult::Ok) => {
+                        phase3_steps += 1;
+                        if step <= 60 || step % 100 == 0 {
+                            println!("  [DASH MAIN {:04}] PC: 0x{:08X} | Opcode: 0x{:08X} | SP: 0x{:08X}", step, pc, insn, dash_loop_cpu.regs.gpr[1]);
+                        }
+                    }
+                    Ok(StepResult::Syscall { lev, pc: call_pc }) => {
+                        if let Some((lib, ord)) = thunk_map.get(&call_pc) {
+                            let name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                kernel.resolve_xboxkrnl(*ord).unwrap_or("Unknown")
+                            } else {
+                                kernel.resolve_xam(*ord).unwrap_or("Unknown")
+                            };
+                            println!("  [DASH MAIN SYSCALL #{:04}] lev={} -> {}!{} (#0x{:04X} / {})", step, lev, lib, name, ord, ord);
+                            if *ord == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+                                println!("  -> ExTerminateThread called! Dashboard main sequence completed!");
+                                break;
+                            }
+                            let args = [
+                                dash_loop_cpu.regs.gpr[3], dash_loop_cpu.regs.gpr[4], dash_loop_cpu.regs.gpr[5],
+                                dash_loop_cpu.regs.gpr[6], dash_loop_cpu.regs.gpr[7], dash_loop_cpu.regs.gpr[8],
+                            ];
+                            let ret = kernel.dispatch(lib, *ord, &args, &mut bus);
+                            dash_loop_cpu.regs.gpr[3] = ret;
+                            dash_loop_cpu.regs.pc = dash_loop_cpu.regs.lr;
+                        } else {
+                            println!("  [UNMAPPED SYSCALL] PC: 0x{:016X}", call_pc);
+                            break;
+                        }
+                    }
+                    Ok(StepResult::Halted) => {
+                        println!("  [HALTED] at PC: 0x{:016X}", pc);
+                        break;
+                    }
+                    Err(e) => {
+                        println!("  [TRAP] PC: 0x{:08X} Opcode: 0x{:08X}: {}", pc, insn, e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  [BUS ERROR] at 0x{:08X}: {}", pc, e);
+                break;
+            }
+        }
+    }
+    println!("[+] Phase 3 completed. Total instructions executed: {}", phase3_steps);
 
     Ok(())
 }

@@ -1,4 +1,3 @@
-use byteorder::{BigEndian, ByteOrder};
 use std::fs;
 use xenon_emu::loader::{PeImage, StfsPackage, XexFile};
 

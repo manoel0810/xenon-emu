@@ -255,6 +255,37 @@ impl Cpu {
             31 => {
                 let xo = (insn >> 1) & 0x3FF;
                 match xo {
+                    // 0: cmp (Compare)
+                    0 => {
+                        let crf = ((insn >> 23) & 0x7) as u32;
+                        let l = (insn >> 21) & 1;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        if l == 0 {
+                            self.regs.update_cr_cmpw(crf, self.regs.gpr[ra] as i32, self.regs.gpr[rb] as i32);
+                        } else {
+                            self.regs.update_cr_cmpd(crf, self.regs.gpr[ra] as i64, self.regs.gpr[rb] as i64);
+                        }
+                    }
+
+                    // 32: cmpl (Compare Logical)
+                    32 => {
+                        let crf = ((insn >> 23) & 0x7) as u32;
+                        let l = (insn >> 21) & 1;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        if l == 0 {
+                            self.regs.update_cr_cmplw(crf, self.regs.gpr[ra] as u32, self.regs.gpr[rb] as u32);
+                        } else {
+                            let a = self.regs.gpr[ra];
+                            let b = self.regs.gpr[rb];
+                            let shift = (7 - crf) * 4;
+                            let mask = !(0xFu32 << shift);
+                            let bits = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
+                            self.regs.cr = (self.regs.cr & mask) | (bits << shift);
+                        }
+                    }
+
                     // mr rA, rS
                     444 => {
                         let rs = ((insn >> 21) & 0x1F) as usize;
@@ -303,6 +334,118 @@ impl Cpu {
                         let ra = ((insn >> 16) & 0x1F) as usize;
                         let rb = ((insn >> 11) & 0x1F) as usize;
                         self.regs.gpr[rd] = self.regs.gpr[rb].wrapping_sub(self.regs.gpr[ra]);
+                    }
+
+                    // 26: cntlzw (Count Leading Zeros Word)
+                    26 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let val = self.regs.gpr[rs] as u32;
+                        let lz = val.leading_zeros() as u64;
+                        self.regs.gpr[ra] = lz;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, lz as i32, 0);
+                        }
+                    }
+
+                    // 24: slw (Shift Left Word)
+                    24 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let shift = (self.regs.gpr[rb] & 0x3F) as u32;
+                        let res = if shift < 32 {
+                            ((self.regs.gpr[rs] as u32) << shift) as u64
+                        } else {
+                            0
+                        };
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 28: and / and.
+                    28 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let res = self.regs.gpr[rs] & self.regs.gpr[rb];
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 60: andc
+                    60 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let res = self.regs.gpr[rs] & (!self.regs.gpr[rb]);
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 124: nor
+                    124 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let res = !(self.regs.gpr[rs] | self.regs.gpr[rb]);
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 316: xor
+                    316 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let res = self.regs.gpr[rs] ^ self.regs.gpr[rb];
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 536: srw (Shift Right Word)
+                    536 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let rb = ((insn >> 11) & 0x1F) as usize;
+                        let shift = (self.regs.gpr[rb] & 0x3F) as u32;
+                        let res = if shift < 32 {
+                            ((self.regs.gpr[rs] as u32) >> shift) as u64
+                        } else {
+                            0
+                        };
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 824: srawi (Shift Right Algebraic Word Immediate)
+                    824 => {
+                        let rs = ((insn >> 21) & 0x1F) as usize;
+                        let ra = ((insn >> 16) & 0x1F) as usize;
+                        let sh = (insn >> 11) & 0x1F;
+                        let val = self.regs.gpr[rs] as i32;
+                        let res = (val >> sh) as i64 as u64;
+                        self.regs.gpr[ra] = res;
+                        if (insn & 1) != 0 {
+                            self.regs.update_cr_cmpw(0, res as i32, 0);
+                        }
+                    }
+
+                    // 598: sync | 982: isync | 278: dcbt | 86: dcbf | 1014: dcbz
+                    598 | 982 | 278 | 86 | 1014 => {
+                        // Hardware memory barrier / cache hint stubs
                     }
 
                     _ => return Err(format!("Unimplemented opcode 31 xo {}", xo)),
