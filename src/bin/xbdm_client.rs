@@ -11,13 +11,14 @@ impl XbdmClient {
         let stream = TcpStream::connect(format!("{}:730", ip))
             .map_err(|e| format!("Falha ao conectar no Xbox 360 ({}:730): {}", ip, e))?;
         
-        stream.set_read_timeout(Some(Duration::from_millis(2500))).ok();
-        stream.set_write_timeout(Some(Duration::from_millis(2500))).ok();
+        stream.set_read_timeout(Some(Duration::from_millis(3000))).ok();
+        stream.set_write_timeout(Some(Duration::from_millis(3000))).ok();
 
         let mut client = Self {
             reader: BufReader::new(stream),
         };
 
+        // Read initial connection greeting lines
         loop {
             let mut line = String::new();
             match client.reader.read_line(&mut line) {
@@ -77,31 +78,80 @@ impl XbdmClient {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_ip = "192.168.3.6";
+    println!("========================================================");
+    println!("  Xenon-Emu: Inspecionando DASHBOARD ORIGINAL no Xbox   ");
+    println!("  IP Alvo: {} (Porta 730 XBDM)                          ", target_ip);
+    println!("========================================================");
+
     let mut xbdm = XbdmClient::connect(target_ip)?;
 
-    let cmds = [
-        "getcurtitle",
-        "dmesg",
-        "altaddr",
-        "systeminfo",
-        "drivefreespace name=\"Hdd:\"",
-        "dirlist name=\"Hdd:\\\"",
-    ];
+    // 1. List loaded modules now that the user is in the official Dashboard
+    println!("\n[*] 1. Modulos carregados na memoria (modules):");
+    let mut dash_base: Option<u64> = None;
+    let mut dash_name = String::new();
 
-    for cmd in &cmds {
-        println!("\n[*] Comando: '{}'", cmd);
-        match xbdm.send_command(cmd) {
-            Ok(lines) => {
-                for l in lines.iter().take(8) {
-                    println!("    -> {}", l);
-                }
-                if lines.len() > 8 {
-                    println!("    ... (mais {} linhas)", lines.len() - 8);
+    if let Ok(lines) = xbdm.send_command("modules") {
+        for l in &lines {
+            println!("    -> {}", l);
+            if l.contains("dash.xex") || l.contains("dash") {
+                dash_name = l.clone();
+                // extract base=0x...
+                if let Some(pos) = l.find("base=0x") {
+                    let rest = &l[pos + 7..];
+                    if let Some(end) = rest.find(' ') {
+                        if let Ok(addr) = u64::from_str_radix(&rest[..end], 16) {
+                            dash_base = Some(addr);
+                        }
+                    }
                 }
             }
-            Err(e) => println!("    [!] Erro: {}", e),
         }
     }
+
+    // 2. Sections of dash.xex
+    println!("\n[*] 2. Inspecionando Secoes do modulo da Dashboard (modsections):");
+    let mod_name = if !dash_name.is_empty() { "dash.xex" } else { "xboxkrnl.exe" };
+    if let Ok(lines) = xbdm.send_command(&format!("modsections name=\"{}\"", mod_name)) {
+        for l in lines {
+            println!("    -> {}", l);
+        }
+    }
+
+    // 3. Active Threads in the Dashboard
+    println!("\n[*] 3. Threads ativas na Dashboard Original (threads):");
+    let mut thread_ids = Vec::new();
+    if let Ok(lines) = xbdm.send_command("threads") {
+        for l in lines {
+            println!("    -> {}", l);
+            if let Ok(tid) = l.parse::<i64>() {
+                thread_ids.push(tid);
+            }
+        }
+    }
+
+    // 4. Thread Info for first few threads
+    println!("\n[*] 4. Detalhes das Threads de Renderizacao e UI:");
+    for tid in thread_ids.iter().take(5) {
+        if let Ok(lines) = xbdm.send_command(&format!("threadinfo thread={}", tid)) {
+            for l in lines {
+                println!("    [TID {}] -> {}", tid, l);
+            }
+        }
+    }
+
+    // 5. If dash_base found, read first 64 bytes of PE header
+    if let Some(base) = dash_base {
+        println!("\n[*] 5. Lendo 64 bytes da Dashboard Original em 0x{:08X}:", base);
+        if let Ok(lines) = xbdm.send_command(&format!("getmem addr=0x{:X} length=64", base)) {
+            for l in lines {
+                println!("    -> {}", l);
+            }
+        }
+    }
+
+    println!("\n========================================================");
+    println!("  [+] Captura de Hardware Real Concluida!");
+    println!("========================================================");
 
     Ok(())
 }
