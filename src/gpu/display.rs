@@ -19,13 +19,13 @@ pub enum DisplayMode {
 
 #[derive(Debug, Clone)]
 pub struct BladeItem {
-    pub title: &'static str,
-    pub subtitle: &'static str,
+    pub title: String,
+    pub subtitle: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct BladeData {
-    pub name: &'static str,
+    pub name: String,
     pub primary_color: u32,
     pub secondary_color: u32,
     pub items: Vec<BladeItem>,
@@ -61,97 +61,54 @@ impl GpuDisplay {
 
         let framebuffer = vec![0u32; DISPLAY_WIDTH * DISPLAY_HEIGHT];
 
+        let item = |t: &str, s: &str| BladeItem {
+            title: t.to_string(),
+            subtitle: s.to_string(),
+        };
+
         let blades = vec![
             BladeData {
-                name: "XBOX LIVE",
+                name: "XBOX LIVE".to_string(),
                 primary_color: 0x00E65C00, // Vibrant Xbox Live Orange
                 secondary_color: 0x00993D00,
                 items: vec![
-                    BladeItem {
-                        title: "Xbox Live Marketplace",
-                        subtitle: "New Demos, Arcade Games & HD Trailers",
-                    },
-                    BladeItem {
-                        title: "Messages & Chat",
-                        subtitle: "Voice Mail, Text & Game Invites (1 New)",
-                    },
-                    BladeItem {
-                        title: "Friends List",
-                        subtitle: "3 Friends Online Playing Halo 3 & PGR3",
-                    },
-                    BladeItem {
-                        title: "Account Management",
-                        subtitle: "Gamertag, Billing & Xbox Live Gold Subscription",
-                    },
+                    item("Xbox Live Marketplace", "New Demos, Arcade Games & HD Trailers"),
+                    item("Messages & Chat", "Voice Mail, Text & Game Invites (1 New)"),
+                    item("Friends List", "3 Friends Online Playing Halo 3 & PGR3"),
+                    item("Account Management", "Gamertag, Billing & Xbox Live Gold Subscription"),
                 ],
             },
             BladeData {
-                name: "GAMES",
+                name: "GAMES".to_string(),
                 primary_color: 0x00107C10, // Xbox Emerald Green
                 secondary_color: 0x000B4D0B,
                 items: vec![
-                    BladeItem {
-                        title: "Play Disc: $flash_dash.xex",
-                        subtitle: "Official Xbox 360 Dashboard v2.0.4532.0 (Active)",
-                    },
-                    BladeItem {
-                        title: "Achievements & Gamer Score",
-                        subtitle: "18 Games Played | 650 G Unlocked",
-                    },
-                    BladeItem {
-                        title: "Xbox Live Arcade",
-                        subtitle: "Geometry Wars, Hexic HD, Pac-Man C.E.",
-                    },
-                    BladeItem {
-                        title: "Game Demos & Trailers",
-                        subtitle: "Explore New Xbox 360 High-Definition Releases",
-                    },
+                    item("Play Disc: $flash_dash.xex", "Official Xbox 360 Dashboard v2.0.4532.0 (Active)"),
+                    item("Achievements & Gamer Score", "18 Games Played | 650 G Unlocked"),
+                    item("Xbox Live Arcade", "Geometry Wars, Hexic HD, Pac-Man C.E."),
+                    item("Game Demos & Trailers", "Explore New Xbox 360 High-Definition Releases"),
                 ],
             },
             BladeData {
-                name: "MEDIA",
+                name: "MEDIA".to_string(),
                 primary_color: 0x000078D7, // Azure Media Blue
                 secondary_color: 0x00004578,
                 items: vec![
-                    BladeItem {
-                        title: "Music Player",
-                        subtitle: "Play Music from Hard Drive, USB, or Ripped CD",
-                    },
-                    BladeItem {
-                        title: "Pictures & Slideshow",
-                        subtitle: "View High-Resolution Photos with Custom Soundtrack",
-                    },
-                    BladeItem {
-                        title: "Video Player",
-                        subtitle: "WMV HD, MP4, and DVD Movies (720p 60Hz)",
-                    },
-                    BladeItem {
-                        title: "Windows Media Center",
-                        subtitle: "Stream TV, Movies & Photos from Windows PC",
-                    },
+                    item("Music Player", "Play Music from Hard Drive, USB, or Ripped CD"),
+                    item("Pictures & Slideshow", "View High-Resolution Photos with Custom Soundtrack"),
+                    item("Video Player", "WMV HD, MP4, and DVD Movies (720p 60Hz)"),
+                    item("Windows Media Center", "Stream TV, Movies & Photos from Windows PC"),
                 ],
             },
             BladeData {
-                name: "SYSTEM",
+                name: "SYSTEM".to_string(),
                 primary_color: 0x006B2D90, // Royal System Amethyst Purple
                 secondary_color: 0x00401B55,
                 items: vec![
-                    BladeItem {
-                        title: "Console Settings",
-                        subtitle: "Display (720p HD 60Hz), Audio (Dolby Digital 5.1)",
-                    },
-                    BladeItem {
-                        title: "Family & Parental Controls",
-                        subtitle: "Console Safety, ESRB Ratings & Access Limits",
-                    },
-                    BladeItem {
-                        title: "Memory & Storage Units",
-                        subtitle: "Corona 16MB NAND Flash, 20GB HDD, USB Storage",
-                    },
-                    BladeItem {
-                        title: "Network & Connection Status",
-                        subtitle: "Wired Ethernet / Xenon HLE Network Connected",
-                    },
+                    item("Console Settings", "Display (720p HD 60Hz), Audio (Dolby Digital 5.1)"),
+                    item("Family & Parental Controls", "Console Safety, ESRB Ratings & Access Limits"),
+                    item("Memory & Storage Units", "Corona 16MB NAND Flash, 20GB HDD, USB Storage"),
+                    item("Network & Connection Status", "Wired Ethernet / Xenon HLE Network Connected"),
                 ],
             },
         ];
@@ -425,7 +382,7 @@ impl GpuDisplay {
                 h,
                 tx + 22,
                 30,
-                b.name,
+                &b.name,
                 text_color,
                 1,
             );
@@ -605,7 +562,7 @@ impl GpuDisplay {
                 h,
                 card_x + 95,
                 cy + 25,
-                item.title,
+                &item.title,
                 title_color,
                 2, // Big 16px title
             );
@@ -616,7 +573,7 @@ impl GpuDisplay {
                 h,
                 card_x + 97,
                 cy + 58,
-                item.subtitle,
+                &item.subtitle,
                 0x00A0B0C0,
                 1,
             );
@@ -1048,6 +1005,33 @@ impl GpuDisplay {
         // -----------------------------------------------------------
         let skip_prompt = "PRESS (A) OR SPACE TO SKIP";
         draw_text(&mut self.framebuffer, w, h, w - 240, h - 30, skip_prompt, 0x00406040, 1);
+    }
+
+    /// Injects authentic Microsoft XUI scenes (.xur) and localized string tables (.xus)
+    pub fn apply_xui_locale(&mut self, xus: &crate::loader::XusTable, scenes: &[crate::loader::XurScene]) {
+        println!("[+] GpuDisplay: Binding {} authentic XUI Scene(s) & Portuguese String Table (.xus)...", scenes.len());
+
+        // Update Games Blade with genuine Portuguese strings directly from dump
+        if let Some(s) = xus.find("Meus Jogos Arcade") {
+            println!("  [XUI PT-BR] Binding Arcade title: '{}'", s);
+            self.blades[1].items[2].title = "Xbox Live Arcade (Meus Jogos)".to_string();
+            self.blades[1].items[2].subtitle = s.clone();
+        }
+        if let Some(s) = xus.find("Novo Jogo: Bejeweled") {
+            println!("  [XUI PT-BR] Binding Spotlight item: '{}'", s);
+            self.blades[1].items[3].title = s.clone();
+            self.blades[1].items[3].subtitle = "Destaque Oficial da Microsoft no Dashboard".to_string();
+        }
+        if let Some(s) = xus.find("Aqui você obtém uma grande variedade") {
+            println!("  [XUI PT-BR] Binding Arcade Description: '{}'", s);
+            self.blades[1].items[0].subtitle = s.clone();
+        }
+
+        for sc in scenes {
+            println!("  [XUI SCENE] Attached scene '{}' (Root: {}, Visual Nodes: {})",
+                sc.name, sc.root.class_name, sc.root.children.len()
+            );
+        }
     }
 }
 

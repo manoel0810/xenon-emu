@@ -328,11 +328,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ==========================================================
+    // ETAPA 1: Authentic Microsoft XUI Resource Engine (.xur & .xus)
+    // ==========================================================
+    println!("\n>>> [ETAPA 1] Genuine Microsoft XUI Resource Engine (.XUR & .XUS) <<<");
+    use kernel::XuiManager;
+    use loader::{XurScene, XusTable};
+    let mut xui_mgr = XuiManager::new();
+
+    // 1. Load Portuguese (pt-br) localized string table from dump
+    let pt_strings_path = "../extracted_xui/pt-br/Strings.xus";
+    let xus_table = if std::path::Path::new(pt_strings_path).exists() {
+        println!("[*] Loading genuine Microsoft Portuguese string table (.xus)...");
+        match XusTable::load_file(pt_strings_path) {
+            Ok(table) => {
+                println!("[+] Successfully loaded {} Portuguese strings from dump!", table.strings.len());
+                for (idx, s) in table.strings.iter().take(5).enumerate() {
+                    println!("    [{:02}] \"{}\"", idx + 1, s);
+                }
+                Some(table)
+            }
+            Err(e) => {
+                println!("[!] Failed to load {}: {}", pt_strings_path, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(ref t) = xus_table {
+        xui_mgr.set_string_table(t.clone());
+    }
+
+    // 2. Load authentic Microsoft XUI Visual Scenes (.xur)
+    let mut loaded_scenes = Vec::new();
+    let xur_files = [
+        ("BladeSkin", "../extracted_xui/BladeSkin.xur"),
+        ("gamesSignedOut", "../extracted_xui/gamesSignedOut.xur"),
+        ("mediaSignedOut", "../extracted_xui/mediaSignedOut.xur"),
+        ("liveSignedOutUI", "../extracted_xui/liveSignedOutUI.xur"),
+    ];
+
+    for (_sname, spath) in &xur_files {
+        if std::path::Path::new(spath).exists() {
+            match XurScene::load_file(spath) {
+                Ok(scene) => {
+                    println!("[+] Parsed authentic XUI Scene '{}': Root Class '{}', {} Child Nodes, {} Classes",
+                        scene.name, scene.root.class_name, scene.root.children.len(), scene.classes.len()
+                    );
+                    for (c_idx, child) in scene.root.children.iter().take(4).enumerate() {
+                        println!("    -> Node #{:02}: id='{}', class='{}', bounds=({:.0}, {:.0}, {:.0}, {:.0})",
+                            c_idx + 1, child.id, child.class_name, child.x, child.y, child.width, child.height
+                        );
+                    }
+                    xui_mgr.register_scene(scene.clone());
+                    loaded_scenes.push(scene);
+                }
+                Err(e) => println!("  [!] XUR parse error for {}: {}", spath, e),
+            }
+        }
+    }
+
+    // ==========================================================
     // MILESTONE 5: High-Definition GPU Video Display & Surface Rendering
     // ==========================================================
     println!("\n>>> [MILESTONE 5] GPU Video Output (1280x720 HD @ 60 FPS) <<<");
     println!("[*] Initializing High-Definition Video Display Surface...");
     let mut display = GpuDisplay::new("Xenon-Emu: Xbox 360 Dashboard [Title: FFFE07D1 | Build 4532]")?;
+    if let Some(ref table) = xus_table {
+        display.apply_xui_locale(table, &loaded_scenes);
+    }
     println!("[+] Display Window opened: 1280x720 @ 60 FPS");
 
     println!("\n[*] ========================================================");
