@@ -25,6 +25,15 @@ pub struct KernelEvent {
     pub guest_ptr: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct VfsFileHandle {
+    pub handle: u32,
+    pub name: String,
+    pub data: Vec<u8>,
+    pub position: usize,
+    pub is_directory: bool,
+}
+
 pub struct KernelDispatcher {
     pub next_thread_id: u32,
     pub next_handle: u32,
@@ -50,6 +59,8 @@ pub struct KernelDispatcher {
     pub pending_threads: Vec<PendingThread>,
     pub events: HashMap<u32, KernelEvent>,
     pub event_by_ptr: HashMap<u64, u32>,
+    pub vfs_files: HashMap<String, Vec<u8>>,
+    pub vfs_handles: HashMap<u32, VfsFileHandle>,
 }
 
 impl KernelDispatcher {
@@ -79,7 +90,95 @@ impl KernelDispatcher {
             pending_threads: Vec::new(),
             events: HashMap::new(),
             event_by_ptr: HashMap::new(),
+            vfs_files: HashMap::new(),
+            vfs_handles: HashMap::new(),
         }
+    }
+
+    /// Registers a file in the virtual filesystem with normalized case-insensitive aliases
+    pub fn register_vfs_file(&mut self, path: &str, data: Vec<u8>) {
+        let clean_path = path.trim_matches('\0').replace('/', "\\");
+        let lower_path = clean_path.to_lowercase();
+
+        // 1. Full lowercase path
+        self.vfs_files.insert(lower_path.clone(), data.clone());
+
+        // 2. Just the filename and standard prefixes
+        if let Some(filename) = lower_path.rsplit('\\').next() {
+            self.vfs_files.insert(filename.to_string(), data.clone());
+            self.vfs_files.insert(format!("\\{}", filename), data.clone());
+            self.vfs_files.insert(format!("game:\\{}", filename), data.clone());
+            self.vfs_files.insert(format!("\\device\\cdrom0\\{}", filename), data.clone());
+            self.vfs_files.insert(format!("\\device\\harddisk0\\partition1\\{}", filename), data.clone());
+            self.vfs_files.insert(format!("\\device\\flash\\{}", filename), data.clone());
+        }
+
+        // 3. Normalized without leading backslash
+        if lower_path.starts_with('\\') {
+            self.vfs_files.insert(lower_path[1..].to_string(), data.clone());
+        }
+    }
+
+    /// Finds a file in the virtual filesystem with fallback to on-disk assets
+    pub fn find_vfs_file(&mut self, query: &str) -> Option<Vec<u8>> {
+        let clean = query.trim_matches('\0').replace('/', "\\");
+        let lower = clean.to_lowercase();
+
+        // 1. Direct match
+        if let Some(data) = self.vfs_files.get(&lower) {
+            return Some(data.clone());
+        }
+
+        // 2. Try stripping standard prefixes
+        let prefixes = [
+            "\\device\\harddisk0\\partition1\\",
+            "\\device\\harddisk0\\partition0\\",
+            "\\device\\cdrom0\\",
+            "\\device\\flash\\",
+            "game:\\",
+            "game:/",
+            "systemroot:\\",
+            "\\??\\",
+            "\\\\?\\",
+            ".\\",
+            "\\",
+        ];
+
+        let mut stripped = lower.as_str();
+        for p in &prefixes {
+            if stripped.starts_with(p) {
+                stripped = &stripped[p.len()..];
+            }
+        }
+
+        if let Some(data) = self.vfs_files.get(stripped) {
+            return Some(data.clone());
+        }
+
+        // 3. Try just the filename
+        if let Some(fname) = stripped.rsplit('\\').next() {
+            if let Some(data) = self.vfs_files.get(fname) {
+                return Some(data.clone());
+            }
+
+            // 4. Fallback to host filesystem at ../extracted_xui
+            let disk_paths = [
+                format!("../extracted_xui/{}", stripped),
+                format!("../extracted_xui/{}", fname),
+                format!("../extracted_xui/pt-br/{}", fname),
+                format!("../extracted_xui/named/{}", fname),
+            ];
+
+            for dp in &disk_paths {
+                if let Ok(d) = std::fs::read(dp) {
+                    println!("  [VFS] Loaded file on-demand from host disk '{}' ({} bytes)", dp, d.len());
+                    self.register_vfs_file(fname, d.clone());
+                    return Some(d);
+                }
+            }
+        }
+
+        None
     }
 
     pub fn update_gamepad(&mut self, gamepad: crate::kernel::input::XInputGamepad) {
@@ -150,7 +249,113 @@ impl KernelDispatcher {
             self.dispatch_xam(ordinal, func_name, args, bus)
         }
     }
+}
 
+/// Helper function to extract path string from guest memory (OBJECT_ATTRIBUTES or ANSI_STRING or C-string)
+fn read_vfs_path(p_obj_attr: u64, bus: &MemoryBus) -> Option<String> {
+    if p_obj_attr == 0 {
+        return None;
+    }
+    // Check if p_obj_attr has ObjectName pointer at offset 4
+    let name_ptr = bus.read_u32(p_obj_attr + 4).unwrap_or(0) as u64;
+    if name_ptr >= 0x1000 {
+        // Try reading as ANSI_STRING: length at +0 (u16), max_length at +2 (u16), buffer at +4 (u32)
+        let str_len = bus.read_u16(name_ptr).unwrap_or(0) as usize;
+        let buf_ptr = bus.read_u32(name_ptr + 4).unwrap_or(0) as u64;
+        if str_len > 0 && str_len < 1024 && buf_ptr >= 0x1000 {
+            let mut bytes = Vec::new();
+            for i in 0..str_len {
+                if let Ok(b) = bus.read_u8(buf_ptr + i as u64) {
+                    if b == 0 { break; }
+                    bytes.push(b);
+                }
+            }
+            if let Ok(s) = String::from_utf8(bytes.clone()) {
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            } else {
+                let s: String = bytes.iter().map(|&b| b as char).collect();
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+
+        // Also try reading name_ptr directly as null-terminated ASCII string
+        let mut bytes = Vec::new();
+        for i in 0..256 {
+            if let Ok(b) = bus.read_u8(name_ptr + i as u64) {
+                if b == 0 { break; }
+                bytes.push(b);
+            } else {
+                break;
+            }
+        }
+        if bytes.len() >= 3 && bytes.iter().all(|&b| (0x20..=0x7E).contains(&b) || b == b'\\' || b == b'/') {
+            if let Ok(s) = String::from_utf8(bytes) {
+                return Some(s);
+            }
+        }
+    }
+
+    // Fallback: Check if p_obj_attr itself is an ANSI_STRING
+    let str_len = bus.read_u16(p_obj_attr).unwrap_or(0) as usize;
+    let buf_ptr = bus.read_u32(p_obj_attr + 4).unwrap_or(0) as u64;
+    if str_len > 0 && str_len < 1024 && buf_ptr >= 0x1000 {
+        let mut bytes = Vec::new();
+        for i in 0..str_len {
+            if let Ok(b) = bus.read_u8(buf_ptr + i as u64) {
+                if b == 0 { break; }
+                bytes.push(b);
+            }
+        }
+        if let Ok(s) = String::from_utf8(bytes) {
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+
+    // Fallback: Check if p_obj_attr is directly a null-terminated ASCII string
+    let mut bytes = Vec::new();
+    for i in 0..256 {
+        if let Ok(b) = bus.read_u8(p_obj_attr + i as u64) {
+            if b == 0 { break; }
+            bytes.push(b);
+        } else {
+            break;
+        }
+    }
+    if bytes.len() >= 3 && bytes.iter().all(|&b| (0x20..=0x7E).contains(&b) || b == b'\\' || b == b'/') {
+        if let Ok(s) = String::from_utf8(bytes) {
+            return Some(s);
+        }
+    }
+
+    None
+}
+
+/// Helper function to read null-terminated C string from guest memory
+fn read_c_string(ptr: u64, bus: &MemoryBus) -> Option<String> {
+    if ptr == 0 { return None; }
+    let mut bytes = Vec::new();
+    for i in 0..512 {
+        if let Ok(b) = bus.read_u8(ptr + i as u64) {
+            if b == 0 { break; }
+            bytes.push(b);
+        } else {
+            break;
+        }
+    }
+    if bytes.is_empty() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(&bytes).to_string())
+    }
+}
+
+impl KernelDispatcher {
     fn dispatch_xboxkrnl(
         &mut self,
         ordinal: u16,
@@ -225,6 +430,9 @@ impl KernelDispatcher {
                 0 // STATUS_SUCCESS
             }
 
+            // 0x0007: ExAcquireReadWriteLockExclusive | 0x0008: ExAcquireReadWriteLockShared
+            0x0007 | 0x0008 => 0,
+
             // 0x000F: ExFreePool
             0x000F => 0,
 
@@ -255,6 +463,9 @@ impl KernelDispatcher {
                 }
                 0
             }
+
+            // 0x0016: ExReleaseReadWriteLock
+            0x0016 => 0,
 
             // 0x0019: ExTerminateThread
             0x0019 => {
@@ -575,6 +786,14 @@ impl KernelDispatcher {
                 0 // STATUS_SUCCESS
             }
 
+            // 0x00CF: NtClose (Handle)
+            0x00CF => {
+                let h = args.first().copied().unwrap_or(0) as u32;
+                self.vfs_handles.remove(&h);
+                self.events.remove(&h);
+                0 // STATUS_SUCCESS
+            }
+
             // 0x00D1: NtCreateEvent (pHandle, desiredAccess, pObjAttr, eventType, initialState)
             0x00D1 => {
                 let h = self.next_handle;
@@ -594,6 +813,64 @@ impl KernelDispatcher {
                     guest_ptr: 0,
                 });
                 0 // STATUS_SUCCESS
+            }
+
+            // 0x0038: IoCreateFile | 0x00D2: NtCreateFile | 0x00DF: NtOpenFile
+            0x0038 | 0x00D2 | 0x00DF => {
+                let p_handle = args.first().copied().unwrap_or(0);
+                let p_obj_attr = args.get(2).copied().unwrap_or(0);
+                let p_io_status = args.get(3).copied().unwrap_or(0);
+
+                let path_opt = read_vfs_path(p_obj_attr, bus);
+                if let Some(path) = path_opt {
+                    println!("    [VFS] NtCreateFile / NtOpenFile: '{}'", path);
+                    if let Some(data) = self.find_vfs_file(&path) {
+                        let h = self.next_handle;
+                        self.next_handle += 4;
+                        let is_dir = path.ends_with('\\') || path.ends_with('/');
+                        self.vfs_handles.insert(h, VfsFileHandle {
+                            handle: h,
+                            name: path.clone(),
+                            data,
+                            position: 0,
+                            is_directory: is_dir,
+                        });
+                        if p_handle != 0 {
+                            let _ = bus.write_u32(p_handle, h);
+                        }
+                        if p_io_status != 0 {
+                            let _ = bus.write_u32(p_io_status, 0); // STATUS_SUCCESS
+                            let _ = bus.write_u32(p_io_status + 4, 1); // FILE_OPENED
+                        }
+                        println!("      -> VFS Handle 0x{:X} granted for '{}'", h, path);
+                        0 // STATUS_SUCCESS
+                    } else {
+                        println!("      -> VFS File NOT found: '{}'", path);
+                        if p_io_status != 0 {
+                            let _ = bus.write_u32(p_io_status, 0xC000_0034); // STATUS_OBJECT_NAME_NOT_FOUND
+                            let _ = bus.write_u32(p_io_status + 4, 0);
+                        }
+                        0xC000_0034 // STATUS_OBJECT_NAME_NOT_FOUND
+                    }
+                } else {
+                    let h = self.next_handle;
+                    self.next_handle += 4;
+                    self.vfs_handles.insert(h, VfsFileHandle {
+                        handle: h,
+                        name: "<unnamed>".to_string(),
+                        data: Vec::new(),
+                        position: 0,
+                        is_directory: false,
+                    });
+                    if p_handle != 0 {
+                        let _ = bus.write_u32(p_handle, h);
+                    }
+                    if p_io_status != 0 {
+                        let _ = bus.write_u32(p_io_status, 0);
+                        let _ = bus.write_u32(p_io_status + 4, 1);
+                    }
+                    0 // STATUS_SUCCESS
+                }
             }
 
             // 0x00D3: NtCreateIoCompletion
@@ -620,6 +897,23 @@ impl KernelDispatcher {
                 0 // STATUS_SUCCESS
             }
 
+            // 0x00D8: NtDeleteFile
+            0x00D8 => 0,
+
+            // 0x00D9: NtDeviceIoControlFile
+            0x00D9 => {
+                if let Some(&p_ios) = args.get(4) {
+                    if p_ios != 0 {
+                        let _ = bus.write_u32(p_ios, 0);
+                        let _ = bus.write_u32(p_ios + 4, 0);
+                    }
+                }
+                0
+            }
+
+            // 0x00DB: NtFlushBuffersFile
+            0x00DB => 0,
+
             // 0x00DC: NtFreeVirtualMemory
             0x00DC => 0,
 
@@ -637,14 +931,153 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x00E8: NtQueryInformationFile
-            0x00E8 => 0,
+            // 0x00E7: NtQueryFullAttributesFile (pObjAttr, pNetworkOpenInfo)
+            0x00E7 => {
+                let p_obj_attr = args.first().copied().unwrap_or(0);
+                let p_info = args.get(1).copied().unwrap_or(0);
+                if let Some(path) = read_vfs_path(p_obj_attr, bus) {
+                    if let Some(data) = self.find_vfs_file(&path) {
+                        if p_info != 0 {
+                            let flen = data.len() as u64;
+                            let _ = bus.write_u64(p_info + 0, 0); // CreationTime
+                            let _ = bus.write_u64(p_info + 8, 0); // LastAccessTime
+                            let _ = bus.write_u64(p_info + 16, 0); // LastWriteTime
+                            let _ = bus.write_u64(p_info + 24, 0); // ChangeTime
+                            let _ = bus.write_u64(p_info + 32, flen); // AllocationSize
+                            let _ = bus.write_u64(p_info + 40, flen); // EndOfFile
+                            let _ = bus.write_u32(p_info + 48, 0x80); // FILE_ATTRIBUTE_NORMAL
+                        }
+                        0 // STATUS_SUCCESS
+                    } else {
+                        0xC000_0034 // STATUS_OBJECT_NAME_NOT_FOUND
+                    }
+                } else {
+                    0xC000_000D // STATUS_INVALID_PARAMETER
+                }
+            }
+
+            // 0x00E8: NtQueryInformationFile (FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass)
+            0x00E8 => {
+                let h = args.first().copied().unwrap_or(0) as u32;
+                let p_ios = args.get(1).copied().unwrap_or(0);
+                let p_info = args.get(2).copied().unwrap_or(0);
+                let info_class = args.get(4).copied().unwrap_or(0) as u32;
+
+                if let Some(file) = self.vfs_handles.get(&h) {
+                    let flen = file.data.len() as u64;
+                    let pos = file.position as u64;
+                    match info_class {
+                        5 => { // FileStandardInformation
+                            if p_info != 0 {
+                                let _ = bus.write_u64(p_info + 0, flen); // AllocationSize
+                                let _ = bus.write_u64(p_info + 8, flen); // EndOfFile (size)
+                                let _ = bus.write_u32(p_info + 16, 1);   // NumberOfLinks
+                                let _ = bus.write_u8(p_info + 20, 0);    // DeletePending
+                                let _ = bus.write_u8(p_info + 21, if file.is_directory { 1 } else { 0 }); // Directory
+                            }
+                        }
+                        14 => { // FilePositionInformation
+                            if p_info != 0 {
+                                let _ = bus.write_u64(p_info + 0, pos); // CurrentByteOffset
+                            }
+                        }
+                        4 => { // FileBasicInformation
+                            if p_info != 0 {
+                                let _ = bus.write_u64(p_info + 0, 0);
+                                let _ = bus.write_u64(p_info + 8, 0);
+                                let _ = bus.write_u64(p_info + 16, 0);
+                                let _ = bus.write_u64(p_info + 24, 0);
+                                let _ = bus.write_u32(p_info + 32, 0x80);
+                            }
+                        }
+                        21 => { // FileNetworkOpenInformation
+                            if p_info != 0 {
+                                let _ = bus.write_u64(p_info + 0, 0);
+                                let _ = bus.write_u64(p_info + 8, 0);
+                                let _ = bus.write_u64(p_info + 16, 0);
+                                let _ = bus.write_u64(p_info + 24, 0);
+                                let _ = bus.write_u64(p_info + 32, flen);
+                                let _ = bus.write_u64(p_info + 40, flen);
+                                let _ = bus.write_u32(p_info + 48, 0x80);
+                            }
+                        }
+                        _ => {
+                            if p_info != 0 {
+                                let _ = bus.write_u64(p_info + 0, flen);
+                                let _ = bus.write_u64(p_info + 8, flen);
+                            }
+                        }
+                    }
+                    if p_ios != 0 {
+                        let _ = bus.write_u32(p_ios, 0);
+                        let _ = bus.write_u32(p_ios + 4, 24);
+                    }
+                    0 // STATUS_SUCCESS
+                } else {
+                    0xC000_0008 // STATUS_INVALID_HANDLE
+                }
+            }
 
             // 0x00EE: NtQueryVirtualMemory
             0x00EE => 0,
 
             // 0x00EF: NtQueryVolumeInformationFile
-            0x00EF => 0,
+            0x00EF => {
+                if let Some(&p_ios) = args.get(1) {
+                    if p_ios != 0 {
+                        let _ = bus.write_u32(p_ios, 0);
+                        let _ = bus.write_u32(p_ios + 4, 0);
+                    }
+                }
+                0 // STATUS_SUCCESS
+            }
+
+            // 0x00F0: NtReadFile (FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock, Buffer, Length, ByteOffset, Key)
+            0x00F0 => {
+                let h = args.first().copied().unwrap_or(0) as u32;
+                let event_h = args.get(1).copied().unwrap_or(0) as u32;
+                let p_ios = args.get(4).copied().unwrap_or(0);
+                let p_buf = args.get(5).copied().unwrap_or(0);
+                let len = args.get(6).copied().unwrap_or(0) as usize;
+                let p_offset = args.get(7).copied().unwrap_or(0);
+
+                if let Some(file) = self.vfs_handles.get_mut(&h) {
+                    if p_offset != 0 {
+                        let off = bus.read_u64(p_offset).unwrap_or(0) as usize;
+                        file.position = off;
+                    }
+                    if file.position >= file.data.len() && len > 0 {
+                        if p_ios != 0 {
+                            let _ = bus.write_u32(p_ios, 0xC000_0011); // STATUS_END_OF_FILE
+                            let _ = bus.write_u32(p_ios + 4, 0);
+                        }
+                        return 0xC000_0011;
+                    }
+                    let avail = file.data.len().saturating_sub(file.position);
+                    let to_read = std::cmp::min(len, avail);
+                    if to_read > 0 && p_buf != 0 {
+                        let slice = &file.data[file.position..file.position + to_read];
+                        let _ = bus.load_bytes(p_buf, slice);
+                        file.position += to_read;
+                    }
+                    if p_ios != 0 {
+                        let _ = bus.write_u32(p_ios, 0);
+                        let _ = bus.write_u32(p_ios + 4, to_read as u32);
+                    }
+                    if event_h != 0 {
+                        if let Some(ev) = self.events.get_mut(&event_h) {
+                            ev.signaled = true;
+                            if ev.guest_ptr != 0 {
+                                let _ = bus.write_u32(ev.guest_ptr + 4, 1);
+                            }
+                        }
+                    }
+                    println!("    [VFS] NtReadFile: read {} bytes from '{}' (pos: {}/{})", to_read, file.name, file.position, file.data.len());
+                    0 // STATUS_SUCCESS
+                } else {
+                    0xC000_0008 // STATUS_INVALID_HANDLE
+                }
+            }
 
             // 0x00F3: NtReleaseSemaphore (hSemaphore, releaseCount, pPreviousCount)
             0x00F3 => {
@@ -680,6 +1113,28 @@ impl KernelDispatcher {
                     }
                 }
                 0 // STATUS_SUCCESS
+            }
+
+            // 0x00F7: NtSetInformationFile (FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass)
+            0x00F7 => {
+                let h = args.first().copied().unwrap_or(0) as u32;
+                let p_ios = args.get(1).copied().unwrap_or(0);
+                let p_info = args.get(2).copied().unwrap_or(0);
+                let info_class = args.get(4).copied().unwrap_or(0) as u32;
+
+                if let Some(file) = self.vfs_handles.get_mut(&h) {
+                    if info_class == 14 && p_info != 0 {
+                        let new_pos = bus.read_u64(p_info).unwrap_or(0) as usize;
+                        file.position = new_pos;
+                    }
+                    if p_ios != 0 {
+                        let _ = bus.write_u32(p_ios, 0);
+                        let _ = bus.write_u32(p_ios + 4, 0);
+                    }
+                    0 // STATUS_SUCCESS
+                } else {
+                    0xC000_0008 // STATUS_INVALID_HANDLE
+                }
             }
 
             // 0x00F8: NtSetIoCompletion
@@ -1414,6 +1869,34 @@ impl KernelDispatcher {
             // 0x0259: XamContentCreateEx
             0x0259 => 0,
 
+            // 0x0269: XamContentOpenFile | 0x0278: XamContentOpenFileInternal | 0x027B: XamContentOpenPackageFile
+            0x0269 | 0x0278 | 0x027B => {
+                let p_path = args.get(2).copied().unwrap_or(0);
+                let p_handle = args.get(4).copied().unwrap_or(0);
+                if let Some(path) = read_c_string(p_path, bus) {
+                    println!("    [VFS] XamContentOpenFile: '{}'", path);
+                    if let Some(data) = self.find_vfs_file(&path) {
+                        let h = self.next_handle;
+                        self.next_handle += 4;
+                        self.vfs_handles.insert(h, VfsFileHandle {
+                            handle: h,
+                            name: path.clone(),
+                            data,
+                            position: 0,
+                            is_directory: false,
+                        });
+                        if p_handle != 0 {
+                            let _ = bus.write_u32(p_handle, h);
+                        }
+                        0
+                    } else {
+                        0xC000_0034
+                    }
+                } else {
+                    0xC000_000D
+                }
+            }
+
             // 0x028A: XNotifyCreateListener
             0x028A => {
                 let h = self.next_handle;
@@ -1495,6 +1978,86 @@ impl KernelDispatcher {
                 0
             }
 
+            // 0x0417: SetFilePointer (hFile, lDistanceToMove, lpDistanceToMoveHigh, dwMoveMethod)
+            0x0417 => {
+                let h = args.first().copied().unwrap_or(0) as u32;
+                let dist = args.get(1).copied().unwrap_or(0) as i32;
+                let method = args.get(3).copied().unwrap_or(0) as u32;
+                if let Some(file) = self.vfs_handles.get_mut(&h) {
+                    let new_pos = match method {
+                        0 => dist.max(0) as usize, // FILE_BEGIN
+                        1 => (file.position as i64 + dist as i64).max(0) as usize, // FILE_CURRENT
+                        2 => (file.data.len() as i64 + dist as i64).max(0) as usize, // FILE_END
+                        _ => file.position,
+                    };
+                    file.position = new_pos;
+                    file.position as u64
+                } else {
+                    0xFFFF_FFFF
+                }
+            }
+
+            // 0x041C: ReadFile (hFile, lpBuffer, nNumberOfBytesToRead, lpNumberOfBytesRead, lpOverlapped)
+            0x041C => {
+                let h = args.first().copied().unwrap_or(0) as u32;
+                let p_buf = args.get(1).copied().unwrap_or(0);
+                let len = args.get(2).copied().unwrap_or(0) as usize;
+                let p_read = args.get(3).copied().unwrap_or(0);
+                if let Some(file) = self.vfs_handles.get_mut(&h) {
+                    let avail = file.data.len().saturating_sub(file.position);
+                    let to_read = std::cmp::min(len, avail);
+                    if to_read > 0 && p_buf != 0 {
+                        let slice = &file.data[file.position..file.position + to_read];
+                        let _ = bus.load_bytes(p_buf, slice);
+                        file.position += to_read;
+                    }
+                    if p_read != 0 {
+                        let _ = bus.write_u32(p_read, to_read as u32);
+                    }
+                    1 // TRUE
+                } else {
+                    0 // FALSE
+                }
+            }
+
+            // 0x0427: GetFileSize (hFile, lpFileSizeHigh)
+            0x0427 => {
+                let h = args.first().copied().unwrap_or(0) as u32;
+                let p_high = args.get(1).copied().unwrap_or(0);
+                if let Some(file) = self.vfs_handles.get(&h) {
+                    if p_high != 0 {
+                        let _ = bus.write_u32(p_high, 0);
+                    }
+                    file.data.len() as u64
+                } else {
+                    0xFFFF_FFFF
+                }
+            }
+
+            // 0x0447: CreateFileA (lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, ...)
+            0x0447 => {
+                let p_name = args.first().copied().unwrap_or(0);
+                if let Some(path) = read_c_string(p_name, bus) {
+                    println!("    [VFS] CreateFileA: '{}'", path);
+                    if let Some(data) = self.find_vfs_file(&path) {
+                        let h = self.next_handle;
+                        self.next_handle += 4;
+                        self.vfs_handles.insert(h, VfsFileHandle {
+                            handle: h,
+                            name: path.clone(),
+                            data,
+                            position: 0,
+                            is_directory: false,
+                        });
+                        h as u64
+                    } else {
+                        0xFFFF_FFFF_FFFF_FFFF // INVALID_HANDLE_VALUE
+                    }
+                } else {
+                    0xFFFF_FFFF_FFFF_FFFF
+                }
+            }
+
             // 0x04C1: XamFitnessClearBodyProfileRecords
             0x04C1 => 0,
 
@@ -1522,6 +2085,9 @@ impl KernelDispatcher {
 
             // 0x076F: XamGetStagingMode
             0x076F => 0,
+
+            // 0x07DC: XamGetDashBackstackData
+            0x07DC => 0,
 
             // 0x09C4: XamBackgroundDownloadSetMode
             0x09C4 => 0,

@@ -185,6 +185,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thunk_map.insert(0x80001000, ("xboxkrnl.exe".to_string(), 0x0019));
 
     let mut kernel = KernelDispatcher::new();
+
+    println!("\n[*] Populating Kernel Virtual File System (VFS) with authentic Dashboard resources:");
+    let mut total_embedded_files = 0usize;
+    for (_i, &off) in xzips.iter().enumerate() {
+        if off + 22 <= uncompressed_pe.len() {
+            if let Ok(xzp) = XzpPackage::parse(&uncompressed_pe[off..]) {
+                for entry in xzp.entries {
+                    if !entry.data.is_empty() {
+                        kernel.register_vfs_file(&entry.name, entry.data);
+                        total_embedded_files += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("[+] Registered {} authentic assets from {} embedded XUIZ packages into Kernel VFS!", total_embedded_files, xzips.len());
+
+    let mut disk_vfs_count = 0usize;
+    if std::path::Path::new("../extracted_xui").exists() {
+        fn load_dir_recursive(dir: &std::path::Path, kernel: &mut KernelDispatcher, count: &mut usize) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        load_dir_recursive(&p, kernel, count);
+                    } else if p.is_file() {
+                        if let Ok(data) = std::fs::read(&p) {
+                            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                                kernel.register_vfs_file(name, data);
+                                *count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        load_dir_recursive(std::path::Path::new("../extracted_xui"), &mut kernel, &mut disk_vfs_count);
+        println!("[+] Registered {} additional assets from disk (../extracted_xui) into Kernel VFS!", disk_vfs_count);
+    }
+    println!("[+] Total VFS Files active in kernel namespace: {}", kernel.vfs_files.len());
+
     println!("\n[*] Dispatching initial Dashboard boot syscalls:");
     let proc_type = kernel.dispatch("xboxkrnl.exe", 0x0066, &[], &mut bus); // KeGetCurrentProcessType
     println!("  -> KeGetCurrentProcessType: {} (System Process)", proc_type);
@@ -1022,6 +1063,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let args = [
                                         thread.cpu.regs.gpr[3], thread.cpu.regs.gpr[4], thread.cpu.regs.gpr[5],
                                         thread.cpu.regs.gpr[6], thread.cpu.regs.gpr[7], thread.cpu.regs.gpr[8],
+                                        thread.cpu.regs.gpr[9], thread.cpu.regs.gpr[10],
                                     ];
                                     let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
                                     thread.cpu.regs.gpr[3] = ret;

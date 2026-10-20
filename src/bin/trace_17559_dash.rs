@@ -52,6 +52,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut kernel = KernelDispatcher::new();
 
+    println!("\n[*] Scanning decompressed Dashboard PE image for XUIZ (XZP Packages):");
+    let mut xzips = Vec::new();
+    for i in 0..uncompressed.len().saturating_sub(4) {
+        if &uncompressed[i..i + 4] == b"XUIZ" {
+            xzips.push(i);
+        }
+    }
+    println!("[+] Found {} XUIZ package(s) inside dash.xex at offsets: {:X?}", xzips.len(), xzips);
+
+    use xenon_emu::loader::XzpPackage;
+    let mut total_embedded_files = 0usize;
+    for &off in &xzips {
+        if off + 22 <= uncompressed.len() {
+            if let Ok(xzp) = XzpPackage::parse(&uncompressed[off..]) {
+                for entry in xzp.entries {
+                    if !entry.data.is_empty() {
+                        kernel.register_vfs_file(&entry.name, entry.data);
+                        total_embedded_files += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("[+] Registered {} authentic assets from {} embedded XUIZ packages into Kernel VFS!", total_embedded_files, xzips.len());
+
+    let mut disk_vfs_count = 0usize;
+    if std::path::Path::new("../extracted_xui").exists() {
+        fn load_dir_recursive(dir: &std::path::Path, kernel: &mut KernelDispatcher, count: &mut usize) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        load_dir_recursive(&p, kernel, count);
+                    } else if p.is_file() {
+                        if let Ok(data) = std::fs::read(&p) {
+                            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                                kernel.register_vfs_file(name, data);
+                                *count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        load_dir_recursive(std::path::Path::new("../extracted_xui"), &mut kernel, &mut disk_vfs_count);
+        println!("[+] Registered {} additional assets from disk (../extracted_xui) into Kernel VFS!", disk_vfs_count);
+    }
+    println!("[+] Total VFS Files active in kernel namespace: {}", kernel.vfs_files.len());
+
     let entry_vaddr = dash_xex.entry_point as u64; // 0x92196610
     println!("\n[*] Real Guest 17559 Entry Point: 0x{:08X}", entry_vaddr);
 
@@ -136,6 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let args = [
                         cpu.regs.gpr[3], cpu.regs.gpr[4], cpu.regs.gpr[5],
                         cpu.regs.gpr[6], cpu.regs.gpr[7], cpu.regs.gpr[8],
+                        cpu.regs.gpr[9], cpu.regs.gpr[10],
                     ];
 
                     if *ordinal == 0x0152 {
