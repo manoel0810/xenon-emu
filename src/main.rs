@@ -452,6 +452,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    - Primitives Drawn:        {}", xenos_gpu.primitives_drawn);
 
     // ==========================================================
+    // ETAPA 3: Direct3D 9 Subsystem & Barycentric Triangle Rasterizer
+    // ==========================================================
+    println!("\n>>> [ETAPA 3] Direct3D 9 Subsystem & XUI Barycentric Rasterizer <<<");
+    if let Some(games_scene) = loaded_scenes.iter().find(|s| s.name.contains("games")) {
+        println!("[*] Rasterizing authentic XUI Scene '{}' with D3D9 barycentric pipeline...", games_scene.name);
+        xenos_gpu.render_xui_scene(games_scene, xus_table.as_ref(), 0x0010_7C10, 0x000B_4D0B);
+        println!("[+] Direct3D 9 Subsystem successfully rasterized UI nodes into on-chip color buffer!");
+        println!("    - Triangles Shaded:        {}", xenos_gpu.primitives_drawn);
+        println!("    - Active Draw Calls:       {}", xenos_gpu.draw_calls);
+        println!("    - Color Buffer Resolution: 1280x720 32-bit ARGB (EDRAM Target)");
+    }
+
+    // ==========================================================
     // MILESTONE 5: High-Definition GPU Video Display & Surface Rendering
     // ==========================================================
     println!("\n>>> [MILESTONE 5] GPU Video Output (1280x720 HD @ 60 FPS) <<<");

@@ -1,4 +1,5 @@
 use crate::gpu::font::draw_text;
+use crate::gpu::rasterizer::rasterize_rounded_card;
 use crate::kernel::input::{
     GamepadManager, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_DPAD_DOWN,
     XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_UP,
@@ -472,56 +473,25 @@ impl GpuDisplay {
             let card_x = blade_panel_x + 35;
             let card_w = blade_panel_w - 70;
 
-            // Card background (glassmorphic pill)
-            let card_bg = if is_selected {
-                0x002A3528
+            let (fill_top, fill_bottom, border_color) = if is_selected {
+                (0xF020_6520, 0xF010_3E10, 0xFF00_FF7F)
             } else {
-                0x00141A1E
+                (0xD018_2218, 0xD00C_140C, 0x803E_4E3E)
             };
 
-            for y in cy..(cy + card_h) {
-                let ty = (y - cy) as f32 / card_h as f32;
-                for x in card_x..(card_x + card_w) {
-                    let mut r = ((card_bg >> 16) & 0xFF) as f32;
-                    let mut g = ((card_bg >> 8) & 0xFF) as f32;
-                    let mut b = (card_bg & 0xFF) as f32;
-
-                    // Glossy specular gradient top half
-                    if ty < 0.45 {
-                        let spec = (1.0 - ty / 0.45) * 45.0;
-                        r += spec;
-                        g += spec;
-                        b += spec;
-                    }
-
-                    if is_selected {
-                        r = (r + 15.0).min(255.0);
-                        g = (g + 35.0).min(255.0);
-                        b = (b + 15.0).min(255.0);
-                    }
-
-                    self.framebuffer[y * w + x] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
-                }
-            }
-
-            // Outline: If selected, glowing Neon Green border!
-            let border_color = if is_selected {
-                0x0052D053 // Xbox Neon Green
-            } else {
-                0x00404C56 // Subtle metallic border
-            };
-
-            for x in card_x..(card_x + card_w) {
-                self.framebuffer[cy * w + x] = border_color;
-                self.framebuffer[(cy + card_h - 1) * w + x] = border_color;
-                if is_selected {
-                    self.framebuffer[(cy + 1) * w + x] = 0x00FFFFFF;
-                }
-            }
-            for y in cy..(cy + card_h) {
-                self.framebuffer[y * w + card_x] = border_color;
-                self.framebuffer[y * w + (card_x + card_w - 1)] = border_color;
-            }
+            rasterize_rounded_card(
+                &mut self.framebuffer,
+                w,
+                h,
+                card_x as f32,
+                cy as f32,
+                card_w as f32,
+                card_h as f32,
+                10.0,
+                fill_top,
+                fill_bottom,
+                border_color,
+            );
 
             // Card Icon box
             let icon_x = card_x + 22;
