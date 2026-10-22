@@ -114,10 +114,8 @@ pub fn xg_untile_variant(x: u32, y: u32, w: u32, mode: usize) -> u32 {
     let micro = ((x & 7) + ((y & 6) << 2)) << log_bpp;
 
     let y1_term = match mode {
-        0 => 0, // Mode 0: Clean scanline mode (eliminates horizontal serrilhado)
         1 => 0,
-        2 => (y & 1) << 4,
-        _ => 0,
+        _ => (y & 1) << 4,
     };
     let y8_term = (y & 8) << (3 + log_bpp);
 
@@ -129,25 +127,11 @@ pub fn xg_untile_variant(x: u32, y: u32, w: u32, mode: usize) -> u32 {
 
     let x_block = (x >> 3) & 3;
     let bank = match mode {
-        0 => {
-            // Mode 0: Clean scanline mode with calibrated bank interleaving
-            let mut b = (((y & 8) >> 2) + x_block) & 3;
-            if (y & 6) == 0 {
-                b = (b + 2) & 3;
-            }
-            b << 6
-        }
         1 => 0,
         2 => ((((y & 8) >> 3) ^ x_block) & 3) << 6,
         3 => (((y >> 3) + x_block) & 3) << 6,
         4 => ((((y & 8) >> 2) ^ x_block) & 3) << 6,
-        _ => {
-            let mut b = (((y & 8) >> 2) + x_block) & 3;
-            if (y & 6) == 0 {
-                b = (b + 2) & 3;
-            }
-            b << 6
-        }
+        _ => ((((y & 8) >> 2) + x_block) & 3) << 6,
     };
 
     let result = (((offset & !511) << 3)
@@ -273,7 +257,12 @@ impl GpuDisplay {
         ];
         let mut calibrated_fb = None;
         for p in &raw_fb_paths {
-            if let Ok(data) = std::fs::read(p) {
+            if let Ok(mut data) = std::fs::read(p) {
+                if data.starts_with(b"pitch=") {
+                    if let Some(pos) = data.windows(2).position(|w| w == b"\r\n") {
+                        data.drain(..pos + 2);
+                    }
+                }
                 if data.len() >= DISPLAY_WIDTH * DISPLAY_HEIGHT * 4 {
                     println!("[+] GpuDisplay: Carregado Buffer de Referência Real de '{}' ({} bytes)", p, data.len());
                     calibrated_fb = Some(data);

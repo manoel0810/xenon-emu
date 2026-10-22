@@ -60,7 +60,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw_bin_path = "xbox360_real_framebuffer.raw";
     let raw_data = if std::path::Path::new(raw_bin_path).exists() {
         println!("[*] Carregando dump bruto de '{}'...", raw_bin_path);
-        std::fs::read(raw_bin_path)?
+        let mut data = std::fs::read(raw_bin_path)?;
+        if data.starts_with(b"pitch=") {
+            if let Some(pos) = data.windows(2).position(|w| w == b"\r\n") {
+                data.drain(..pos + 2);
+            }
+        }
+        data
     } else {
         let stream = TcpStream::connect(format!("{}:730", target_ip))?;
         stream.set_read_timeout(Some(Duration::from_millis(5000)))?;
