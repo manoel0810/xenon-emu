@@ -1,0 +1,7 @@
+cargo:rerun-if-changed=src/native/macosx/MacMiniFB.m
+cargo:rerun-if-changed=src/native/macosx/OSXWindow.h
+cargo:rerun-if-changed=src/native/macosx/OSXWindow.m
+cargo:rerun-if-changed=src/native/macosx/OSXWindowFrameView.h
+cargo:rerun-if-changed=src/native/macosx/OSXWindowFrameView.m
+cargo:rerun-if-changed=src/native/macosx/shared_data.h
+cargo:rerun-if-changed=src/native/posix/scalar.c

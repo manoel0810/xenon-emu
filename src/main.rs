@@ -1013,6 +1013,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let max_frames: Option<u64> = std::env::var("XENON_MAX_FRAMES")
         .ok()
         .and_then(|s| s.parse().ok());
+    let pc_profile = std::env::var("XENON_PC_PROFILE").is_ok();
+    let mut pc_hist: std::collections::HashMap<(String, u64), u64> = std::collections::HashMap::new();
+    let mut sys_hist: std::collections::HashMap<(String, u16), u64> = std::collections::HashMap::new();
 
     let mut frame = 0u64;
     while display.is_open() {
@@ -1067,9 +1070,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         match thread.cpu.step(&mut bus) {
                             Ok(StepResult::Ok) => {
                                 thread.total_steps += 1;
+                                if pc_profile && !thread.name.starts_with("VBlank") {
+                                    *pc_hist.entry((thread.name.clone(), current_pc & 0xFFFF_FFFF)).or_insert(0) += 1;
+                                }
                             }
                             Ok(StepResult::Syscall { lev: _, pc }) => {
                                 let thunk = thunk_map.get(&pc).or_else(|| thunk_map.get(&(pc & 0xFFFF_FFFF)));
+                                if pc_profile {
+                                    if let Some((l, o)) = thunk {
+                                        *sys_hist.entry((format!("{}|{}", thread.name, l), *o)).or_insert(0) += 1;
+                                    }
+                                }
                                 if let Some((lib, ordinal)) = thunk {
                                     let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
                                     let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
@@ -1212,6 +1223,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     t.name, t.cpu.regs.pc, t.cpu.regs.lr, t.total_steps, t.active, t.continuous
                 );
             }
+        }
+    }
+
+    if pc_profile {
+        for t in &guest_threads {
+            if t.name.starts_with("Metro") {
+                let r = &t.cpu.regs.gpr;
+                println!("[PROFILE] Primary regs: pc=0x{:08X} r3=0x{:08X} r11=0x{:08X} r28=0x{:08X} r30=0x{:08X} r31=0x{:08X}",
+                    t.cpu.regs.pc, r[3], r[11], r[28], r[30], r[31]);
+                let mut node = r[30] & 0xFFFF_FFFF;
+                for i in 0..8 {
+                    let next = bus.read_u32(node).unwrap_or(0);
+                    let prev = bus.read_u32(node + 4).unwrap_or(0);
+                    let cb = bus.read_u32(node + 8).unwrap_or(0);
+                    println!("  node[{}] @0x{:08X}: next=0x{:08X} prev=0x{:08X} +8=0x{:08X}", i, node, next, prev, cb);
+                    node = next as u64;
+                }
+                let h = r[31] & 0xFFFF_FFFF;
+                println!("  head @0x{:08X}: next=0x{:08X} prev=0x{:08X}", h, bus.read_u32(h).unwrap_or(0), bus.read_u32(h + 4).unwrap_or(0));
+            }
+        }
+        let mut v: Vec<_> = pc_hist.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        println!("\n[PROFILE] Top 40 PCs (thread, pc, hits):");
+        for ((n, pc), c) in v.iter().take(40) {
+            println!("  {:<28} 0x{:08X} {}", n, pc, c);
+        }
+        let mut s: Vec<_> = sys_hist.iter().collect();
+        s.sort_by(|a, b| b.1.cmp(a.1));
+        println!("[PROFILE] Top 30 syscalls:");
+        for ((n, o), c) in s.iter().take(30) {
+            println!("  {:<40} #0x{:04X} {}", n, o, c);
         }
     }
 
