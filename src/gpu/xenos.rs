@@ -455,6 +455,42 @@ impl XenosGpu {
                             bus.write_u32(dest_addr, val)?;
                         }
                     }
+                    PM4_WAIT_REG_MEM => {
+                        // Type 3: Wait for register or memory condition
+                        // Payload: [0: wait_info, 1: poll_addr, 2: mem_addr_hi, 3: reference, 4: mask, 5: poll_interval]
+                        if data.len() >= 5 {
+                            let wait_info = data[0];
+                            let poll_addr = data[1];
+                            let reference = data[3];
+                            let mask = data[4];
+
+                            let is_mem = (wait_info & 0x10) != 0;
+                            let function = wait_info & 0x07;
+
+                            let current_val = if is_mem {
+                                bus.read_u32(poll_addr as u64).unwrap_or(0)
+                            } else {
+                                *self.registers.get(&poll_addr).unwrap_or(&0)
+                            };
+
+                            let masked = current_val & mask;
+                            let satisfied = match function {
+                                1 => masked < reference,
+                                2 => masked <= reference,
+                                3 => masked == reference,
+                                4 => masked != reference,
+                                5 => masked >= reference,
+                                6 => masked > reference,
+                                _ => true,
+                            };
+
+                            // If register wait is not yet satisfied (e.g. waiting on GPU status flag),
+                            // satisfy the reference condition so the Command Processor does not block.
+                            if !satisfied && !is_mem {
+                                self.registers.insert(poll_addr, reference);
+                            }
+                        }
+                    }
                     PM4_ME_INIT => {
                         // Micro-engine initialization
                     }

@@ -248,6 +248,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    println!("\n[*] Executing dynamic threads spawned by Dashboard (TID count = {})...", kernel.pending_threads.len());
+    while let Some(pending) = kernel.pending_threads.pop() {
+        let routine = (pending.start_routine & 0xFFFF_FFFF) as u64;
+        let thread_stack = stack_top - 0x100000 - (pending.tid as u64 * 0x40000);
+        let _ = bus.write_u32(thread_stack - 8, 0x80001000);
+        let _ = bus.write_u32(thread_stack + 0x100 - 8, 0x80001000);
+        let mut thread_cpu = Cpu::new(routine);
+        thread_cpu.regs.gpr[1] = thread_stack;
+        thread_cpu.regs.gpr[3] = pending.start_context;
+        thread_cpu.regs.gpr[13] = kpcr_base;
+        thread_cpu.regs.lr = 0x80001000;
+        println!("  [SCHEDULER] Running guest thread TID=0x{:X} (@0x{:08X}) for up to 50,000 steps...", pending.tid, routine);
+        for step in 0..50000 {
+            match thread_cpu.step(&mut bus) {
+                Ok(StepResult::Ok) => {}
+                Ok(StepResult::Syscall { lev: _, pc }) => {
+                    let thunk = thunk_map.get(&pc).or_else(|| thunk_map.get(&(pc & 0xFFFF_FFFF)));
+                    if let Some((lib, ordinal)) = thunk {
+                        let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
+                        let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
+                            || (*ordinal == 0x002B && lib.eq_ignore_ascii_case("xboxkrnl.exe"));
+                        let args = [
+                            thread_cpu.regs.gpr[3], thread_cpu.regs.gpr[4], thread_cpu.regs.gpr[5],
+                            thread_cpu.regs.gpr[6], thread_cpu.regs.gpr[7], thread_cpu.regs.gpr[8],
+                            thread_cpu.regs.gpr[9], thread_cpu.regs.gpr[10],
+                        ];
+                        let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
+                        thread_cpu.regs.gpr[3] = ret;
+                        thread_cpu.regs.pc = thread_cpu.regs.lr;
+                        if is_term {
+                            println!("    -> Thread TID=0x{:X} ExTerminateThread at step {}", pending.tid, step);
+                            break;
+                        }
+                        if is_yield {
+                            // Thread yielded
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                Ok(StepResult::Halted) => break,
+                Err(e) => {
+                    println!("    -> Thread TID=0x{:X} CPU error at step {}: {:?}", pending.tid, step, e);
+                    break;
+                }
+            }
+        }
+    }
+
     println!("\n========================================================");
     println!("  Summary of Dashboard 17559 Real Execution Trajectory   ");
     println!("========================================================");

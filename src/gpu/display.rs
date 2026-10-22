@@ -127,13 +127,27 @@ pub fn xg_untile_variant(x: u32, y: u32, w: u32, mode: usize) -> u32 {
         + y8_term
         + y1_term;
 
+    let x_block = (x >> 3) & 3;
     let bank = match mode {
-        0 => ((((y & 8) >> 2) + (x >> 3)) & 3) << 6,
+        0 => {
+            // Mode 0: Clean scanline mode with calibrated bank interleaving
+            let mut b = (((y & 8) >> 2) + x_block) & 3;
+            if (y & 6) == 0 {
+                b = (b + 2) & 3;
+            }
+            b << 6
+        }
         1 => 0,
-        2 => ((((y & 8) >> 3) ^ (x >> 3)) & 3) << 6,
-        3 => (((y >> 3) + (x >> 3)) & 3) << 6,
-        4 => ((((y & 8) >> 2) ^ (x >> 3)) & 3) << 6,
-        _ => ((((y & 8) >> 2) + (x >> 3)) & 3) << 6,
+        2 => ((((y & 8) >> 3) ^ x_block) & 3) << 6,
+        3 => (((y >> 3) + x_block) & 3) << 6,
+        4 => ((((y & 8) >> 2) ^ x_block) & 3) << 6,
+        _ => {
+            let mut b = (((y & 8) >> 2) + x_block) & 3;
+            if (y & 6) == 0 {
+                b = (b + 2) & 3;
+            }
+            b << 6
+        }
     };
 
     let result = (((offset & !511) << 3)

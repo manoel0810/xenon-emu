@@ -17,6 +17,7 @@ pub const PM4_INDEX_TYPE: u8 = 0x2A;
 pub const PM4_LOAD_ALU_CONSTANT: u8 = 0x2F;
 pub const PM4_WAIT_FOR_IDLE: u8 = 0x34;
 pub const PM4_MEM_WRITE: u8 = 0x38;
+pub const PM4_WAIT_REG_MEM: u8 = 0x3C;
 pub const PM4_EXECUTE_INDIRECT: u8 = 0x3F;
 pub const PM4_ME_INIT: u8 = 0x48;
 
@@ -128,6 +129,7 @@ impl Pm4Packet {
             PM4_LOAD_ALU_CONSTANT => "PM4_LOAD_ALU_CONSTANT",
             PM4_WAIT_FOR_IDLE => "PM4_WAIT_FOR_IDLE",
             PM4_MEM_WRITE => "PM4_MEM_WRITE",
+            PM4_WAIT_REG_MEM => "PM4_WAIT_REG_MEM",
             PM4_EXECUTE_INDIRECT => "PM4_EXECUTE_INDIRECT",
             PM4_ME_INIT => "PM4_ME_INIT",
             _ => "PM4_UNKNOWN_OPCODE",

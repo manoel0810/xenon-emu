@@ -1028,13 +1028,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  [SCHEDULER] Spawning dynamic guest thread TID=0x{:X} (@0x{:08X})",
                 pending.tid, routine
             );
+            let is_worker_or_render = pending.tid >= 2;
             guest_threads.push(GuestThread {
                 name: format!("Dynamic Thread 0x{:X}", pending.tid),
                 cpu: thread_cpu,
                 entry_pc: routine,
                 active: true,
                 total_steps: 0,
-                continuous: false,
+                continuous: is_worker_or_render,
             });
         }
 
@@ -1047,8 +1048,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !thread.active {
                 continue;
             }
-            // Execute a timeslice of up to 2,500 instructions per thread per frame
-            for _ in 0..2500 {
+            // Execute a timeslice of up to 25,000 instructions per thread per frame
+            for _ in 0..25000 {
                 let current_pc = thread.cpu.regs.pc;
                 match bus.read_u32(current_pc) {
                     Ok(_) => {

@@ -538,6 +538,17 @@ impl KernelDispatcher {
                 0
             }
 
+            // 0x006F: KeInitializeDpc (pDpc, pRoutine, pContext)
+            0x006F => {
+                if let (Some(&p_dpc), Some(&p_routine), Some(&p_context)) = (args.first(), args.get(1), args.get(2)) {
+                    if p_dpc != 0 {
+                        let _ = bus.write_u32(p_dpc + 8, p_routine as u32);
+                        let _ = bus.write_u32(p_dpc + 12, p_context as u32);
+                    }
+                }
+                0
+            }
+
             // 0x0074: KeInitializeSemaphore (pSemaphore, count, limit)
             0x0074 => {
                 if let Some(&p_sem) = args.first() {
