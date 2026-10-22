@@ -995,7 +995,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    - A animacao de boot do Xbox 360 e reproduzida (~4.5s)");
     println!("    - Pressione ESPACO ou (A) no controle para pular (apos 1s)");
     println!("    - Em seguida, a Dashboard surge em 1280x720 HD @ 60 FPS");
-    println!("    - [TAB] ou Botao (Y): Alternar p/ Arvore Visual XUI (.XUR)");
+    println!("    - [TAB] ou Botao (Y): Alternar Modos: Blades -> Guest VRAM -> Hibrido -> XUI");
+    println!("    - [U]: Alternar Algoritmo GPU Untile (Xenia Morton / Variant 0 / Linear)");
+    println!("    - [C]: Alternar Formato de Canais de Cor (ARGB / BGRA / RGBA / Raw)");
     println!("    - [X] ou [1..4]: Alternar Cenas XUI (BladeSkin, gamesSignedOut)");
     println!("    - Setas / A,D ou D-Pad / Thumbstick: Alternar Blades");
     println!("    - Setas / W,S ou D-Pad: Navegar nos itens do menu");

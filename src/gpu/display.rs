@@ -23,7 +23,24 @@ pub enum DisplayMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Blades,
+    GuestFramebuffer,
+    Hybrid,
     XuiDirect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UntileMode {
+    XeniaMorton,
+    XenosVariant0,
+    Linear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorSwizzle {
+    Argb,
+    Bgra,
+    Rgba,
+    Raw,
 }
 
 #[derive(Debug, Clone)]
@@ -54,10 +71,89 @@ pub struct GpuDisplay {
     pub mode: DisplayMode,
     pub boot_frame: u32,
     pub view_mode: ViewMode,
+    pub untile_mode: UntileMode,
+    pub color_swizzle: ColorSwizzle,
+    pub untile_lut_xenia: Vec<usize>,
+    pub untile_lut_var0: Vec<usize>,
     pub xui_scenes: Vec<crate::loader::XurScene>,
     pub xus_table: Option<crate::loader::XusTable>,
     pub current_scene_idx: usize,
     pub textures: TextureAtlas,
+}
+
+/// Untile coordinate calculation using Xenia Canary's bit-interleaved Morton curve
+#[inline(always)]
+pub fn tiled_offset_2d_xenia(x: u32, y: u32, pitch_h: u32, pitch_v: u32, log2_bpp: u32) -> u32 {
+    let z = 0;
+    let base = ((z >> 2) * (pitch_v >> 4) + (y >> 4)) * (pitch_h >> 5);
+    let mut micro = ((z >> 2) + (y >> 3)) & 1;
+    micro += (((micro << 1) + (x >> 3)) & 3) << 1;
+    let mut macro_v = ((((y & 6) << 2) + (x & 7)) << (log2_bpp + 6)) >> 6;
+    macro_v = ((((((base + (x >> 5)) << (log2_bpp + 6)) & 0xFFFFFFF) << 1) + (macro_v & !15)) << 1)
+        + (macro_v & 15)
+        + ((z & 3) << (log2_bpp + 6))
+        + ((y & 1) << 4);
+    let res = ((((((((macro_v >> 6) & 7) + ((micro & 1) << 3)) << 3) + (micro & !1)) << 2) + (macro_v & !511)) << 3) + (macro_v & 63);
+    res >> log2_bpp
+}
+
+/// Standard Xbox 360 ATI Xenos macro/micro tiling
+#[inline(always)]
+pub fn xg_untile_variant(x: u32, y: u32, w: u32, mode: usize) -> u32 {
+    let aligned_width = (w + 31) & !31;
+    let log_bpp = 2u32; // 32-bpp = 4 bytes
+    let macro_val = ((x >> 5) + (y >> 5) * (aligned_width >> 5)) << (log_bpp + 7);
+    let micro = ((x & 7) + ((y & 6) << 2)) << log_bpp;
+
+    let y1_term = if mode == 1 { 0 } else { (y & 1) << 4 };
+    let y8_term = (y & 8) << (3 + log_bpp);
+
+    let offset = macro_val
+        + ((micro & !15) << 1)
+        + (micro & 15)
+        + y8_term
+        + y1_term;
+
+    let bank = match mode {
+        0 => ((((y & 8) >> 2) + (x >> 3)) & 3) << 6,
+        1 => 0,
+        2 => ((((y & 8) >> 3) ^ (x >> 3)) & 3) << 6,
+        3 => (((y >> 3) + (x >> 3)) & 3) << 6,
+        4 => ((((y & 8) >> 2) ^ (x >> 3)) & 3) << 6,
+        _ => ((((y & 8) >> 2) + (x >> 3)) & 3) << 6,
+    };
+
+    let result = (((offset & !511) << 3)
+        + ((offset & 448) << 2)
+        + (offset & 63)
+        + ((y & 16) << 7)
+        + bank) >> log_bpp;
+    result
+}
+
+/// Decodes Big-Endian 32-bit guest pixel into host 0x00RRGGBB format
+#[inline(always)]
+pub fn decode_pixel(raw: u32, swizzle: ColorSwizzle) -> u32 {
+    let b0 = ((raw >> 24) & 0xFF) as u8;
+    let b1 = ((raw >> 16) & 0xFF) as u8;
+    let b2 = ((raw >> 8) & 0xFF) as u8;
+    let b3 = (raw & 0xFF) as u8;
+
+    match swizzle {
+        ColorSwizzle::Argb => {
+            // b0: A, b1: R, b2: G, b3: B
+            ((b1 as u32) << 16) | ((b2 as u32) << 8) | (b3 as u32)
+        }
+        ColorSwizzle::Bgra => {
+            // b0: B, b1: G, b2: R, b3: A
+            ((b2 as u32) << 16) | ((b1 as u32) << 8) | (b0 as u32)
+        }
+        ColorSwizzle::Rgba => {
+            // b0: R, b1: G, b2: B, b3: A
+            ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32)
+        }
+        ColorSwizzle::Raw => raw & 0x00FF_FFFF,
+    }
 }
 
 impl GpuDisplay {
@@ -131,6 +227,18 @@ impl GpuDisplay {
         let textures = TextureAtlas::load_from_dir("../extracted_xui/named");
         println!("[+] GpuDisplay: Loaded {} authentic extracted Xbox 360 textures into VRAM", textures.textures.len());
 
+        let mut untile_lut_xenia = Vec::with_capacity(DISPLAY_WIDTH * DISPLAY_HEIGHT);
+        let mut untile_lut_var0 = Vec::with_capacity(DISPLAY_WIDTH * DISPLAY_HEIGHT);
+        for y in 0..DISPLAY_HEIGHT as u32 {
+            for x in 0..DISPLAY_WIDTH as u32 {
+                let idx_x = tiled_offset_2d_xenia(x, y, DISPLAY_WIDTH as u32, DISPLAY_HEIGHT as u32, 2) as usize;
+                let idx_v0 = xg_untile_variant(x, y, DISPLAY_WIDTH as u32, 0) as usize;
+                untile_lut_xenia.push(idx_x);
+                untile_lut_var0.push(idx_v0);
+            }
+        }
+        println!("[+] GpuDisplay: Pre-calculated {} Xenos untile LUT entries (Xenia Morton + Variant 0)", untile_lut_xenia.len());
+
         Ok(Self {
             width: DISPLAY_WIDTH,
             height: DISPLAY_HEIGHT,
@@ -145,6 +253,10 @@ impl GpuDisplay {
             mode: DisplayMode::BootAnimation,
             boot_frame: 0,
             view_mode: ViewMode::Blades,
+            untile_mode: UntileMode::XeniaMorton,
+            color_swizzle: ColorSwizzle::Argb,
+            untile_lut_xenia,
+            untile_lut_var0,
             xui_scenes: Vec::new(),
             xus_table: None,
             current_scene_idx: 0,
@@ -216,12 +328,62 @@ impl GpuDisplay {
         if toggle_view {
             self.view_mode = match self.view_mode {
                 ViewMode::Blades => {
-                    println!("  [UI MODE] Modo de Visualizacao Direta da Arvore XUI da Microsoft (.XUR) ativado!");
+                    println!("  [UI MODE] Modo Framebuffer Direto da GPU Guest (Desentrelaçado) ativado!");
+                    ViewMode::GuestFramebuffer
+                }
+                ViewMode::GuestFramebuffer => {
+                    println!("  [UI MODE] Modo Híbrido (Guest GPU + Interface XUI) ativado!");
+                    ViewMode::Hybrid
+                }
+                ViewMode::Hybrid => {
+                    println!("  [UI MODE] Modo de Visualização Direta da Árvore XUI (.XUR) ativado!");
                     ViewMode::XuiDirect
                 }
                 ViewMode::XuiDirect => {
-                    println!("  [UI MODE] Modo Dashboard Blades ativado!");
+                    println!("  [UI MODE] Modo Dashboard Blades Original ativado!");
                     ViewMode::Blades
+                }
+            };
+            self.key_cooldown = 15;
+            return;
+        }
+
+        if self.window.is_key_down(Key::U) {
+            self.untile_mode = match self.untile_mode {
+                UntileMode::XeniaMorton => {
+                    println!("  [GPU UNTILE] Algoritmo: Xenos Macro/Micro Tiling (Variante 0)");
+                    UntileMode::XenosVariant0
+                }
+                UntileMode::XenosVariant0 => {
+                    println!("  [GPU UNTILE] Algoritmo: Linear (Sem Tiling)");
+                    UntileMode::Linear
+                }
+                UntileMode::Linear => {
+                    println!("  [GPU UNTILE] Algoritmo: Xenia Morton Bit-Interleave (Canary Default)");
+                    UntileMode::XeniaMorton
+                }
+            };
+            self.key_cooldown = 15;
+            return;
+        }
+
+        if self.window.is_key_down(Key::C) {
+            self.color_swizzle = match self.color_swizzle {
+                ColorSwizzle::Argb => {
+                    println!("  [GPU COLOR] Formato de canais: BGRA");
+                    ColorSwizzle::Bgra
+                }
+                ColorSwizzle::Bgra => {
+                    println!("  [GPU COLOR] Formato de canais: RGBA");
+                    ColorSwizzle::Rgba
+                }
+                ColorSwizzle::Rgba => {
+                    println!("  [GPU COLOR] Formato de canais: Raw 24-bit");
+                    ColorSwizzle::Raw
+                }
+                ColorSwizzle::Raw => {
+                    println!("  [GPU COLOR] Formato de canais: ARGB (Xenos D3D9)");
+                    ColorSwizzle::Argb
                 }
             };
             self.key_cooldown = 15;
@@ -425,26 +587,105 @@ impl GpuDisplay {
             return;
         }
 
-        if self.view_mode == ViewMode::XuiDirect {
-            self.render_xui_direct_scene();
+        match self.view_mode {
+            ViewMode::Blades => {
+                self.render_blades_dashboard("FFFE07D1", "2.0.17559.0");
+            }
+            ViewMode::XuiDirect => {
+                self.render_xui_direct_scene();
+            }
+            ViewMode::GuestFramebuffer => {
+                self.render_untiled_guest_buffer(bus, frontbuffer_addr, gpu_color_buffer);
+            }
+            ViewMode::Hybrid => {
+                self.render_blades_dashboard("FFFE07D1", "2.0.17559.0");
+                self.blend_untiled_guest_buffer(bus, frontbuffer_addr, gpu_color_buffer);
+            }
+        }
+    }
+
+    /// Renders the untiled 1280x720 guest framebuffer from memory bus
+    pub fn render_untiled_guest_buffer(
+        &mut self,
+        bus: &MemoryBus,
+        frontbuffer_addr: u64,
+        gpu_color_buffer: &[u32],
+    ) {
+        if frontbuffer_addr == 0 {
+            let len = self.framebuffer.len().min(gpu_color_buffer.len());
+            self.framebuffer[..len].copy_from_slice(&gpu_color_buffer[..len]);
             return;
         }
 
-        if frontbuffer_addr != 0 {
-            let total = self.framebuffer.len();
-            for i in 0..total {
-                let off = frontbuffer_addr + (i * 4) as u64;
-                if let Ok(pixel) = bus.read_u32(off) {
-                    if pixel != 0 {
-                        self.framebuffer[i] = pixel;
-                    } else if i < gpu_color_buffer.len() && gpu_color_buffer[i] != 0 {
-                        self.framebuffer[i] = gpu_color_buffer[i];
+        let total = self.framebuffer.len();
+        match self.untile_mode {
+            UntileMode::XeniaMorton => {
+                for (linear_idx, &tiled_idx) in self.untile_lut_xenia.iter().enumerate() {
+                    let off = frontbuffer_addr + (tiled_idx as u64 * 4);
+                    if let Ok(raw) = bus.read_u32(off) {
+                        if raw != 0 {
+                            self.framebuffer[linear_idx] = decode_pixel(raw, self.color_swizzle);
+                        } else if linear_idx < gpu_color_buffer.len() && gpu_color_buffer[linear_idx] != 0 {
+                            self.framebuffer[linear_idx] = gpu_color_buffer[linear_idx];
+                        } else {
+                            self.framebuffer[linear_idx] = 0x000E141E; // Dark Carbon
+                        }
                     }
                 }
             }
-        } else {
-            let len = self.framebuffer.len().min(gpu_color_buffer.len());
-            self.framebuffer[..len].copy_from_slice(&gpu_color_buffer[..len]);
+            UntileMode::XenosVariant0 => {
+                for (linear_idx, &tiled_idx) in self.untile_lut_var0.iter().enumerate() {
+                    let off = frontbuffer_addr + (tiled_idx as u64 * 4);
+                    if let Ok(raw) = bus.read_u32(off) {
+                        if raw != 0 {
+                            self.framebuffer[linear_idx] = decode_pixel(raw, self.color_swizzle);
+                        } else if linear_idx < gpu_color_buffer.len() && gpu_color_buffer[linear_idx] != 0 {
+                            self.framebuffer[linear_idx] = gpu_color_buffer[linear_idx];
+                        } else {
+                            self.framebuffer[linear_idx] = 0x000E141E;
+                        }
+                    }
+                }
+            }
+            UntileMode::Linear => {
+                for linear_idx in 0..total {
+                    let off = frontbuffer_addr + (linear_idx as u64 * 4);
+                    if let Ok(raw) = bus.read_u32(off) {
+                        if raw != 0 {
+                            self.framebuffer[linear_idx] = decode_pixel(raw, self.color_swizzle);
+                        } else if linear_idx < gpu_color_buffer.len() && gpu_color_buffer[linear_idx] != 0 {
+                            self.framebuffer[linear_idx] = gpu_color_buffer[linear_idx];
+                        } else {
+                            self.framebuffer[linear_idx] = 0x000E141E;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Blends the untiled guest GPU buffer on top of the active background
+    pub fn blend_untiled_guest_buffer(
+        &mut self,
+        bus: &MemoryBus,
+        frontbuffer_addr: u64,
+        _gpu_color_buffer: &[u32],
+    ) {
+        if frontbuffer_addr == 0 {
+            return;
+        }
+        for (linear_idx, &tiled_idx) in self.untile_lut_xenia.iter().enumerate() {
+            let off = frontbuffer_addr + (tiled_idx as u64 * 4);
+            if let Ok(raw) = bus.read_u32(off) {
+                if raw != 0 {
+                    let c = decode_pixel(raw, self.color_swizzle);
+                    let bg = self.framebuffer[linear_idx];
+                    let r = (((c >> 16) & 0xFF) + ((bg >> 16) & 0xFF) * 2) / 3;
+                    let g = (((c >> 8) & 0xFF) + ((bg >> 8) & 0xFF) * 2) / 3;
+                    let b = ((c & 0xFF) + (bg & 0xFF) * 2) / 3;
+                    self.framebuffer[linear_idx] = (r << 16) | (g << 8) | b;
+                }
+            }
         }
     }
 

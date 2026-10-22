@@ -7,7 +7,9 @@ pub mod shader;
 pub mod texture;
 pub mod xenos;
 
-pub use display::{DisplayMode, GpuDisplay, ViewMode, DISPLAY_HEIGHT, DISPLAY_WIDTH};
+pub use display::{
+    ColorSwizzle, DisplayMode, GpuDisplay, UntileMode, ViewMode, DISPLAY_HEIGHT, DISPLAY_WIDTH,
+};
 pub use pm4::{
     build_draw_indexed, build_load_alu_constant, build_set_constant, build_set_context_reg,
     build_set_shader_program, build_type0, build_type3, build_wait_for_idle, Pm4Packet,
