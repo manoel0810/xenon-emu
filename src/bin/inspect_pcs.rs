@@ -9,8 +9,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let img = dash_xex.decompress_image(&decrypted)?;
     let base: u64 = dash_xex.image_base as u64; // 0x92000000
 
-    let start = 0x92198880u64;
-    let end = 0x92198920u64;
+    let start = 0x92194D14u64;
+    let end = 0x92194E10u64;
     println!("=== Disassembly of 0x{:08X}..0x{:08X} ===", start, end);
     let mut a = start;
     while a < end {
@@ -21,3 +21,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+

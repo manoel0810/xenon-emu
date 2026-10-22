@@ -10,6 +10,10 @@ pub struct MemoryBus {
     pub watch_addr: Option<u64>,
     /// Last executed PC (set by CPU/main for diagnostic tracing)
     pub current_pc: u64,
+    /// Link register / stack pointer of the running thread (diagnostics only)
+    pub current_lr: u64,
+    pub current_sp: u64,
+    pub current_thread: String,
 }
 
 const RAM_SIZE: usize = 512 * 1024 * 1024; // 512 MB
@@ -29,6 +33,9 @@ impl MemoryBus {
             sram: vec![0u8; SRAM_SIZE],
             watch_addr,
             current_pc: 0,
+            current_lr: 0,
+            current_sp: 0,
+            current_thread: String::new(),
         }
     }
 
@@ -41,6 +48,23 @@ impl MemoryBus {
                 println!(
                     "  [WATCHPOINT WRITE] PC: 0x{:08X} -> wrote {} bytes to 0x{:08X} (phys 0x{:08X}) = 0x{:X}",
                     self.current_pc, size, addr, a, val_hex
+                );
+                // Walk the Xbox 360 backchain: [sp] = caller's sp, [caller_sp - 8] = saved LR
+                let mut chain = String::new();
+                let mut sp = self.current_sp & 0xFFFF_FFFF;
+                for _ in 0..6 {
+                    let Some(next) = self.peek_u32(sp) else { break };
+                    let next = next as u64;
+                    if next == 0 { break; }
+                    match self.peek_u32(next.wrapping_sub(8)) {
+                        Some(lr) => chain.push_str(&format!(" 0x{:08X}", lr)),
+                        None => break,
+                    }
+                    sp = next;
+                }
+                println!(
+                    "      THREAD: {} | LR: 0x{:08X} | SP: 0x{:08X} | callers:{}",
+                    self.current_thread, self.current_lr, self.current_sp, chain
                 );
             }
         }
@@ -82,6 +106,13 @@ impl MemoryBus {
         } else {
             Err(format!("Physical RAM access out of bounds: 0x{:016X}", addr))
         }
+    }
+
+    /// Non-failing 32-bit read used by diagnostics.
+    fn peek_u32(&self, addr: u64) -> Option<u32> {
+        let s = self.translate_address(addr).ok()?;
+        if s.len() < 4 { return None; }
+        Some(BigEndian::read_u32(s))
     }
 
     pub fn read_u8(&self, addr: u64) -> Result<u8, String> {

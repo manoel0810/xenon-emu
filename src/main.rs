@@ -1013,6 +1013,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let max_frames: Option<u64> = std::env::var("XENON_MAX_FRAMES")
         .ok()
         .and_then(|s| s.parse().ok());
+    // Trap diagnostics: XENON_TRAP_TRACE keeps a ring of the last executed instructions of the
+    // Metro primary thread and dumps it on trap; XENON_NO_RESTART stops the thread instead of restarting it.
+    let trap_trace = std::env::var("XENON_TRAP_TRACE").is_ok();
+    let no_restart = std::env::var("XENON_NO_RESTART").is_ok();
+    let trap_full = std::env::var("XENON_TRAP_FULL").is_ok();
+    // (pc, opcode, lr, ctr, r1, r3, r11, r12)
+    let mut trap_ring: std::collections::VecDeque<(u64, u32, u64, u64, u64, u64, u64, u64, u64)> =
+        std::collections::VecDeque::with_capacity(64);
     let pc_profile = std::env::var("XENON_PC_PROFILE").is_ok();
     let mut pc_hist: std::collections::HashMap<(String, u64), u64> = std::collections::HashMap::new();
     let mut sys_hist: std::collections::HashMap<(String, u16), u64> = std::collections::HashMap::new();
@@ -1062,12 +1070,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !thread.active {
                 continue;
             }
+            bus.current_thread.clear();
+            bus.current_thread.push_str(&thread.name);
             // Execute a timeslice of up to 25,000 instructions per thread per frame
             for _ in 0..25000 {
                 let current_pc = thread.cpu.regs.pc;
                 bus.current_pc = current_pc;
+                bus.current_lr = thread.cpu.regs.lr;
+                bus.current_sp = thread.cpu.regs.gpr[1];
                 match bus.read_u32(current_pc) {
-                    Ok(_) => {
+                    Ok(op_raw) => {
+                        if trap_trace && thread.name.starts_with("Metro") {
+                            if trap_ring.len() >= 20000 { trap_ring.pop_front(); }
+                            let r = &thread.cpu.regs;
+                            trap_ring.push_back((current_pc, op_raw, r.lr, r.ctr, r.gpr[1], r.gpr[3], r.gpr[11], r.gpr[12], r.gpr[31]));
+                        }
                         match thread.cpu.step(&mut bus) {
                             Ok(StepResult::Ok) => {
                                 thread.total_steps += 1;
@@ -1102,7 +1119,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     thread.cpu.regs.pc = thread.cpu.regs.lr;
 
                                     if is_term {
+                                        if thread.continuous && no_restart {
+                                            println!("  [NO_RESTART] thread '{}' called ExTerminateThread; stopping", thread.name);
+                                            thread.continuous = false;
+                                            thread.active = false;
+                                            break;
+                                        }
                                         if thread.continuous {
+                                            if std::env::var("XENON_WATCH").is_ok() {
+                                                println!("  [RESTART:TERM] thread '{}' frame {} called ExTerminateThread (pc=0x{:08X}, SP=0x{:08X}) -> restarting at entry 0x{:08X}",
+                                                    thread.name, frame, current_pc, thread.cpu.regs.gpr[1], thread.entry_pc);
+                                            }
                                             thread.cpu.regs.pc = thread.entry_pc;
                                             thread.cpu.regs.lr = 0x80001000;
                                             break;
@@ -1124,8 +1151,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 thread.active = false;
                                 break;
                             }
-                            Err(_) => {
+                            Err(e) => {
                                 if thread.continuous {
+                                    if trap_trace && thread.name.starts_with("Metro") {
+                                        println!("  [TRAP TRACE] last {} instructions before trap ({}); after-trap LR=0x{:08X} CTR=0x{:08X}:",
+                                            trap_ring.len(), e, thread.cpu.regs.lr, thread.cpu.regs.ctr);
+                                        let tail_start = trap_ring.len().saturating_sub(12);
+                                        let mut prev31 = u64::MAX;
+                                        for (i, (pc, op, lr, ctr, r1, r3, r11, r12, r31)) in trap_ring.iter().enumerate() {
+                                            let changed = *r31 != prev31;
+                                            if changed || i >= tail_start || trap_full {
+                                                println!("    {}pc=0x{:08X} op=0x{:08X} lr=0x{:08X} ctr=0x{:08X} r1=0x{:08X} r3=0x{:08X} r11=0x{:08X} r12=0x{:08X} r31=0x{:08X}",
+                                                    if changed { "[r31 changed] " } else { "" },
+                                                    pc & 0xFFFF_FFFF, op, lr & 0xFFFF_FFFF, ctr & 0xFFFF_FFFF, r1 & 0xFFFF_FFFF, r3 & 0xFFFF_FFFF, r11 & 0xFFFF_FFFF, r12 & 0xFFFF_FFFF, r31 & 0xFFFF_FFFF);
+                                            }
+                                            prev31 = *r31;
+                                        }
+                                        trap_ring.clear();
+                                    }
+                                    if no_restart {
+                                        println!("  [NO_RESTART] stopping thread '{}' after first trap", thread.name);
+                                        thread.continuous = false;
+                                        thread.active = false;
+                                        break;
+                                    }
+                                    if std::env::var("XENON_WATCH").is_ok() {
+                                        println!("  [RESTART:ERR] thread '{}' frame {} trapped at pc=0x{:08X} SP=0x{:08X}: {} -> restarting at entry 0x{:08X}",
+                                            thread.name, frame, current_pc, thread.cpu.regs.gpr[1], e, thread.entry_pc);
+                                    }
                                     thread.cpu.regs.pc = thread.entry_pc;
                                     thread.cpu.regs.lr = 0x80001000;
                                 } else {
