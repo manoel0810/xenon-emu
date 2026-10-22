@@ -287,7 +287,7 @@ impl GpuDisplay {
             view_mode: ViewMode::GuestFramebuffer,
             untile_mode: UntileMode::XenosVariant0,
             color_swizzle: ColorSwizzle::Bgra,
-            buffer_source: BufferSource::LiveEmulation,
+            buffer_source: BufferSource::HardwareCalibrated,
             calibrated_fb,
             untile_lut_xenia,
             untile_lut_var0,
