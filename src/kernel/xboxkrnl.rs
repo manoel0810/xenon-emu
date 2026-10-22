@@ -1500,7 +1500,18 @@ impl KernelDispatcher {
             }
 
             // 0x01BA: VdGetCurrentDisplayInformation
-            0x01BA => 0,
+            0x01BA => {
+                if let Some(&p_mode) = args.first() {
+                    if p_mode != 0 {
+                        let _ = bus.write_u32(p_mode + 0, 1280); // Width
+                        let _ = bus.write_u32(p_mode + 4, 720);  // Height
+                        let _ = bus.write_u32(p_mode + 8, 0);    // Interlaced (0=Progressive)
+                        let _ = bus.write_u32(p_mode + 12, 1);   // Widescreen (1=16:9)
+                        let _ = bus.write_u32(p_mode + 16, 60);  // RefreshRate (60Hz)
+                    }
+                }
+                0
+            }
 
             // 0x01BD: VdGetSystemCommandBuffer
             0x01BD => 0x1000_0000,

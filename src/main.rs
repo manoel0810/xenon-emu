@@ -7,7 +7,7 @@ pub mod memory;
 
 use byteorder::{BigEndian, ByteOrder};
 use cpu::{Cpu, StepResult};
-use gpu::GpuDisplay;
+use gpu::{GpuDisplay, display::resolve_path};
 use kernel::KernelDispatcher;
 use loader::{PeImage, StfsPackage, XexFile};
 use memory::MemoryBus;
@@ -22,8 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // MILESTONE 1: NAND Bootloader (CB_A) Hardware Boot
     // ==========================================================
     println!("\n>>> [MILESTONE 1] NAND Bootloader (CB_A) Hardware Boot <<<");
-    let cba_path = "../Corona 16mb/CB_A_enc.bin";
-    let encrypted_cba = fs::read(cba_path)?;
+    let cba_path = resolve_path("Corona 16mb/CB_A_enc.bin");
+    let encrypted_cba = fs::read(&cba_path)?;
     let salt = &encrypted_cba[0x10..0x20];
     let entry_point = BigEndian::read_u32(&encrypted_cba[8..12]);
 
@@ -53,8 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // MILESTONE 2: XEX2 Executable Parsing on default.xex
     // ==========================================================
     println!("\n>>> [MILESTONE 2] Xbox 360 Executable (XEX2) Loader <<<");
-    let xex_path = "../default.xex";
-    let xex_bytes = fs::read(xex_path)?;
+    let xex_path = resolve_path("default.xex");
+    let xex_bytes = fs::read(&xex_path)?;
     let default_xex = XexFile::parse(&xex_bytes)?;
     println!("[+] Parsed default.xex (Title ID: {:08X}, Entry: 0x{:08X})", 
         default_xex.execution_info.as_ref().map(|e| e.title_id).unwrap_or(0),
@@ -66,13 +66,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // MILESTONE 3: Official Dashboard Executable Loading & Setup
     // ==========================================================
     println!("\n>>> [MILESTONE 3] Official Dashboard Loading & Setup <<<");
-    let metro_path = "../SystemUpdate_17559_USB/$SystemUpdate/dash.xex";
-    let (dash_bytes, is_metro) = if std::path::Path::new(metro_path).exists() {
-        println!("[+] Found Authentic Microsoft Metro Dashboard 17559: {}", metro_path);
-        (fs::read(metro_path)?, true)
+    let metro_path = resolve_path("SystemUpdate_17559_USB/$SystemUpdate/dash.xex");
+    let (dash_bytes, is_metro) = if metro_path.exists() {
+        println!("[+] Found Authentic Microsoft Metro Dashboard 17559: {}", metro_path.display());
+        (fs::read(&metro_path)?, true)
     } else {
-        let su_path = "../$SystemUpdate/su20076000_00000000";
-        let su_bytes = fs::read(su_path)?;
+        let su_path = resolve_path("$SystemUpdate/su20076000_00000000");
+        let su_bytes = fs::read(&su_path)?;
         let stfs = StfsPackage::parse(&su_bytes)?;
         println!("[+] STFS Package parsed! Found {} files inside container.", stfs.entries.len());
         for entry in &stfs.entries {
@@ -652,10 +652,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut xui_mgr = XuiManager::new();
 
     // 1. Load Portuguese (pt-br) localized string table from dump
-    let pt_strings_path = "../extracted_xui/pt-br/Strings.xus";
-    let xus_table = if std::path::Path::new(pt_strings_path).exists() {
+    let pt_strings_path = resolve_path("extracted_xui/pt-br/Strings.xus");
+    let xus_table = if pt_strings_path.exists() {
         println!("[*] Loading genuine Microsoft Portuguese string table (.xus)...");
-        match XusTable::load_file(pt_strings_path) {
+        match XusTable::load_file(&pt_strings_path) {
             Ok(table) => {
                 println!("[+] Successfully loaded {} Portuguese strings from dump!", table.strings.len());
                 for (idx, s) in table.strings.iter().take(5).enumerate() {
@@ -664,7 +664,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(table)
             }
             Err(e) => {
-                println!("[!] Failed to load {}: {}", pt_strings_path, e);
+                println!("[!] Failed to load {}: {}", pt_strings_path.display(), e);
                 None
             }
         }
@@ -679,15 +679,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Load authentic Microsoft XUI Visual Scenes (.xur)
     let mut loaded_scenes = Vec::new();
     let xur_files = [
-        ("dashmain", "../extracted_xui/dashmain.xur"),
-        ("BladeSkin", "../extracted_xui/BladeSkin.xur"),
-        ("gamesSignedOut", "../extracted_xui/gamesSignedOut.xur"),
-        ("mediaSignedOut", "../extracted_xui/mediaSignedOut.xur"),
-        ("liveSignedOutUI", "../extracted_xui/liveSignedOutUI.xur"),
+        ("dashmain", resolve_path("extracted_xui/dashmain.xur")),
+        ("BladeSkin", resolve_path("extracted_xui/BladeSkin.xur")),
+        ("gamesSignedOut", resolve_path("extracted_xui/gamesSignedOut.xur")),
+        ("mediaSignedOut", resolve_path("extracted_xui/mediaSignedOut.xur")),
+        ("liveSignedOutUI", resolve_path("extracted_xui/liveSignedOutUI.xur")),
     ];
 
     for (_sname, spath) in &xur_files {
-        if std::path::Path::new(spath).exists() {
+        if spath.exists() {
             match XurScene::load_file(spath) {
                 Ok(scene) => {
                     println!("[+] Parsed authentic XUI Scene '{}': Root Class '{}', {} Child Nodes, {} Classes",
@@ -701,7 +701,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     xui_mgr.register_scene(scene.clone());
                     loaded_scenes.push(scene);
                 }
-                Err(e) => println!("  [!] XUR parse error for {}: {}", spath, e),
+                Err(e) => println!("  [!] XUR parse error for {}: {}", spath.display(), e),
             }
         }
     }
@@ -723,7 +723,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[+] Initialized Xenos Primary Ring Buffer at 0x{:08X} (Size: {} KB)", ring_base, ring_size / 1024);
 
     // Load authentic Dashboard texture assets into TextureAtlas
-    xenos_gpu.load_atlas_from_dir("../extracted_xui");
+    let atlas_dir = resolve_path("extracted_xui");
+    xenos_gpu.load_atlas_from_dir(atlas_dir);
     let bound_logo = xenos_gpu.bind_texture_by_name(0, "xboxLogo");
     println!("  [+] Texture 'xboxLogo' bound to Sampler Stage 0: {}", bound_logo);
 
@@ -1009,9 +1010,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[*] Guest VRAM Framebuffer Ativo inicial: 0x{:08X}", initial_fb);
     println!("[*] Fonte de Vídeo inicial: VRAM Guest Ao Vivo (use a tecla [B] para alternar com o dump de referência)");
 
+    let max_frames: Option<u64> = std::env::var("XENON_MAX_FRAMES")
+        .ok()
+        .and_then(|s| s.parse().ok());
+
     let mut frame = 0u64;
     while display.is_open() {
         frame += 1;
+        if let Some(mf) = max_frames {
+            if frame > mf {
+                println!("[*] Reached XENON_MAX_FRAMES limit ({} frames) - terminating loop cleanly.", mf);
+                break;
+            }
+        }
         display.handle_input();
 
         // 1. Process any pending dynamic thread creations from ExCreateThread
@@ -1181,12 +1192,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         display.update()?;
 
         if frame == 70 {
-            let _ = display.save_bmp("../bootanim_ribbons.bmp");
+            let _ = display.save_bmp(resolve_path("bootanim_ribbons.bmp"));
         } else if frame == 180 {
-            let _ = display.save_bmp("../bootanim_sphere.bmp");
+            let _ = display.save_bmp(resolve_path("bootanim_sphere.bmp"));
         } else if frame == 290 {
-            let out_name = if is_metro { "../dash_17559_framebuffer.bmp" } else { "../dash_framebuffer.bmp" };
-            let _ = display.save_bmp(out_name);
+            let out_name = if is_metro { resolve_path("dash_17559_framebuffer.bmp") } else { resolve_path("dash_framebuffer.bmp") };
+            let _ = display.save_bmp(&out_name);
         }
 
         if frame % 180 == 0 {
@@ -1195,13 +1206,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "  [GPU] Frame {:05} | FrontBuffer: 0x{:08X} | Ring Executed: {} pkts | 60 FPS | Guest Code: {} insns",
                 frame, frontbuffer, executed_pkts, total_guest_steps
             );
+            for t in &guest_threads {
+                println!(
+                    "    -> [THREAD] \"{}\" | PC: 0x{:08X} | LR: 0x{:08X} | Steps: {} | Active: {} | Cont: {}",
+                    t.name, t.cpu.regs.pc, t.cpu.regs.lr, t.total_steps, t.active, t.continuous
+                );
+            }
         }
     }
 
     // Save framebuffer screenshot to disk
-    let bmp_path = if is_metro { "../dash_17559_framebuffer.bmp" } else { "../dash_framebuffer.bmp" };
-    display.save_bmp(bmp_path)?;
-    println!("[+] Framebuffer exported as High-Res BMP screenshot: {}", bmp_path);
+    let bmp_path = if is_metro { resolve_path("dash_17559_framebuffer.bmp") } else { resolve_path("dash_framebuffer.bmp") };
+    display.save_bmp(&bmp_path)?;
+    println!("[+] Framebuffer exported as High-Res BMP screenshot: {}", bmp_path.display());
 
     println!("\n========================================================");
     println!("  🎉 Milestones 1 to 5 Fully Operational!                ");

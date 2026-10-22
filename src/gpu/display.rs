@@ -4,7 +4,7 @@ use crate::gpu::texture::TextureAtlas;
 use crate::kernel::input::{
     GamepadManager, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_DPAD_DOWN,
     XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_UP,
-    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
+    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START,
 };
 use minifb::{Key, Window, WindowOptions};
 use crate::memory::MemoryBus;
@@ -47,6 +47,24 @@ pub enum ColorSwizzle {
 pub enum BufferSource {
     LiveEmulation,
     HardwareCalibrated,
+}
+
+/// Resolves path checking current directory, stripped ../, and prepended ../
+pub fn resolve_path<P: AsRef<std::path::Path>>(p: P) -> std::path::PathBuf {
+    let path = p.as_ref();
+    if path.exists() {
+        return path.to_path_buf();
+    }
+    if let Ok(stripped) = path.strip_prefix("..") {
+        if stripped.exists() {
+            return stripped.to_path_buf();
+        }
+    }
+    let parent_prepended = std::path::Path::new("..").join(path);
+    if parent_prepended.exists() {
+        return parent_prepended;
+    }
+    path.to_path_buf()
 }
 
 #[derive(Debug, Clone)]
@@ -235,7 +253,8 @@ impl GpuDisplay {
         ];
 
         let gamepad_mgr = GamepadManager::new();
-        let textures = TextureAtlas::load_from_dir("../extracted_xui/named");
+        let tex_path = resolve_path("extracted_xui/named");
+        let textures = TextureAtlas::load_from_dir(tex_path);
         println!("[+] GpuDisplay: Loaded {} authentic extracted Xbox 360 textures into VRAM", textures.textures.len());
 
         let mut untile_lut_xenia = Vec::with_capacity(DISPLAY_WIDTH * DISPLAY_HEIGHT);
@@ -251,9 +270,9 @@ impl GpuDisplay {
         println!("[+] GpuDisplay: Pre-calculated {} Xenos untile LUT entries (Xenia Morton + Variant 0)", untile_lut_xenia.len());
 
         let raw_fb_paths = [
-            "xbox360_real_framebuffer.raw",
-            "../xbox360_real_framebuffer.raw",
-            "xenon-emu/xbox360_real_framebuffer.raw",
+            resolve_path("xbox360_real_framebuffer.raw"),
+            resolve_path("xenon-emu/xbox360_real_framebuffer.raw"),
+            resolve_path("../xbox360_real_framebuffer.raw"),
         ];
         let mut calibrated_fb = None;
         for p in &raw_fb_paths {
@@ -264,7 +283,7 @@ impl GpuDisplay {
                     }
                 }
                 if data.len() >= DISPLAY_WIDTH * DISPLAY_HEIGHT * 4 {
-                    println!("[+] GpuDisplay: Carregado Buffer de Referência Real de '{}' ({} bytes)", p, data.len());
+                    println!("[+] GpuDisplay: Carregado Buffer de Referência Real de '{}' ({} bytes)", p.display(), data.len());
                     calibrated_fb = Some(data);
                     break;
                 }
@@ -282,7 +301,12 @@ impl GpuDisplay {
             key_cooldown: 0,
             blades,
             gamepad_mgr,
-            mode: DisplayMode::BootAnimation,
+            mode: if std::env::var("XENON_SKIP_BOOTANIM").is_ok() {
+                println!("[*] XENON_SKIP_BOOTANIM ativo: exibindo Dashboard imediatamente.");
+                DisplayMode::Dashboard
+            } else {
+                DisplayMode::BootAnimation
+            },
             boot_frame: 0,
             view_mode: ViewMode::GuestFramebuffer,
             untile_mode: UntileMode::XenosVariant0,
@@ -309,17 +333,16 @@ impl GpuDisplay {
             return;
         }
 
-        // In Boot Animation mode, only allow skip after 60 frames (1 second minimum)
-        // to prevent terminal Enter bleed-through when launched via RODAR_EMULADOR.bat
+        // In Boot Animation mode, allow skipping immediately after frame 10 with Space, Enter or Gamepad A/Start
         if self.mode == DisplayMode::BootAnimation {
             let mut skip = false;
-            if self.boot_frame >= 60 {
+            if self.boot_frame >= 10 {
                 if let Some(state) = self.gamepad_mgr.poll(0) {
-                    if (state.gamepad.w_buttons & XINPUT_GAMEPAD_A) != 0 {
+                    if (state.gamepad.w_buttons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START)) != 0 {
                         skip = true;
                     }
                 }
-                if self.window.is_key_down(Key::Space) || self.window.is_key_down(Key::Escape) {
+                if self.window.is_key_down(Key::Space) || self.window.is_key_down(Key::Enter) {
                     skip = true;
                 }
             }
@@ -1314,8 +1337,8 @@ impl GpuDisplay {
     }
 
     /// Saves the current 1280x720 framebuffer as a standard 24-bit BMP image
-    pub fn save_bmp(&self, path: &str) -> Result<(), String> {
-        let mut file = File::create(path).map_err(|e| format!("Create file failed: {:?}", e))?;
+    pub fn save_bmp<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), String> {
+        let mut file = File::create(path.as_ref()).map_err(|e| format!("Create file failed: {:?}", e))?;
         let w = self.width as u32;
         let h = self.height as u32;
 
