@@ -1065,6 +1065,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Execute a timeslice of up to 25,000 instructions per thread per frame
             for _ in 0..25000 {
                 let current_pc = thread.cpu.regs.pc;
+                bus.current_pc = current_pc;
                 match bus.read_u32(current_pc) {
                     Ok(_) => {
                         match thread.cpu.step(&mut bus) {
