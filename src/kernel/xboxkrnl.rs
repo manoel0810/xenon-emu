@@ -206,9 +206,7 @@ impl KernelDispatcher {
     /// Returns the currently active frontbuffer address for presentation,
     /// alternating between frontbuffer and backbuffer across VdSwap cycles.
     pub fn active_frontbuffer(&self) -> u64 {
-        if self.last_swap_frontbuffer != 0 {
-            self.last_swap_frontbuffer
-        } else if self.frontbuffer_ptr != 0 && self.backbuffer_ptr != 0 {
+        if self.frontbuffer_ptr != 0 && self.backbuffer_ptr != 0 {
             if self.swap_count % 2 == 0 {
                 self.frontbuffer_ptr
             } else {
@@ -216,6 +214,8 @@ impl KernelDispatcher {
             }
         } else if self.frontbuffer_ptr != 0 {
             self.frontbuffer_ptr
+        } else if self.last_swap_frontbuffer != 0 && self.last_swap_frontbuffer != 0x7000_0000 {
+            self.last_swap_frontbuffer
         } else {
             0x7000_0000
         }
@@ -467,20 +467,26 @@ impl KernelDispatcher {
             // 0x0016: ExReleaseReadWriteLock
             0x0016 => 0,
 
+            // 0x0017: ExRegisterTitleTerminateNotification | 0x0018: ExUnregisterTitleTerminateNotification
+            0x0017 | 0x0018 => 0,
+
             // 0x0019: ExTerminateThread
             0x0019 => {
                 println!("    -> ExTerminateThread: Thread exited cleanly.");
                 0
             }
 
-            // 0x0021: FscSetCacheElementCount
-            0x0021 => 0,
+            // 0x0021: FscSetCacheElementCount | 0x0022: FscSetMaxCacheElements
+            0x0021 | 0x0022 => 0,
 
             // 0x0024: HalOpenCloseODDTray
             0x0024 => 0,
 
             // 0x0029: HalSendSMCMessage
             0x0029 => 0,
+
+            // 0x002C: HalReturnToFirmware
+            0x002C => 0,
 
             // 0x004D: KeAcquireSpinLockAtRaisedIrql
             0x004D => 0,
@@ -490,6 +496,9 @@ impl KernelDispatcher {
                 println!("    [!] GUEST KeBugCheck called with code 0x{:X}", args.first().unwrap_or(&0));
                 0
             }
+
+            // 0x0057: KeDelayExecutionThread (waitMode, alertable, pInterval)
+            0x0057 => 0,
 
             // 0x005F: KeEnterCriticalRegion
             0x005F => 0,
@@ -585,6 +594,9 @@ impl KernelDispatcher {
                 prev
             }
 
+            // 0x0080: KeQueryActiveProcessors
+            0x0080 => 0x3F, // 6 hardware threads (3 cores x 2 SMT)
+
             // 0x0081: KeQueryBasePriorityThread
             0x0081 => 8, // Normal thread priority
 
@@ -617,6 +629,9 @@ impl KernelDispatcher {
 
             // 0x0089: KeReleaseSpinLockFromRaisedIrql
             0x0089 => 0,
+
+            // 0x008D: KeRemoveQueue | 0x0090: KeRundownQueue | 0x0095: KeInsertQueue | 0x0096: KeInsertHeadQueue | 0x0098: KeSetCurrentStackPointers
+            0x008D | 0x0090 | 0x0095 | 0x0096 | 0x0098 => 0,
 
             // 0x008F: KeResetEvent
             0x008F => {
@@ -698,8 +713,8 @@ impl KernelDispatcher {
                 0 // STATUS_SUCCESS / WAIT_OBJECT_0
             }
 
-            // 0x00B1: KfAcquireSpinLock
-            0x00B1 => 0,
+            // 0x00B1: KfAcquireSpinLock | 0x00B2: KfRaiseIrql
+            0x00B1 | 0x00B2 => 0,
 
             // 0x00B3: KfLowerIrql
             0x00B3 => 0,
@@ -736,8 +751,11 @@ impl KernelDispatcher {
             // 0x00C4: MmQueryAddressProtect
             0x00C4 => 0x04, // PAGE_READWRITE
 
-            // 0x00C5: MmQueryAllocationSize
-            0x00C5 => 0x1000,
+            // 0x00C5: MmQueryAllocationSize | 0x00C7: MmQueryAllocationSize
+            0x00C5 | 0x00C7 => 0x1000,
+
+            // 0x00C8: MmQueryStatistics
+            0x00C8 => 0,
 
             // 0x00CC: NtAllocateVirtualMemory
             // (IN OUT PVOID *BaseAddress, IN OUT PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect, ULONG ZeroBits)
@@ -1432,6 +1450,9 @@ impl KernelDispatcher {
             // 0x0187: XeCryptMd5 | 0x018E: XeCryptRotSumSha | 0x0192: XeCryptSha
             0x0187 | 0x018E | 0x0192 => 0,
 
+            // 0x018A: VeSetHandlers
+            0x018A => 0,
+
             // 0x0194: XexCheckExecutablePrivilege
             0x0194 => 1, // TRUE (Privilege Granted)
 
@@ -1771,6 +1792,9 @@ impl KernelDispatcher {
             // 0x01C7: XamSetPowerMode
             0x01C7 => 0,
 
+            // 0x01CC: XamPartyGetUserList
+            0x01CC => 0,
+
             // 0x01CF: XamGetCurrentTitleId
             0x01CF => 0xFFFE_07D1, // Dashboard Title ID
 
@@ -1868,6 +1892,59 @@ impl KernelDispatcher {
             // 0x021B: XamUserGetMembershipTier
             0x021B => 6, // Gold Membership
 
+            // 0x0220: XamUserCheckPrivilege (userIndex, privilegeType, pGranted)
+            0x0220 => {
+                if let Some(&p_granted) = args.get(2) {
+                    if p_granted != 0 {
+                        let _ = bus.write_u32(p_granted, 1); // 1 = TRUE (Granted)
+                    }
+                }
+                0 // ERROR_SUCCESS
+            }
+
+            // 0x0221: XamUserGetSigninInfo (userIndex, flags, pSigninInfo)
+            0x0221 => {
+                if let Some(&p_info) = args.get(2) {
+                    if p_info != 0 {
+                        let _ = bus.write_u32(p_info + 0, 0x0009_0000); // xuid high
+                        let _ = bus.write_u32(p_info + 4, 0x0000_0001); // xuid low
+                        let _ = bus.write_u32(p_info + 8, 0);           // dwInfoFlags
+                        let _ = bus.write_u32(p_info + 12, self.signin_state as u32); // 1 = Signed in locally
+                        let _ = bus.write_u32(p_info + 16, 0);          // guest number
+                        let _ = bus.write_u32(p_info + 20, 0);          // sponsor user index
+                    }
+                }
+                0 // ERROR_SUCCESS
+            }
+
+            // 0x0222: XamUserGetName
+            0x0222 => {
+                if let (Some(&p_buf), Some(&cch)) = (args.get(1), args.get(2)) {
+                    if p_buf != 0 && cch >= 8 {
+                        let tag = b"Xbox360\0";
+                        for (i, &b) in tag.iter().enumerate() {
+                            let _ = bus.write_u8(p_buf + i as u64, b);
+                        }
+                    }
+                }
+                0
+            }
+
+            // 0x0223: XamUserAreUsersFriends | 0x0225: XamUserReadProfileSettings | 0x0226: XamUserWriteProfileSettings | 0x0228: XamUserReadStats
+            0x0223 | 0x0225 | 0x0226 | 0x0228 => 0,
+
+            // 0x0227: XamUserCreateAchievementEnumerator
+            0x0227 => {
+                if let Some(&p_h) = args.get(4) {
+                    if p_h != 0 {
+                        let h = self.next_handle;
+                        self.next_handle += 4;
+                        let _ = bus.write_u32(p_h, h);
+                    }
+                }
+                0
+            }
+
             // 0x0230: XamProfileCreate | 0x0234: XamProfileGetCreationStatus
             0x0230 | 0x0234 => 0,
 
@@ -1908,6 +1985,20 @@ impl KernelDispatcher {
                 }
             }
 
+            // 0x0276: XamContentResolveInternal (userIndex, flags, pPathBuffer, cchBuffer, ...)
+            0x0276 => {
+                if let Some(&p_buf) = args.get(2) {
+                    if p_buf != 0 {
+                        let path = b"game:\\\0";
+                        for (i, &b) in path.iter().enumerate() {
+                            let _ = bus.write_u8(p_buf + i as u64, b);
+                        }
+                    }
+                }
+                println!("    -> XamContentResolveInternal: Resolved content root path to 'game:\\'");
+                0 // ERROR_SUCCESS
+            }
+
             // 0x028A: XNotifyCreateListener
             0x028A => {
                 let h = self.next_handle;
@@ -1925,8 +2016,8 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x0290: XNotifyQueueUI
-            0x0290 => 0,
+            // 0x028C | 0x028D | 0x0290 | 0x0292 | 0x02A0 | 0x02A1: Notifications and Dialogs
+            0x028C | 0x028D | 0x0290 | 0x0292 | 0x02A0 | 0x02A1 => 0,
 
             // 0x02B4: XamCacheOpenFile
             0x02B4 => {
@@ -1969,8 +2060,11 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x02BC..0x031D: System UI Blading and Dialog Services
-            0x02BC | 0x02BE | 0x02BF | 0x02D1 | 0x02E3 | 0x02E4 | 0x02F0 | 0x02F8 | 0x02FC | 0x030A | 0x031D => 0,
+            // 0x02BC..0x031D, 0x0492, 0x04A9: System UI Blading and Dialog Services
+            0x02BC | 0x02BE | 0x02BF | 0x02D1 | 0x02E3 | 0x02E4 | 0x02F0 | 0x02F8 | 0x02FC | 0x030A | 0x031D | 0x0492 | 0x04A9 => 0,
+
+            // 0x0324: XamVoiceCreate | 0x0325: XamVoiceHeadsetPresent | 0x0330: XamContentGetMarketplaceCounts
+            0x0324 | 0x0325 | 0x0330 => 0,
 
             // 0x03CB: XGetAVPack
             0x03CB => 6, // XAVPACK_HDMI
@@ -1988,6 +2082,9 @@ impl KernelDispatcher {
                 }
                 0
             }
+
+            // 0x03D2: XVideoSetMode
+            0x03D2 => 0,
 
             // 0x0417: SetFilePointer (hFile, lDistanceToMove, lpDistanceToMoveHigh, dwMoveMethod)
             0x0417 => {
@@ -2090,6 +2187,30 @@ impl KernelDispatcher {
 
             // 0x050C: XamSetConsoleFriendlyName
             0x050C => 0,
+
+            // 0x058B: XamGetSystemVersion
+            0x058B => 0x2044_9700, // Version 2.0.17559.0
+
+            // 0x0646: XamContentCreateEnumerator
+            0x0646 => {
+                let h = self.next_handle;
+                self.next_handle += 4;
+                if let Some(&p_handle) = args.get(6) {
+                    if p_handle != 0 {
+                        let _ = bus.write_u32(p_handle, h);
+                    }
+                }
+                if let Some(&p_cb) = args.get(5) {
+                    if p_cb != 0 {
+                        let _ = bus.write_u32(p_cb, 0x1000);
+                    }
+                }
+                println!("    -> XamContentCreateEnumerator: Allocated enumerator handle 0x{:X}", h);
+                0 // ERROR_SUCCESS
+            }
+
+            // 0x0647: XamContentGetEnumeratorAttributes | 0x0648: XamContentCloseEnumerator | 0x0649: XamContentFlush
+            0x0647 | 0x0648 | 0x0649 => 0,
 
             // 0x0650: XdfInitialize
             0x0650 => 0,

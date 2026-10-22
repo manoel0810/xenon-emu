@@ -965,7 +965,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             entry_pc: 0x92107280,
             active: true,
             total_steps: 0,
-            continuous: false,
+            continuous: true,
         });
     }
 
@@ -1028,7 +1028,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  [SCHEDULER] Spawning dynamic guest thread TID=0x{:X} (@0x{:08X})",
                 pending.tid, routine
             );
-            let is_worker_or_render = pending.tid >= 2;
+            let is_worker_or_render = true; // Dashboard dynamic worker/UI threads should run continuously
             guest_threads.push(GuestThread {
                 name: format!("Dynamic Thread 0x{:X}", pending.tid),
                 cpu: thread_cpu,
@@ -1063,6 +1063,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
                                     let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x002B && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
+                                        || (*ordinal == 0x0057 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x00B0 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x00AF && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x00FD && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
