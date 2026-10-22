@@ -1124,10 +1124,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         guest_threads.retain(|t| t.active || t.continuous);
 
         // 4. Synchronize & Execute PM4 packets in Primary Ring Buffer with Xenos GPU CP
+        if kernel.ring_buffer_ptr != 0 && kernel.ring_buffer_ptr != ring_buffer.base_addr {
+            let sz = if kernel.ring_buffer_size <= 32 {
+                let comp = (1usize << kernel.ring_buffer_size) * 4;
+                comp.max(32 * 1024)
+            } else if kernel.ring_buffer_size != 0 {
+                kernel.ring_buffer_size as usize
+            } else {
+                32 * 1024
+            };
+            println!("  [GPU] Re-binding RingBuffer to guest configured address 0x{:08X} (Size: {} KB)", kernel.ring_buffer_ptr, sz / 1024);
+            ring_buffer = RingBuffer::new(kernel.ring_buffer_ptr, sz);
+        }
+
         ring_buffer.sync_wptr_from_memory(&bus);
         let executed_pkts = xenos_gpu
             .execute_ring_with_writeback(&mut bus, &mut ring_buffer, kernel.rptr_writeback_ptr)
             .unwrap_or(0);
+
+        if executed_pkts > 0 {
+            println!(
+                "  [GPU CP] Frame {:05} | Processed {} PM4 packets (Total: {}, Draw Calls: {}, Primitives: {}) | WPTR: {}, RPTR: {}",
+                frame, executed_pkts, xenos_gpu.packets_executed, xenos_gpu.draw_calls, xenos_gpu.primitives_drawn, ring_buffer.wptr, ring_buffer.rptr
+            );
+        }
 
         // 5. Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
         let frontbuffer = kernel.active_frontbuffer();

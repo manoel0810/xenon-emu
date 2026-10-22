@@ -471,10 +471,7 @@ impl KernelDispatcher {
             0x0017 | 0x0018 => 0,
 
             // 0x0019: ExTerminateThread
-            0x0019 => {
-                println!("    -> ExTerminateThread: Thread exited cleanly.");
-                0
-            }
+            0x0019 => 0,
 
             // 0x0021: FscSetCacheElementCount | 0x0022: FscSetMaxCacheElements
             0x0021 | 0x0022 => 0,
@@ -1529,9 +1526,17 @@ impl KernelDispatcher {
                 }
                 if let Some(&size) = args.get(1) {
                     if size != 0 {
-                        self.ring_buffer_size = size as u32;
+                        let bytes = if size <= 32 {
+                            let comp = (1u64 << size) * 4;
+                            comp.max(32 * 1024) as u32
+                        } else {
+                            size as u32
+                        };
+                        self.ring_buffer_size = bytes;
                     }
                 }
+                println!("    -> VdInitializeRingBuffer: Address=0x{:08X}, Size=0x{:X} ({} KB)",
+                    self.ring_buffer_ptr, self.ring_buffer_size, self.ring_buffer_size / 1024);
                 0
             }
 

@@ -441,7 +441,7 @@ impl XenosGpu {
                             }
                         }
                     }
-                    PM4_DRAW_INDX => {
+                    PM4_DRAW_INDX | PM4_DRAW_INDX_2 => {
                         self.draw_calls += 1;
                         self.execute_draw_indexed(bus, data)?;
                     }
@@ -484,10 +484,14 @@ impl XenosGpu {
                                 _ => true,
                             };
 
-                            // If register wait is not yet satisfied (e.g. waiting on GPU status flag),
+                            // If register or memory wait is not yet satisfied (e.g. waiting on GPU status flag / fence),
                             // satisfy the reference condition so the Command Processor does not block.
-                            if !satisfied && !is_mem {
-                                self.registers.insert(poll_addr, reference);
+                            if !satisfied {
+                                if is_mem {
+                                    let _ = bus.write_u32(poll_addr as u64, reference);
+                                } else {
+                                    self.registers.insert(poll_addr, reference);
+                                }
                             }
                         }
                     }
