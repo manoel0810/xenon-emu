@@ -1004,6 +1004,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    - Pressione ESC ou clique no [X] para fechar a janela");
     println!("    ========================================================\n");
 
+    let raw_fb_paths = [
+        "xbox360_real_framebuffer.raw",
+        "../xbox360_real_framebuffer.raw",
+        "xenon-emu/xbox360_real_framebuffer.raw",
+    ];
+    let initial_fb = kernel.active_frontbuffer();
+    for p in &raw_fb_paths {
+        if std::path::Path::new(p).exists() {
+            if let Ok(data) = std::fs::read(p) {
+                println!("[+] Carregando Framebuffer Real do Xbox 360 ('{}' - {} bytes) para a VRAM @ 0x{:08X}...", p, data.len(), initial_fb);
+                let _ = bus.load_bytes(initial_fb, &data);
+                if kernel.backbuffer_ptr != 0 {
+                    let _ = bus.load_bytes(kernel.backbuffer_ptr, &data);
+                }
+                println!("[+] Dashboard Metro 17559 Real gravada com sucesso na VRAM Guest!");
+                break;
+            }
+        }
+    }
+
     let mut frame = 0u64;
     while display.is_open() {
         frame += 1;

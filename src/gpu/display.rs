@@ -105,7 +105,12 @@ pub fn xg_untile_variant(x: u32, y: u32, w: u32, mode: usize) -> u32 {
     let macro_val = ((x >> 5) + (y >> 5) * (aligned_width >> 5)) << (log_bpp + 7);
     let micro = ((x & 7) + ((y & 6) << 2)) << log_bpp;
 
-    let y1_term = if mode == 1 { 0 } else { (y & 1) << 4 };
+    let y1_term = match mode {
+        0 => 0, // Mode 0: Clean scanline mode (eliminates horizontal serrilhado)
+        1 => 0,
+        2 => (y & 1) << 4,
+        _ => 0,
+    };
     let y8_term = (y & 8) << (3 + log_bpp);
 
     let offset = macro_val
@@ -252,9 +257,9 @@ impl GpuDisplay {
             gamepad_mgr,
             mode: DisplayMode::BootAnimation,
             boot_frame: 0,
-            view_mode: ViewMode::Blades,
-            untile_mode: UntileMode::XeniaMorton,
-            color_swizzle: ColorSwizzle::Argb,
+            view_mode: ViewMode::GuestFramebuffer,
+            untile_mode: UntileMode::XenosVariant0,
+            color_swizzle: ColorSwizzle::Bgra,
             untile_lut_xenia,
             untile_lut_var0,
             xui_scenes: Vec::new(),
