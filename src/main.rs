@@ -997,6 +997,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    - Em seguida, a Dashboard surge em 1280x720 HD @ 60 FPS");
     println!("    - [TAB] ou Botao (Y): Alternar Modos: Blades -> Guest VRAM -> Hibrido -> XUI");
     println!("    - [U]: Alternar Algoritmo GPU Untile (Xenia Morton / Variant 0 / Linear)");
+    println!("    - [B]: Alternar Buffer de Vídeo (VRAM Guest Ao Vivo vs Dump Calibrado de Hardware)");
     println!("    - [C]: Alternar Formato de Canais de Cor (ARGB / BGRA / RGBA / Raw)");
     println!("    - [X] ou [1..4]: Alternar Cenas XUI (BladeSkin, gamesSignedOut)");
     println!("    - Setas / A,D ou D-Pad / Thumbstick: Alternar Blades");
@@ -1004,25 +1005,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    - Pressione ESC ou clique no [X] para fechar a janela");
     println!("    ========================================================\n");
 
-    let raw_fb_paths = [
-        "xbox360_real_framebuffer.raw",
-        "../xbox360_real_framebuffer.raw",
-        "xenon-emu/xbox360_real_framebuffer.raw",
-    ];
     let initial_fb = kernel.active_frontbuffer();
-    for p in &raw_fb_paths {
-        if std::path::Path::new(p).exists() {
-            if let Ok(data) = std::fs::read(p) {
-                println!("[+] Carregando Framebuffer Real do Xbox 360 ('{}' - {} bytes) para a VRAM @ 0x{:08X}...", p, data.len(), initial_fb);
-                let _ = bus.load_bytes(initial_fb, &data);
-                if kernel.backbuffer_ptr != 0 {
-                    let _ = bus.load_bytes(kernel.backbuffer_ptr, &data);
-                }
-                println!("[+] Dashboard Metro 17559 Real gravada com sucesso na VRAM Guest!");
-                break;
-            }
-        }
-    }
+    println!("[*] Guest VRAM Framebuffer Ativo inicial: 0x{:08X}", initial_fb);
+    println!("[*] Fonte de Vídeo inicial: VRAM Guest Ao Vivo (use a tecla [B] para alternar com o dump de referência)");
 
     let mut frame = 0u64;
     while display.is_open() {

@@ -43,6 +43,12 @@ pub enum ColorSwizzle {
     Raw,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferSource {
+    LiveEmulation,
+    HardwareCalibrated,
+}
+
 #[derive(Debug, Clone)]
 pub struct BladeItem {
     pub title: String,
@@ -73,6 +79,8 @@ pub struct GpuDisplay {
     pub view_mode: ViewMode,
     pub untile_mode: UntileMode,
     pub color_swizzle: ColorSwizzle,
+    pub buffer_source: BufferSource,
+    pub calibrated_fb: Option<Vec<u8>>,
     pub untile_lut_xenia: Vec<usize>,
     pub untile_lut_var0: Vec<usize>,
     pub xui_scenes: Vec<crate::loader::XurScene>,
@@ -244,6 +252,22 @@ impl GpuDisplay {
         }
         println!("[+] GpuDisplay: Pre-calculated {} Xenos untile LUT entries (Xenia Morton + Variant 0)", untile_lut_xenia.len());
 
+        let raw_fb_paths = [
+            "xbox360_real_framebuffer.raw",
+            "../xbox360_real_framebuffer.raw",
+            "xenon-emu/xbox360_real_framebuffer.raw",
+        ];
+        let mut calibrated_fb = None;
+        for p in &raw_fb_paths {
+            if let Ok(data) = std::fs::read(p) {
+                if data.len() >= DISPLAY_WIDTH * DISPLAY_HEIGHT * 4 {
+                    println!("[+] GpuDisplay: Carregado Buffer de Referência Real de '{}' ({} bytes)", p, data.len());
+                    calibrated_fb = Some(data);
+                    break;
+                }
+            }
+        }
+
         Ok(Self {
             width: DISPLAY_WIDTH,
             height: DISPLAY_HEIGHT,
@@ -260,6 +284,8 @@ impl GpuDisplay {
             view_mode: ViewMode::GuestFramebuffer,
             untile_mode: UntileMode::XenosVariant0,
             color_swizzle: ColorSwizzle::Bgra,
+            buffer_source: BufferSource::LiveEmulation,
+            calibrated_fb,
             untile_lut_xenia,
             untile_lut_var0,
             xui_scenes: Vec::new(),
@@ -389,6 +415,21 @@ impl GpuDisplay {
                 ColorSwizzle::Raw => {
                     println!("  [GPU COLOR] Formato de canais: ARGB (Xenos D3D9)");
                     ColorSwizzle::Argb
+                }
+            };
+            self.key_cooldown = 15;
+            return;
+        }
+
+        if self.window.is_key_down(Key::B) {
+            self.buffer_source = match self.buffer_source {
+                BufferSource::LiveEmulation => {
+                    println!("  [GPU BUFFER] Fonte de Vídeo: DUMP DE REFERÊNCIA REAL DO HARDWARE (Calibrado)");
+                    BufferSource::HardwareCalibrated
+                }
+                BufferSource::HardwareCalibrated => {
+                    println!("  [GPU BUFFER] Fonte de Vídeo: VRAM GUEST AO VIVO (Emulação Real da Dash)");
+                    BufferSource::LiveEmulation
                 }
             };
             self.key_cooldown = 15;
@@ -616,6 +657,43 @@ impl GpuDisplay {
         frontbuffer_addr: u64,
         gpu_color_buffer: &[u32],
     ) {
+        if self.buffer_source == BufferSource::HardwareCalibrated {
+            if let Some(ref dump) = self.calibrated_fb {
+                let dump_u32: &[u32] = unsafe {
+                    std::slice::from_raw_parts(
+                        dump.as_ptr() as *const u32,
+                        dump.len() / 4,
+                    )
+                };
+                let total = self.framebuffer.len().min(dump_u32.len());
+                match self.untile_mode {
+                    UntileMode::XeniaMorton => {
+                        for (linear_idx, &tiled_idx) in self.untile_lut_xenia.iter().enumerate() {
+                            if linear_idx < total && tiled_idx < dump_u32.len() {
+                                let raw = dump_u32[tiled_idx];
+                                self.framebuffer[linear_idx] = decode_pixel(raw, self.color_swizzle);
+                            }
+                        }
+                    }
+                    UntileMode::XenosVariant0 => {
+                        for (linear_idx, &tiled_idx) in self.untile_lut_var0.iter().enumerate() {
+                            if linear_idx < total && tiled_idx < dump_u32.len() {
+                                let raw = dump_u32[tiled_idx];
+                                self.framebuffer[linear_idx] = decode_pixel(raw, self.color_swizzle);
+                            }
+                        }
+                    }
+                    UntileMode::Linear => {
+                        for linear_idx in 0..total {
+                            let raw = dump_u32[linear_idx];
+                            self.framebuffer[linear_idx] = decode_pixel(raw, self.color_swizzle);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
         if frontbuffer_addr == 0 {
             let len = self.framebuffer.len().min(gpu_color_buffer.len());
             self.framebuffer[..len].copy_from_slice(&gpu_color_buffer[..len]);
@@ -676,6 +754,31 @@ impl GpuDisplay {
         frontbuffer_addr: u64,
         _gpu_color_buffer: &[u32],
     ) {
+        if self.buffer_source == BufferSource::HardwareCalibrated {
+            if let Some(ref dump) = self.calibrated_fb {
+                let dump_u32: &[u32] = unsafe {
+                    std::slice::from_raw_parts(
+                        dump.as_ptr() as *const u32,
+                        dump.len() / 4,
+                    )
+                };
+                for (linear_idx, &tiled_idx) in self.untile_lut_var0.iter().enumerate() {
+                    if linear_idx < self.framebuffer.len() && tiled_idx < dump_u32.len() {
+                        let raw = dump_u32[tiled_idx];
+                        if raw != 0 {
+                            let c = decode_pixel(raw, self.color_swizzle);
+                            let bg = self.framebuffer[linear_idx];
+                            let r = (((c >> 16) & 0xFF) + ((bg >> 16) & 0xFF) * 2) / 3;
+                            let g = (((c >> 8) & 0xFF) + ((bg >> 8) & 0xFF) * 2) / 3;
+                            let b = ((c & 0xFF) + (bg & 0xFF) * 2) / 3;
+                            self.framebuffer[linear_idx] = (r << 16) | (g << 8) | b;
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
         if frontbuffer_addr == 0 {
             return;
         }

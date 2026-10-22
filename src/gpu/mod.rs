@@ -8,7 +8,8 @@ pub mod texture;
 pub mod xenos;
 
 pub use display::{
-    ColorSwizzle, DisplayMode, GpuDisplay, UntileMode, ViewMode, DISPLAY_HEIGHT, DISPLAY_WIDTH,
+    BufferSource, ColorSwizzle, DisplayMode, GpuDisplay, UntileMode, ViewMode, DISPLAY_HEIGHT,
+    DISPLAY_WIDTH,
 };
 pub use pm4::{
     build_draw_indexed, build_load_alu_constant, build_set_constant, build_set_context_reg,
