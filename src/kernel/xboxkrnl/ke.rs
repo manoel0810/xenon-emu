@@ -3,6 +3,9 @@
 use super::super::dispatcher::{KernelDispatcher, KernelEvent};
 use crate::memory::MemoryBus;
 
+/// Guest timebase frequency (mftb ticks per second), as reported by KeQueryPerformanceFrequency.
+pub(crate) const GUEST_TICK_FREQUENCY: u64 = 50_000_000;
+
 impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xboxkrnl_ke(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
@@ -125,15 +128,9 @@ impl KernelDispatcher {
             // 0x0088: KeReleaseSemaphore
             0x0088 => 1,
 
-            // 0x0083: KeQueryPerformanceFrequency (pFrequency)
-            0x0083 => {
-                if let Some(&p_freq) = args.first() {
-                    if p_freq != 0 {
-                        let _ = bus.write_u64(p_freq, 50_000_000);
-                    }
-                }
-                1 // TRUE
-            }
+            // 0x0083: KeQueryPerformanceFrequency() -> frequency. No arguments: it returns the guest timebase
+            // frequency, 50 MHz (Xenia Canary 451f9155, xboxkrnl_threading.cc: Clock::guest_tick_frequency()).
+            0x0083 => GUEST_TICK_FREQUENCY,
 
             // 0x0084: KeQuerySystemTime (pCurrentTime)
             0x0084 => {
@@ -276,5 +273,23 @@ impl KernelDispatcher {
 
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::kernel::KernelDispatcher;
+    use crate::memory::MemoryBus;
+
+    #[test]
+    fn query_performance_frequency_returns_50mhz_and_writes_nothing() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        // the dash's CP-interrupt handler calls it with r3 = 0x100 (leftover argument)
+        bus.write_u64(0x100, 0x1122_3344_5566_7788).unwrap();
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0083, &[0x100], &mut bus), 50_000_000);
+        assert_eq!(bus.read_u64(0x100).unwrap(), 0x1122_3344_5566_7788);
+        // the handler divides freq by the refresh rate before a divide-by-zero guard
+        assert_ne!(50_000_000u64 / 60, 0);
     }
 }

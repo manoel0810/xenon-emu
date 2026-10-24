@@ -128,6 +128,17 @@ Próximo passo: auditar o processamento dos indirect buffers dessas submissões 
 
 **Diagnóstico:** o CP não perde nada; o trabalho após o fence 0xB fica no caminho assíncrono da D3D, cuja continuação depende do handler de interrupção de CP, e esse handler cai num trap por causa da assinatura errada de `KeQueryPerformanceFrequency`. Elo ainda não verificado: que o handler `0x921A4D20` (ou o que ele dispara) seja quem submete o segmento pendente e zera `[dev+0x2B90]`.
 
+**Atualização 8 (2026-10-24, `KeQueryPerformanceFrequency` corrigido: sem argumento, devolve 50 MHz):** o handler de interrupção de CP `0x921A4D20` agora completa (passa da divisão com `r11 = 0xCB735`, chama o callback registrado `0x92182CD0`, volta a `0x921AFCD4` e limpa o bit da CPU em `0x921AFD04`). **Não destravou**: WPTR continua em 49 e o fence em `0xB`. O elo "o handler de CP submete o segmento pendente" era **falso**.
+
+Achados novos:
+
+- **`[dev+0x2B90]` não é um contador de pendências.** No código da D3D ele só é incrementado (`0x921B0F8C`, `0x921B1038`, `0x921B1064`, `0x921B1398`) e só é zerado na recuperação de GPU travada (`0x921B5FA0`, que também reescreve o fence como `issued − 2`). Com ele ≠ 0, os kicks seguintes vão para `0x921B0188`, que encadeia o IB num outro buffer (`r25`, provável system command buffer) em vez do ring. A submissão direta em `0x921B1064` faz `[dev+0x2B90] += r26`; o kick de present do fence `0xB` é o que o liga.
+- **`VdSwap` (xboxkrnl `0x025B`) está muito longe do Xenia.** A dash o chama uma vez (frame 1128, de `0x921A5E60`) com `buffer_ptr = 0x9010C640`, que fica **dentro do IB `0x1010C120`** (o do fence 5), e esse trecho está zerado. No Xenia (`xboxkrnl_video.cc`), `VdSwap(buffer_ptr, fetch_ptr, unk2, unk3 = buffer de VdGetSystemCommandBuffer, unk4, frontbuffer_ptr, texture_format_ptr, color_space_ptr, width, height)` escreve nos 64 dwords de `buffer_ptr`: Type-0 de `SHADER_CONSTANT_FETCH_00_0` (6 valores, com o endereço do frontbuffer convertido para físico), `XE_SWAP` (`0x64`, `kSwapSignature`, endereço físico, largura, altura) e NOPs Type-2. O nosso só conta o swap e guarda `args[0]` como frontbuffer; nosso CP lê os zeros como 32 escritas Type-0 no registrador 0 e o swap nunca acontece do lado da GPU.
+- **O frame loop chama `VdSwap` sozinho a cada frame** (`app/frame_loop.rs`, com `[frontbuffer, frame]`), fora da assinatura real.
+- **`mftb` é por thread** (`step_count × 50` em `cpu/ops/system.rs`): cada thread tem seu próprio relógio e as threads de callback começam em 0. O handler de CP compara `mftb` do callback com `[dev+0x423C]`, gravado pelo handler de VBlank em outra thread.
+
+Próximo passo proposto: `VdSwap` segundo o Xenia (escrever fetch + `XE_SWAP` + NOPs em `buffer_ptr`), CP executando `XE_SWAP` (swap + `counter_`), e remover a chamada sintética de `VdSwap` do frame loop; depois verificar se a D3D sai do modo `[dev+0x2B90]` e volta a escrever o WPTR. Também pendente: `mftb` global (timebase única).
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.
