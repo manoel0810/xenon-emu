@@ -164,6 +164,11 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico ao item 2 (411 / `7715` / fence `0x621`).
 
+## Depois da tabela PM4 real (fechamento da Fase 2, item 4)
+
+3000 frames: idêntico ao item 3 (411 / `7715` / fence `0x621`). A dash não emite nenhum dos opcodes que colidiam com os inventados.
+`XENON_PM4_LOG=1`, 1400 frames (6374 pacotes): Type-0 ×3283 (1 one-reg), `COND_WRITE` ×2560, `EVENT_WRITE_SHD` ×92, `WAIT_REG_MEM` ×74, `INDIRECT_BUFFER` ×69, `INVALIDATE_STATE` ×54, `DRAW_INDX_2` ×34 (+10 predicados), `NOP` ×33, `IM_LOAD_IMMEDIATE` ×32, `SET_BIN_MASK_LO` ×30, `SET_BIN_MASK_HI`/`SET_BIN_SELECT_LO`/`SET_BIN_SELECT_HI` ×20 cada, `REG_RMW` ×12, `XE_SWAP`/`INTERRUPT`/`EVENT_WRITE` ×10, `ME_INIT` ×1.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

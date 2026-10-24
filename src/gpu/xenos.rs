@@ -2,7 +2,7 @@ use crate::gpu::pm4::*;
 use crate::gpu::rasterizer::*;
 use crate::gpu::ring_buffer::RingBuffer;
 use crate::gpu::shader::{
-    create_default_xui_pixel_shader, create_default_xui_vertex_shader, PixelShader, VertexInput,
+    create_default_xui_pixel_shader, create_default_xui_vertex_shader, PixelShader,
     VertexShader,
 };
 use crate::gpu::texture::{Texture, TextureAtlas};
@@ -146,6 +146,10 @@ pub struct XenosGpu {
     pub last_swap: Option<(u32, u32, u32)>,
     pub draw_calls: u64,
     pub primitives_drawn: u64,
+    /// Bin mask/select for predicated Type-3 packets (Xenia CommandProcessor bin_mask_/bin_select_, both start at
+    /// 0xFFFFFFFF).
+    pub bin_mask: u64,
+    pub bin_select: u64,
 }
 
 impl XenosGpu {
@@ -187,6 +191,8 @@ impl XenosGpu {
             last_swap: None,
             draw_calls: 0,
             primitives_drawn: 0,
+            bin_mask: 0xFFFF_FFFF,
+            bin_select: 0xFFFF_FFFF,
         }
     }
 
@@ -230,14 +236,7 @@ impl XenosGpu {
 
             // Peek packet header to determine total packet size
             let header = ring.peek_words(bus, 1)?[0];
-            let ptype = (header >> 30) & 0x03;
-            let packet_dwords = match ptype {
-                PM4_TYPE_0 => (((header >> 16) & 0x3FFF) + 2) as usize,
-                PM4_TYPE_1 => 3,
-                PM4_TYPE_2 => 1,
-                PM4_TYPE_3 => (((header >> 16) & 0x3FFF) + 2) as usize,
-                _ => 1,
-            };
+            let packet_dwords = Pm4Packet::size_dwords(header);
 
             if pending < packet_dwords {
                 // Incomplete packet in ring buffer, wait for CPU
@@ -365,29 +364,29 @@ impl XenosGpu {
         }
     }
 
-    /// Dispatches execution of a single decoded PM4 packet
     /// One vertical blank (Xenia GraphicsSystem::MarkVblank): advances the GPU counter. The frame loop then calls
     /// the guest's interrupt callback with source 0.
     pub fn mark_vblank(&mut self) {
         self.gpu_counter = self.gpu_counter.wrapping_add(1);
     }
 
+    /// Executes one decoded PM4 packet (Xenia ExecutePacketType0..3; opcodes from xenos.h).
     pub fn execute_packet(&mut self, bus: &mut MemoryBus, packet: &Pm4Packet) -> Result<(), String> {
         if pm4_log_enabled() {
             match packet {
-                Pm4Packet::Type0 { base_reg, values, .. } => println!("  [PM4] T0 base=0x{:04X} n={} v0=0x{:08X}", base_reg, values.len(), values.first().copied().unwrap_or(0)),
+                Pm4Packet::Type0 { base_reg, one_reg, values } => println!("  [PM4] T0 base=0x{:04X}{} n={} v0=0x{:08X}", base_reg, if *one_reg { " one-reg" } else { "" }, values.len(), values.first().copied().unwrap_or(0)),
                 Pm4Packet::Type1 { reg1, val1, reg2, val2 } => println!("  [PM4] T1 0x{:04X}=0x{:08X} 0x{:04X}=0x{:08X}", reg1, val1, reg2, val2),
-                Pm4Packet::Type2Nop { .. } => {}
-                Pm4Packet::Type3 { opcode, data, .. } => {
+                Pm4Packet::Type2Nop => {}
+                Pm4Packet::Type3 { opcode, predicated, data } => {
                     let shown: Vec<String> = data.iter().take(8).map(|d| format!("{:08X}", d)).collect();
-                    println!("  [PM4] T3 op=0x{:02X} ({}) n={} data=[{}]", opcode, Pm4Packet::opcode_name(*opcode), data.len(), shown.join(" "));
+                    println!("  [PM4] T3 op=0x{:02X} ({}){} n={} data=[{}]", opcode, Pm4Packet::opcode_name(*opcode), if *predicated { " pred" } else { "" }, data.len(), shown.join(" "));
                 }
             }
         }
         match packet {
-            Pm4Packet::Type0 { base_reg, values, .. } => {
+            Pm4Packet::Type0 { base_reg, one_reg, values } => {
                 for (i, &val) in values.iter().enumerate() {
-                    let reg = base_reg + i as u32;
+                    let reg = if *one_reg { *base_reg } else { base_reg + i as u32 };
                     self.write_register(reg, val, bus);
                 }
             }
@@ -395,105 +394,48 @@ impl XenosGpu {
                 self.write_register(*reg1, *val1, bus);
                 self.write_register(*reg2, *val2, bus);
             }
-            Pm4Packet::Type2Nop { .. } => {
-                // No-op
-            }
-            Pm4Packet::Type3 { opcode, data, .. } => {
+            Pm4Packet::Type2Nop => {}
+            Pm4Packet::Type3 { opcode, predicated, data } => {
                 *self.real_opcode_counts.entry(*opcode).or_insert(0) += 1;
+                // Predicated packets run only if a selected bin is enabled; predicated swaps never run.
+                if *predicated && ((self.bin_select & self.bin_mask) == 0 || *opcode == PM4_XE_SWAP) {
+                    return Ok(());
+                }
+                let word = |i: usize| data.get(i).copied().unwrap_or(0);
                 match *opcode {
-                    PM4_SET_CONSTANT if data.len() == 3 => {
-                        // Real opcode 0x21 = REG_RMW: reg = data[0] & 0x1FFF, new = (old & and_mask) | or_mask
+                    PM4_ME_INIT | PM4_NOP | PM4_WAIT_FOR_IDLE | PM4_WAIT_IB_PFD_COMPLETE | PM4_CONTEXT_UPDATE => {}
+                    PM4_INDIRECT_BUFFER | PM4_INDIRECT_BUFFER_PFD => {
+                        // [list_ptr, list_length]; length in dwords, 20 bits
+                        let ib_addr = word(0) as u64;
+                        let ib_count = (word(1) & 0xF_FFFF) as usize;
+                        if ib_addr != 0 && ib_count > 0 {
+                            let mut words = Vec::with_capacity(ib_count);
+                            for i in 0..ib_count {
+                                if let Ok(w) = bus.read_u32(ib_addr + (i * 4) as u64) {
+                                    words.push(w);
+                                }
+                            }
+                            let mut cur = 0;
+                            while cur < words.len() {
+                                match Pm4Packet::decode(&words[cur..]) {
+                                    Ok((sub_pkt, consumed)) => {
+                                        self.execute_packet(bus, &sub_pkt)?;
+                                        self.packets_executed += 1;
+                                        cur += consumed;
+                                    }
+                                    Err(_) => cur += 1,
+                                }
+                            }
+                        }
+                    }
+                    PM4_REG_RMW if data.len() >= 3 => {
+                        // reg = data[0] & 0x1FFF, new = (old & and_mask) | or_mask
                         let reg = data[0] & 0x1FFF;
                         let old = bus.gpu_regs.get(reg);
-                        let and_mask = data[1];
-                        let or_mask = data[2];
-                        self.write_register(reg, (old & and_mask) | or_mask, bus);
-                    }
-                    PM4_SET_CONSTANT => {
-                        if data.len() >= 5 {
-                            let reg_idx = data[0] as usize;
-                            if reg_idx < 256 {
-                                self.alu_constants[reg_idx] = [
-                                    f32::from_bits(data[1]),
-                                    f32::from_bits(data[2]),
-                                    f32::from_bits(data[3]),
-                                    f32::from_bits(data[4]),
-                                ];
-                            }
-                        }
-                    }
-                    PM4_SET_CONTEXT_REG => {
-                        if data.len() >= 2 {
-                            let reg = data[0] + 0x2000;
-                            let val = data[1];
-                            self.write_register(reg, val, bus);
-
-                            match reg {
-                                SQ_VS_PROGRAM_ADDR => {
-                                    let addr = val as u64;
-                                    if addr > 0x1000 {
-                                        let mut code = Vec::new();
-                                        for i in 0..32 {
-                                            if let Ok(w) = bus.read_u32(addr + (i * 4) as u64) {
-                                                code.push(w);
-                                            }
-                                        }
-                                        if !code.is_empty() {
-                                            self.current_vs = Some(VertexShader::decode_bytecode("GuestVS", &code));
-                                        }
-                                    }
-                                }
-                                SQ_PS_PROGRAM_ADDR => {
-                                    let addr = val as u64;
-                                    if addr > 0x1000 {
-                                        let mut ps = PixelShader::new("GuestPS");
-                                        let mut code = Vec::new();
-                                        for i in 0..32 {
-                                            if let Ok(w) = bus.read_u32(addr + (i * 4) as u64) {
-                                                code.push(w);
-                                            }
-                                        }
-                                        ps.raw_bytecode = code;
-                                        self.current_ps = Some(ps);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    PM4_LOAD_ALU_CONSTANT => {
-                        if !data.is_empty() {
-                            let start_idx = data[0] as usize;
-                            let vectors_data = &data[1..];
-                            for (i, chunk) in vectors_data.chunks_exact(4).enumerate() {
-                                let c_idx = start_idx + i;
-                                if c_idx < 256 {
-                                    self.alu_constants[c_idx] = [
-                                        f32::from_bits(chunk[0]),
-                                        f32::from_bits(chunk[1]),
-                                        f32::from_bits(chunk[2]),
-                                        f32::from_bits(chunk[3]),
-                                    ];
-                                }
-                            }
-                        }
-                    }
-                    PM4_DRAW_INDX | PM4_DRAW_INDX_2 => {
-                        self.draw_calls += 1;
-                        self.execute_draw_indexed(bus, data)?;
-                    }
-                    PM4_WAIT_FOR_IDLE => {
-                        // Pipeline flush
-                    }
-                    PM4_MEM_WRITE => {
-                        if data.len() >= 2 {
-                            let dest_addr = data[0] as u64;
-                            let val = data[1];
-                            bus.write_u32(dest_addr, val)?;
-                        }
+                        self.write_register(reg, (old & data[1]) | data[2], bus);
                     }
                     PM4_WAIT_REG_MEM => {
-                        // Real layout (xenia command_processor.cc): [wait_info, poll_reg_or_addr, reference, mask, wait_interval]
+                        // [wait_info, poll_reg_or_addr, reference, mask, wait_interval]
                         if data.len() >= 4 {
                             let wait_info = data[0];
                             let poll_addr = data[1];
@@ -533,38 +475,13 @@ impl XenosGpu {
                                 }
                             }
                         }
-                    }                    PM4_ME_INIT => {
-                        // Micro-engine initialization
                     }
-                    PM4_EXECUTE_INDIRECT => {
+                    PM4_MEM_WRITE => {
                         if data.len() >= 2 {
-                            let ib_addr = data[0] as u64;
-                            let ib_count = data[1] as usize;
-                            if ib_addr != 0 && ib_count > 0 {
-                                let mut words = Vec::with_capacity(ib_count);
-                                for i in 0..ib_count {
-                                    if let Ok(w) = bus.read_u32(ib_addr + (i * 4) as u64) {
-                                        words.push(w);
-                                    }
-                                }
-                                let mut cur = 0;
-                                while cur < words.len() {
-                                    match Pm4Packet::decode(&words[cur..]) {
-                                        Ok((sub_pkt, consumed)) => {
-                                            self.execute_packet(bus, &sub_pkt)?;
-                                            self.packets_executed += 1;
-                                            cur += consumed;
-                                        }
-                                        Err(_) => {
-                                            cur += 1;
-                                        }
-                                    }
-                                }
-                            }
+                            bus.write_u32((data[0] & !3) as u64, data[1])?;
                         }
                     }
-                    // ---- Real Xenos opcodes (values from xenia xenos.h), emitted by the dash''s Direct3D driver ----
-                    0x58 => {
+                    PM4_EVENT_WRITE_SHD => {
                         // EVENT_WRITE_SHD: [initiator, address, value]. Low 2 address bits = endianness of the stored word.
                         if data.len() >= 3 {
                             let initiator = data[0];
@@ -579,11 +496,11 @@ impl XenosGpu {
                             let _ = bus.write_u32(dst, stored);
                         }
                     }
-                    0x46 => {
+                    PM4_EVENT_WRITE => {
                         // EVENT_WRITE: [initiator] (+ optional address, unused by the dash)
                         if let Some(&init) = data.first() { bus.gpu_regs.set(0x21F9, init & 0x3F); }
                     }
-                    0x45 => {
+                    PM4_COND_WRITE => {
                         // COND_WRITE: [wait_info, poll_addr, reference, mask, write_addr, write_data]
                         if data.len() >= 6 {
                             let wait_info = data[0];
@@ -600,17 +517,17 @@ impl XenosGpu {
                             }
                         }
                     }
-                    0x54 => {
+                    PM4_INTERRUPT => {
                         // INTERRUPT: [cpu_mask]; one CP interrupt (callback source 1) per set bit 0..5
                         // (Xenia ExecutePacketType3_INTERRUPT -> DispatchInterruptCallback(1, n)).
-                        let cpu_mask = data.first().copied().unwrap_or(0);
+                        let cpu_mask = word(0);
                         for n in 0..6 {
                             if cpu_mask & (1 << n) != 0 {
                                 self.pending_cp_interrupts.push(n);
                             }
                         }
                     }
-                    0x64 => {
+                    PM4_XE_SWAP => {
                         // XE_SWAP (Xenia ExecutePacketType3_XE_SWAP): [signature 'SWAP', frontbuffer physical, width,
                         // height, ...]; issues the swap and advances the GPU counter.
                         if data.first() == Some(&crate::kernel::video::SWAP_SIGNATURE) && data.len() >= 4 {
@@ -619,263 +536,57 @@ impl XenosGpu {
                         }
                         self.gpu_counter = self.gpu_counter.wrapping_add(1);
                     }
-                    0x36 | 0x35 => {
-                        // DRAW_INDX_2 / DRAW_INDX_2_BIN: [VGT_DRAW_INITIATOR, (indices...)]. Counted; Xenos microcode shaders are not rasterised yet.
+                    PM4_DRAW_INDX | PM4_DRAW_INDX_2 | PM4_DRAW_INDX_BIN | PM4_DRAW_INDX_2_BIN => {
+                        // Counted; Xenos microcode shaders are not rasterised yet (Phase 4).
                         self.real_draws += 1;
                     }
-                    0x22 | 0x34 => {
-                        // DRAW_INDX / DRAW_INDX_BIN: [viz_query, VGT_DRAW_INITIATOR, ...]
-                        self.real_draws += 1;
+                    PM4_SET_CONSTANT => {
+                        // [offset_type, values...]: index = bits 0..10, type = bits 16..23
+                        let offset_type = word(0);
+                        if let Some(base) = constant_register_base((offset_type >> 16) & 0xFF) {
+                            let first = base + (offset_type & 0x7FF);
+                            for (i, &v) in data.iter().skip(1).enumerate() {
+                                self.write_register(first + i as u32, v, bus);
+                            }
+                        }
                     }
-                    0x2B | 0x27 | 0x3B | 0x4A | 0x4B | 0x50 | 0x51 | 0x60 | 0x61 | 0x62 | 0x63 | 0x5E | 0x5D | 0x5C | 0x2E | 0x2C | 0x25 | 0x26 | 0x23 | 0x59 | 0x5A | 0x5B => {
-                        // IM_LOAD_IMMEDIATE / IM_LOAD / INVALIDATE_STATE / SET_SHADER_BASES / SET_BIN_* / CONTEXT_UPDATE / WAIT_* /
-                        // LOAD_CONSTANT_CONTEXT / IM_STORE / SET_STATE / WAIT_FOR_IDLE / VIZ_QUERY / EVENT_WRITE_CFL|EXT|ZPD:
-                        // state-only or synchronisation packets with no observable effect for this software GPU.
+                    PM4_SET_CONSTANT2 | PM4_SET_SHADER_CONSTANTS => {
+                        // [offset_type, values...]: register index = low 16 bits
+                        let first = word(0) & 0xFFFF;
+                        for (i, &v) in data.iter().skip(1).enumerate() {
+                            self.write_register(first + i as u32, v, bus);
+                        }
+                    }
+                    PM4_LOAD_ALU_CONSTANT => {
+                        // [address (physical), offset_type, size_dwords]: registers loaded from memory
+                        let address = (word(0) & 0x3FFF_FFFF) as u64;
+                        let offset_type = word(1);
+                        let size = word(2) & 0xFFF;
+                        if let Some(base) = constant_register_base((offset_type >> 16) & 0xFF) {
+                            let first = base + (offset_type & 0x7FF);
+                            for i in 0..size {
+                                let v = bus.read_u32(address + 4 * i as u64).unwrap_or(0);
+                                self.write_register(first + i, v, bus);
+                            }
+                        }
+                    }
+                    PM4_SET_BIN_MASK_LO => self.bin_mask = (self.bin_mask & !0xFFFF_FFFF) | word(0) as u64,
+                    PM4_SET_BIN_MASK_HI => self.bin_mask = (self.bin_mask & 0xFFFF_FFFF) | (word(0) as u64) << 32,
+                    PM4_SET_BIN_SELECT_LO => self.bin_select = (self.bin_select & !0xFFFF_FFFF) | word(0) as u64,
+                    PM4_SET_BIN_SELECT_HI => self.bin_select = (self.bin_select & 0xFFFF_FFFF) | (word(0) as u64) << 32,
+                    PM4_SET_BIN_MASK => self.bin_mask = (word(0) as u64) << 32 | word(1) as u64,
+                    PM4_SET_BIN_SELECT => self.bin_select = (word(0) as u64) << 32 | word(1) as u64,
+                    PM4_IM_LOAD | PM4_IM_LOAD_IMMEDIATE | PM4_INVALIDATE_STATE | PM4_VIZ_QUERY | PM4_EVENT_WRITE_EXT
+                    | PM4_EVENT_WRITE_ZPD | PM4_REG_TO_MEM => {
+                        // Implemented by Xenia but with no effect yet on this software GPU (shader upload, viz queries,
+                        // extents, z-pass counts, register readback: Phase 4 / closing items).
                     }
                     _ => {
-                        // Unhandled opcode
+                        // Unimplemented in Xenia too (HitUnimplementedOpcode); counted in real_opcode_counts.
                     }
                 }
             }
         }
-        Ok(())
-    }
-
-    /// Executes an indexed draw call by reading indices, streaming vertices (via VGT DMA if configured),
-    /// executing vertex/pixel shaders, and rasterizing triangles with optional bilinear texture filtering.
-    fn execute_draw_indexed(&mut self, bus: &MemoryBus, data: &[u32]) -> Result<(), String> {
-        if data.len() < 3 {
-            return Ok(());
-        }
-
-        let prim_type = data[0];
-        let num_indices = data[1] as usize;
-        let index_ptr = data[2] as u64;
-
-        if num_indices == 0 || index_ptr == 0 {
-            return Ok(());
-        }
-
-        // Read 16-bit indices from guest memory
-        let mut indices = Vec::with_capacity(num_indices);
-        for i in 0..num_indices {
-            let addr = index_ptr + (i * 2) as u64;
-            let b0 = bus.read_u8(addr)?;
-            let b1 = bus.read_u8(addr + 1)?;
-            let idx = ((b0 as u16) << 8) | (b1 as u16);
-            indices.push(idx);
-        }
-
-        let vs = self.current_vs.as_ref().unwrap_or(&self.default_vs);
-
-        // Determine vertex inputs: Stream from VGT DMA buffer in guest RAM or fallback to default quad
-        let raw_inputs: Vec<VertexInput> = if self.vgt_dma_base > 0x1000 {
-            let count = if self.vgt_dma_count > 0 {
-                self.vgt_dma_count
-            } else {
-                (indices.iter().max().copied().unwrap_or(0) as usize) + 1
-            };
-            let stride = if self.vgt_dma_stride >= 16 {
-                self.vgt_dma_stride
-            } else {
-                24
-            };
-
-            let mut inputs = Vec::with_capacity(count);
-            for i in 0..count {
-                let v_addr = self.vgt_dma_base + (i * stride) as u64;
-                let px = f32::from_bits(bus.read_u32(v_addr).unwrap_or(0));
-                let py = f32::from_bits(bus.read_u32(v_addr + 4).unwrap_or(0));
-                let pz = f32::from_bits(bus.read_u32(v_addr + 8).unwrap_or(0));
-
-                let color_val = bus.read_u32(v_addr + 12).unwrap_or(0xFFFFFFFF);
-                let ca = ((color_val >> 24) & 0xFF) as f32 / 255.0;
-                let cr = ((color_val >> 16) & 0xFF) as f32 / 255.0;
-                let cg = ((color_val >> 8) & 0xFF) as f32 / 255.0;
-                let cb = (color_val & 0xFF) as f32 / 255.0;
-
-                let (u, v) = if stride >= 24 {
-                    let u_val = f32::from_bits(bus.read_u32(v_addr + 16).unwrap_or(0));
-                    let v_val = f32::from_bits(bus.read_u32(v_addr + 20).unwrap_or(0));
-                    (u_val, v_val)
-                } else {
-                    (0.0, 0.0)
-                };
-
-                inputs.push(VertexInput {
-                    position: [px, py, pz, 1.0],
-                    color: [cr, cg, cb, ca],
-                    uv: [u, v],
-                    normal: [0.0, 0.0, 1.0],
-                });
-            }
-            inputs
-        } else {
-            vec![
-                VertexInput {
-                    position: [380.0, 150.0, 0.0, 1.0],
-                    color: [0.165, 0.549, 0.165, 1.0], // 0xFF2A8C2A
-                    uv: [0.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                },
-                VertexInput {
-                    position: [1180.0, 150.0, 0.0, 1.0],
-                    color: [0.106, 0.420, 0.106, 1.0], // 0xFF1B6B1B
-                    uv: [1.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                },
-                VertexInput {
-                    position: [1180.0, 250.0, 0.0, 1.0],
-                    color: [0.051, 0.231, 0.051, 1.0], // 0xFF0D3B0D
-                    uv: [1.0, 1.0],
-                    normal: [0.0, 0.0, 1.0],
-                },
-                VertexInput {
-                    position: [380.0, 250.0, 0.0, 1.0],
-                    color: [0.051, 0.231, 0.051, 1.0], // 0xFF0D3B0D
-                    uv: [0.0, 1.0],
-                    normal: [0.0, 0.0, 1.0],
-                },
-            ]
-        };
-
-        if raw_inputs.is_empty() {
-            return Ok(());
-        }
-
-        // Execute Vertex Shader for all vertices
-        let mut vertices = Vec::with_capacity(raw_inputs.len());
-        for v_in in &raw_inputs {
-            let v_out = vs.execute(
-                v_in,
-                &self.alu_constants,
-                self.vport_xscale,
-                self.vport_yscale,
-                self.vport_xoffset,
-                self.vport_yoffset,
-            );
-
-            let ca = (v_out.color[3].clamp(0.0, 1.0) * 255.0) as u32;
-            let cr = (v_out.color[0].clamp(0.0, 1.0) * 255.0) as u32;
-            let cg = (v_out.color[1].clamp(0.0, 1.0) * 255.0) as u32;
-            let cb = (v_out.color[2].clamp(0.0, 1.0) * 255.0) as u32;
-            let color = (ca << 24) | (cr << 16) | (cg << 8) | cb;
-
-            vertices.push(Vertex {
-                x: v_out.screen_x,
-                y: v_out.screen_y,
-                z: v_out.clip_pos[2],
-                color,
-                u: v_out.uv[0],
-                v: v_out.uv[1],
-            });
-        }
-
-        let active_tex = self.samplers[0].as_ref();
-        let mut tris_count = 0;
-
-        match prim_type {
-            // D3DPT_TRIANGLELIST (0x04)
-            0x04 => {
-                for chunk in indices.chunks_exact(3) {
-                    let (i0, i1, i2) = (
-                        chunk[0] as usize % vertices.len(),
-                        chunk[1] as usize % vertices.len(),
-                        chunk[2] as usize % vertices.len(),
-                    );
-                    let v0 = &vertices[i0];
-                    let v1 = &vertices[i1];
-                    let v2 = &vertices[i2];
-                    rasterize_triangle_textured(
-                        &mut self.color_buffer,
-                        XENOS_WIDTH,
-                        XENOS_HEIGHT,
-                        v0,
-                        v1,
-                        v2,
-                        active_tex,
-                    );
-                    tris_count += 1;
-                }
-            }
-            // D3DPT_TRIANGLESTRIP (0x05)
-            0x05 => {
-                for i in 2..indices.len() {
-                    let (i0, i1, i2) = if i % 2 == 0 {
-                        (
-                            indices[i - 2] as usize % vertices.len(),
-                            indices[i - 1] as usize % vertices.len(),
-                            indices[i] as usize % vertices.len(),
-                        )
-                    } else {
-                        (
-                            indices[i - 1] as usize % vertices.len(),
-                            indices[i - 2] as usize % vertices.len(),
-                            indices[i] as usize % vertices.len(),
-                        )
-                    };
-                    let v0 = &vertices[i0];
-                    let v1 = &vertices[i1];
-                    let v2 = &vertices[i2];
-                    rasterize_triangle_textured(
-                        &mut self.color_buffer,
-                        XENOS_WIDTH,
-                        XENOS_HEIGHT,
-                        v0,
-                        v1,
-                        v2,
-                        active_tex,
-                    );
-                    tris_count += 1;
-                }
-            }
-            // D3DPT_TRIANGLEFAN (0x06)
-            0x06 => {
-                for i in 1..indices.len().saturating_sub(1) {
-                    let i0 = indices[0] as usize % vertices.len();
-                    let i1 = indices[i] as usize % vertices.len();
-                    let i2 = indices[i + 1] as usize % vertices.len();
-                    let v0 = &vertices[i0];
-                    let v1 = &vertices[i1];
-                    let v2 = &vertices[i2];
-                    rasterize_triangle_textured(
-                        &mut self.color_buffer,
-                        XENOS_WIDTH,
-                        XENOS_HEIGHT,
-                        v0,
-                        v1,
-                        v2,
-                        active_tex,
-                    );
-                    tris_count += 1;
-                }
-            }
-            _ => {
-                // Fallback for default indexed list
-                for chunk in indices.chunks_exact(3) {
-                    let (i0, i1, i2) = (
-                        chunk[0] as usize % vertices.len(),
-                        chunk[1] as usize % vertices.len(),
-                        chunk[2] as usize % vertices.len(),
-                    );
-                    let v0 = &vertices[i0];
-                    let v1 = &vertices[i1];
-                    let v2 = &vertices[i2];
-                    rasterize_triangle_textured(
-                        &mut self.color_buffer,
-                        XENOS_WIDTH,
-                        XENOS_HEIGHT,
-                        v0,
-                        v1,
-                        v2,
-                        active_tex,
-                    );
-                    tris_count += 1;
-                }
-            }
-        }
-
-        self.primitives_drawn += tris_count;
         Ok(())
     }
 
@@ -957,6 +668,18 @@ impl XenosGpu {
 
 
 /// XENON_PM4_LOG=1 prints every PM4 packet the Command Processor executes (cached after first call).
+/// First register of a SET_CONSTANT / LOAD_ALU_CONSTANT type (Xenia Write{ALU,Fetch,Bool,Loop,REGISTERS}Range*).
+fn constant_register_base(kind: u32) -> Option<u32> {
+    match kind {
+        0 => Some(0x4000), // ALU
+        1 => Some(0x4800), // FETCH
+        2 => Some(0x4900), // BOOL
+        3 => Some(0x4908), // LOOP
+        4 => Some(0x2000), // REGISTERS
+        _ => None,
+    }
+}
+
 fn pm4_log_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
@@ -968,7 +691,7 @@ mod cp_tests {
     use super::*;
 
     fn t3(opcode: u8, data: &[u32]) -> Pm4Packet {
-        Pm4Packet::Type3 { opcode, count: data.len(), data: data.to_vec() }
+        Pm4Packet::Type3 { opcode, predicated: false, data: data.to_vec() }
     }
 
     #[test]
@@ -987,7 +710,7 @@ mod cp_tests {
         let mut gpu = XenosGpu::new();
         let mut bus = MemoryBus::new();
         // Type-0: two registers from 0x2000 (a register outside the fixed MMIO ones)
-        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x2000, count: 2, values: vec![0x1234, 0x5678] }).unwrap();
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x2000, one_reg: false, values: vec![0x1234, 0x5678] }).unwrap();
         assert_eq!(bus.read_u32(0x7FC8_0000 + 0x2000 * 4).unwrap(), 0x1234);
         assert_eq!(bus.read_u32(0x7FC8_0000 + 0x2001 * 4).unwrap(), 0x5678);
         // a CPU MMIO store is what REG_RMW (0x21) reads back: (old & and) | or
@@ -995,6 +718,56 @@ mod cp_tests {
         gpu.execute_packet(&mut bus, &t3(0x21, &[0x0200, 0x0F00, 0x0003])).unwrap();
         assert_eq!(bus.gpu_regs.get(0x0200), 0x0F03);
         assert_eq!(bus.read_u32(0x7FC8_0800).unwrap(), 0x0F03);
+    }
+
+    #[test]
+    fn type0_one_reg_writes_every_value_to_the_base_register() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x2100, one_reg: true, values: vec![1, 2, 3] }).unwrap();
+        assert_eq!((bus.gpu_regs.get(0x2100), bus.gpu_regs.get(0x2101)), (3, 0));
+    }
+
+    #[test]
+    fn predicated_packets_follow_bin_select_and_mask() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        let pred = |opcode: u8, data: &[u32]| Pm4Packet::Type3 { opcode, predicated: true, data: data.to_vec() };
+        // default mask/select 0xFFFFFFFF: predicated INTERRUPT runs, predicated XE_SWAP never does
+        gpu.execute_packet(&mut bus, &pred(PM4_INTERRUPT, &[1])).unwrap();
+        gpu.execute_packet(&mut bus, &pred(PM4_XE_SWAP, &[0x5357_4150, 0, 1, 1])).unwrap();
+        assert_eq!((gpu.pending_cp_interrupts.len(), gpu.swaps, gpu.gpu_counter), (1, 0, 0));
+        // SET_BIN_SELECT (hi, lo) disjoint from the mask: skipped
+        gpu.execute_packet(&mut bus, &t3(PM4_SET_BIN_SELECT, &[1, 0])).unwrap();
+        assert_eq!(gpu.bin_select, 1 << 32);
+        gpu.execute_packet(&mut bus, &pred(PM4_INTERRUPT, &[1])).unwrap();
+        assert_eq!(gpu.pending_cp_interrupts.len(), 1);
+        gpu.execute_packet(&mut bus, &t3(PM4_SET_BIN_MASK_HI, &[1])).unwrap();
+        gpu.execute_packet(&mut bus, &pred(PM4_INTERRUPT, &[1])).unwrap();
+        assert_eq!(gpu.pending_cp_interrupts.len(), 2);
+    }
+
+    #[test]
+    fn constants_land_in_the_register_file() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        // SET_CONSTANT type 0 (ALU) index 8 -> 0x4008; type 1 (FETCH) index 2 -> 0x4802; type 4 -> 0x2000 + index
+        gpu.execute_packet(&mut bus, &t3(PM4_SET_CONSTANT, &[0x0000_0008, 0xA, 0xB])).unwrap();
+        gpu.execute_packet(&mut bus, &t3(PM4_SET_CONSTANT, &[0x0001_0002, 0xC])).unwrap();
+        gpu.execute_packet(&mut bus, &t3(PM4_SET_CONSTANT, &[0x0004_0081, 0xD])).unwrap();
+        assert_eq!((bus.gpu_regs.get(0x4008), bus.gpu_regs.get(0x4009), bus.gpu_regs.get(0x4802), bus.gpu_regs.get(0x2081)), (0xA, 0xB, 0xC, 0xD));
+        // LOAD_ALU_CONSTANT: [physical address, offset_type, size] -> registers from memory
+        bus.write_u32(0x0100_0000, 0x11).unwrap();
+        bus.write_u32(0x0100_0004, 0x22).unwrap();
+        gpu.execute_packet(&mut bus, &t3(PM4_LOAD_ALU_CONSTANT, &[0x0100_0000, 0x0000_0010, 2])).unwrap();
+        assert_eq!((bus.gpu_regs.get(0x4010), bus.gpu_regs.get(0x4011)), (0x11, 0x22));
+        // SET_CONSTANT2: register index in the low 16 bits
+        gpu.execute_packet(&mut bus, &t3(PM4_SET_CONSTANT2, &[0x0000_2300, 0xE])).unwrap();
+        assert_eq!(bus.gpu_regs.get(0x2300), 0xE);
+        // the old invented opcode 0x22 is DRAW_INDX: counted as a draw, writes no register
+        let before = bus.gpu_regs.non_zero().count();
+        gpu.execute_packet(&mut bus, &t3(PM4_DRAW_INDX, &[0x84, 0x1234])).unwrap();
+        assert_eq!((gpu.real_draws, bus.gpu_regs.non_zero().count()), (1, before));
     }
 
     #[test]
