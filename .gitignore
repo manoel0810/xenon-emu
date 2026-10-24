@@ -1,0 +1,38 @@
+# Build
+/target/
+/target_*/
+**/*.rs.bk
+*.pdb
+
+# Logs, traces e saídas de execução
+*.log
+*.err
+trace_out*.txt
+XENON_*
+
+# Dumps e imagens geradas pelo emulador
+*.raw
+*.bin
+*.bmp
+*.png
+
+# Dados proprietários da Microsoft / console (nunca versionar)
+*.xex
+*.xzp
+*.xur
+*.xus
+*.stfs
+cpukey.txt
+kv.bin
+nand*.bin
+$SystemUpdate/
+SystemUpdate_*/
+Corona*/
+extracted_xui/
+
+# Editor / SO
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
