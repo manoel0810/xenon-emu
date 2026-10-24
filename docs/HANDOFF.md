@@ -72,6 +72,10 @@ Próximo bloqueio, ainda no **frame 1175**: `Unimplemented opcode 31 xo 567 (ins
 
 Também divergente do Xenia (não corrigido): `VdQueryVideoFlags` (`0x01C9`) devolve 1; pelo mesmo modo deveria devolver 3 (widescreen | largura ≥ 1280).
 
+**Atualização 6 (2026-10-24, depois de `lfsux`/`lfdux`/`stfsux`/`stfdux` em `cpu/ops/loadstore.rs`):** **nenhum trap em 4000 frames.** A thread principal segue ativa (98,9 M passos), o frontbuffer volta a alternar e no frame 1176 a GPU recebe de uma vez 568 pacotes (total 746).
+
+**Bloqueio atual (é o da Fase 2):** a thread principal gira em `0x921A40B0` (laço quente `0x921A40D0..0x921A40EC`), chamada a partir do laço de fence (`LR = 0x921B0000`, faixa `0x921AFFF8..0x921B0020`). Cadeia: `0x921A61C0` ← `0x92187048` ← `0x9218585C` ← `0x921871F0` (retorno de `0x92185790`, o laço principal da aplicação chamado pelo `main`). Ou seja, agora a espera de fence acontece no caminho normal, não no shutdown. Histograma PM4 até o frame 1400: `0x10`×5, `0x21`×3, `0x2B`×5, `0x36`×26, `0x3B`×8, `0x3C`×10, `0x3F`×13, **`0x45` (COND_WRITE)×256**, `0x46`×1, `0x48`×1, `0x54` (INTERRUPT)×1, `0x58`×12, `0x60`×3, `0x61`..`0x63`×2; Type-0: 396. Próximo passo: instrumentar a condição do fence (`0x90102000`?) com watchpoint e conferir `COND_WRITE`, `EVENT_WRITE_SHD`, `INTERRUPT` e a entrega de interrupções contra o `command_processor.cc` do Xenia.
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.

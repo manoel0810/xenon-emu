@@ -289,7 +289,7 @@ impl Cpu {
         Ok(StepResult::Ok)
     }
 
-    /// Opcode 31, xo: 20 | 84 | 150 | 214 | 23 | 87 | 279 | 21 | 151 | 215 | 407 | 149 | 535 | 599 | 663 | 727 | 983 | 55 | 119 | 311 | 373 | 375 | 53 | 341 | 343 | 183 | 247 | 439 | 181 | 534 | 790 | 532 | 662 | 918 | 660.
+    /// Opcode 31, xo: 20 | 84 | 150 | 214 | 23 | 87 | 279 | 21 | 151 | 215 | 407 | 149 | 535 | 599 | 663 | 727 | 983 | 55 | 119 | 311 | 373 | 375 | 53 | 341 | 343 | 183 | 247 | 439 | 181 | 534 | 790 | 532 | 662 | 918 | 660 | 567 | 631 | 695 | 759.
     #[inline(always)]
     pub(in crate::cpu) fn exec_loadstore_x31(&mut self, bus: &mut MemoryBus, insn: u32, _pc: u64, xo: u32) -> Result<StepResult, String> {
         match xo {
@@ -452,6 +452,22 @@ impl Cpu {
                 bus.write_u64(ea, val)?;
             }
 
+            // 567: lfsux | 631: lfdux | 695: stfsux | 759: stfdux (indexed with update: EA = RA + RB, RA <- EA)
+            // Same conversions as lfsx/lfdx/stfsx/stfdx (Xenia ppc_emit_memory.cc InstrEmit_lfsux etc.).
+            567 | 631 | 695 | 759 => {
+                let fr = ((insn >> 21) & 0x1F) as usize;
+                let ra = ((insn >> 16) & 0x1F) as usize;
+                let rb = ((insn >> 11) & 0x1F) as usize;
+                let ea = self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]);
+                match xo {
+                    567 => self.regs.fpr[fr] = f32::from_bits(bus.read_u32(ea)?) as f64,
+                    631 => self.regs.fpr[fr] = f64::from_bits(bus.read_u64(ea)?),
+                    695 => bus.write_u32(ea, (self.regs.fpr[fr] as f32).to_bits())?,
+                    _ => bus.write_u64(ea, self.regs.fpr[fr].to_bits())?,
+                }
+                self.regs.gpr[ra] = ea;
+            }
+
             // 983: stfiwx (Store Floating-Point as Integer Word Indexed)
             983 => {
                 let frs = ((insn >> 21) & 0x1F) as usize;
@@ -533,5 +549,67 @@ impl Cpu {
         }
 
         Ok(StepResult::Ok)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cpu::{Cpu, StepResult};
+    use crate::memory::MemoryBus;
+
+    const CODE: u64 = 0x9200_0000;
+    const DATA: u64 = 0x9200_1000;
+
+    /// X-form opcode 31 instruction.
+    fn x31(rt: u32, ra: u32, rb: u32, xo: u32) -> u32 {
+        (31 << 26) | (rt << 21) | (ra << 16) | (rb << 11) | (xo << 1)
+    }
+
+    /// Runs one instruction with r10 = DATA, r9 = offset.
+    fn run(bus: &mut MemoryBus, insn: u32, offset: u64, setup: impl FnOnce(&mut Cpu)) -> Cpu {
+        bus.write_u32(CODE, insn).unwrap();
+        let mut cpu = Cpu::new(CODE);
+        cpu.regs.gpr[10] = DATA;
+        cpu.regs.gpr[9] = offset;
+        setup(&mut cpu);
+        assert_eq!(cpu.step(bus), Ok(StepResult::Ok));
+        cpu
+    }
+
+    #[test]
+    fn lfsux_loads_single_as_double_and_updates_ra() {
+        let mut bus = MemoryBus::new();
+        bus.write_u32(DATA + 0x20, 1.5f32.to_bits()).unwrap();
+        // the dash's instruction 0x7DAA4C6E: lfsux f13, r10, r9
+        assert_eq!(x31(13, 10, 9, 567), 0x7DAA_4C6E);
+        let cpu = run(&mut bus, 0x7DAA_4C6E, 0x20, |_| {});
+        assert_eq!(cpu.regs.fpr[13], 1.5);
+        assert_eq!(cpu.regs.gpr[10], DATA + 0x20);
+    }
+
+    #[test]
+    fn lfdux_loads_double_and_updates_ra() {
+        let mut bus = MemoryBus::new();
+        bus.write_u64(DATA + 0x18, (-0.1f64).to_bits()).unwrap();
+        let cpu = run(&mut bus, x31(2, 10, 9, 631), 0x18, |_| {});
+        assert_eq!(cpu.regs.fpr[2], -0.1);
+        assert_eq!(cpu.regs.gpr[10], DATA + 0x18);
+    }
+
+    #[test]
+    fn stfsux_stores_rounded_single_and_updates_ra() {
+        let mut bus = MemoryBus::new();
+        let cpu = run(&mut bus, x31(3, 10, 9, 695), 0x40, |c| c.regs.fpr[3] = 0.1f64);
+        assert_eq!(bus.read_u32(DATA + 0x40).unwrap(), 0.1f32.to_bits());
+        assert_eq!(cpu.regs.gpr[10], DATA + 0x40);
+    }
+
+    #[test]
+    fn stfdux_stores_double_and_updates_ra() {
+        let mut bus = MemoryBus::new();
+        // negative index: EA = RA + RB wraps like the other indexed forms
+        let cpu = run(&mut bus, x31(4, 10, 9, 759), (-8i64) as u64, |c| c.regs.fpr[4] = 1234.5678);
+        assert_eq!(bus.read_u64(DATA - 8).unwrap(), 1234.5678f64.to_bits());
+        assert_eq!(cpu.regs.gpr[10], DATA - 8);
     }
 }

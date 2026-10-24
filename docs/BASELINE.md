@@ -142,6 +142,10 @@ O `main` não retorna mais. Em 1500 frames a thread principal para no frame 1100
 
 4000 frames (~28 s headless): a thread principal para no frame 1175 com `Unimplemented opcode 31 xo 567 (insn=0x7DAA4C6E)` em `0x921BE5A0` (`lfsux`). PM4 igual ao anterior (último no frame 1175, total 178, 0 draws); frontbuffer `0x90314000`.
 
+## Depois de lfsux/lfdux/stfsux/stfdux (Fase 2, 2026-10-24)
+
+4000 frames (~34 s headless): **sem trap**. Thread principal ativa no fim (`PC 0x921A413C`, 98 895 764 passos), girando em `0x921A40B0` (espera de fence chamada do laço principal da aplicação). PM4: frame 1176 com 568 pacotes, total 746; histograma até o frame 1400 em `HANDOFF.md`.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:
