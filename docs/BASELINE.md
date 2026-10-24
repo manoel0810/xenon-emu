@@ -124,6 +124,16 @@ GPU: [GPU CP] Frame 00267 | Processed 2 PM4 packets (Total: 120, Draw Calls: 0, 
 
 O `main` retorna `0x80004005` no frame 257.
 
+## Depois de RtlUnicodeToMultiByteN (Fase 2, 2026-10-24)
+
+```
+NO TRAP: primary thread did not stop within 400 frames.
+Primary at end: "Metro 17559 Primary Thread" | PC: 0x9281D7D4 | LR: 0x9281C518 | Steps: 8951503
+GPU: [GPU CP] Frame 00028 | Processed 3 PM4 packets (Total: 72, Draw Calls: 0, Primitives: 0) | WPTR: 25, RPTR: 25
+```
+
+O `main` não retorna mais. Em 1500 frames a thread principal para no frame 1100: `Unimplemented VMX128 vpkd3d128 (insn=0x1BE166D4)` em `0x9221FA28`.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

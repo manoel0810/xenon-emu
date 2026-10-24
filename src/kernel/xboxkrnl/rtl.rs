@@ -103,8 +103,8 @@ impl KernelDispatcher {
             // 0x0130: RtlLeaveCriticalSection
             0x0130 => 0,
 
-            // 0x0133: RtlMultiByteToUnicodeN
-            0x0133 => 0,
+            // 0x0133: RtlMultiByteToUnicodeN(dst, dst_len_bytes, written_ptr, src, src_len) - see kernel/strings.rs
+            0x0133 => strings::rtl_multibyte_to_unicode_n(bus, arg(0), arg(1) as u32, arg(2), arg(3), arg(4) as u32),
 
             // 0x0135: RtlNtStatusToDosError
             0x0135 => 0, // ERROR_SUCCESS
@@ -185,8 +185,8 @@ impl KernelDispatcher {
                 }
             }
 
-            // 0x0143: RtlUnicodeToMultiByteN
-            0x0143 => 0,
+            // 0x0143: RtlUnicodeToMultiByteN(dst, dst_len, written_ptr, src, src_len_bytes) - see kernel/strings.rs
+            0x0143 => strings::rtl_unicode_to_multibyte_n(bus, arg(0), arg(1) as u32, arg(2), arg(3), arg(4) as u32),
 
             // 0x0147: RtlUnwind
             0x0147 => 0,

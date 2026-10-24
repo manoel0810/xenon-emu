@@ -56,6 +56,12 @@ O laço de fence em `0x921AFFF8..0x921B0020` (fence `0x90102000`, valor 5) visto
 
 Próximo bloqueio, com evidência: **todas** as chamadas de `XexGetModuleSection` (frames 85, 104, 122, 127, 128 e 217) retornam `X_STATUS_NOT_FOUND`, porque o nome da seção chega como lixo. A dash separa o locator em `0x922192C0` (handle em hex até a `,`, por `0x92219180`) e converte o nome wide para narrow em `0x92219218` → `0x92192B60` (`WideCharToMultiByte`) → **`RtlUnicodeToMultiByteN` (xboxkrnl `0x0143`), que é um stub `=> 0`** (não escreve nada). O inverso `RtlMultiByteToUnicodeN` (`0x0133`) também é stub. Referência: Xenia `xboxkrnl_rtl.cc`.
 
+**Atualização 3 (2026-10-24, depois de `RtlUnicodeToMultiByteN`/`RtlMultiByteToUnicodeN`):** `XexGetModuleSection` passa a achar as seções (retorna 0 nos frames 85, 162, 186, 301...), a skin carrega e **o `main` deixa de retornar**. A dash executa a inicialização real por cerca de 1100 frames (1500 frames levam ~13 s headless).
+
+Próximo bloqueio: no **frame 1100** a thread principal para em `0x9221FA28` com `Unimplemented VMX128 vpkd3d128 (insn=0x1BE166D4)`. Em `cpu/ops/vmx.rs`, `vpkd3d128` não tem nenhuma variante implementada (só existe `vupkd3d128` tipos 0, 1, 3, 4, 5). Referência: Xenia `src/xenia/cpu/ppc/ppc_emit_altivec.cc` (`InstrEmit_vpkd3d128`) e o encoding VX128_4 em `ppc_instr.h`.
+
+Observação: com a dash seguindo o caminho normal, o PM4 para no frame 28 (72 pacotes). Os 120 pacotes e os 24 `DRAW_INDX_2` da baseline vinham do **caminho de erro/shutdown** (frames 216..255), não da inicialização normal. A thread 0x3 continua girando em `RtlEnterCriticalSection`/`RtlLeaveCriticalSection` (`0x0125`/`0x0130`) e `0x00F4` (esperas não bloqueantes, Fase 3).
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.

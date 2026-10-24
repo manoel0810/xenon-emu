@@ -687,6 +687,39 @@ pub fn vscwprintf(mem: &mut dyn GuestMem, fmt: u64, args: &mut dyn ArgSource) ->
     ret(format_core(mem, fmt, true, args, &mut out))
 }
 
+// ---- code page conversion (Xenia xboxkrnl_rtl.cc, same commit) ----
+// Xenia marks both as "sketchy": a plain Latin-1 mapping, no NUL terminator, always STATUS_SUCCESS.
+
+/// RtlUnicodeToMultiByteN(dst, dst_len, written_ptr, src, src_len_bytes): copies min(src_len / 2, dst_len)
+/// characters; characters >= 0x100 become '?'. `written_ptr` (if non-NULL) receives the byte count.
+pub fn rtl_unicode_to_multibyte_n(mem: &mut dyn GuestMem, dst: u64, dst_len: u32, written_ptr: u64, src: u64, src_len: u32) -> u64 {
+    let (dst, src) = (dst & 0xFFFF_FFFF, src & 0xFFFF_FFFF);
+    let copy_len = (src_len >> 1).min(dst_len);
+    for i in 0..copy_len as u64 {
+        let c = mem.read_u16(src + 2 * i);
+        mem.write_u8(dst + i, if c < 256 { c as u8 } else { b'?' });
+    }
+    if written_ptr & 0xFFFF_FFFF != 0 {
+        mem.write_u32(written_ptr & 0xFFFF_FFFF, copy_len);
+    }
+    0
+}
+
+/// RtlMultiByteToUnicodeN(dst, dst_len_bytes, written_ptr, src, src_len): copies min(dst_len / 2, src_len)
+/// bytes as UTF-16 code units. `written_ptr` (if non-NULL) receives the byte count written.
+pub fn rtl_multibyte_to_unicode_n(mem: &mut dyn GuestMem, dst: u64, dst_len: u32, written_ptr: u64, src: u64, src_len: u32) -> u64 {
+    let (dst, src) = (dst & 0xFFFF_FFFF, src & 0xFFFF_FFFF);
+    let copy_len = (dst_len >> 1).min(src_len);
+    for i in 0..copy_len as u64 {
+        let b = mem.read_u8(src + i);
+        mem.write_u16(dst + 2 * i, b as u16);
+    }
+    if written_ptr & 0xFFFF_FFFF != 0 {
+        mem.write_u32(written_ptr & 0xFFFF_FFFF, copy_len << 1);
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +858,35 @@ mod tests {
         let mut m = Mem::default();
         let (s, r) = fmt_n(&mut m, "abc%n!", &[0x5000]);
         assert_eq!((s.as_str(), r, m.read_u32(0x5000)), ("abc!", 4, 3));
+    }
+
+    #[test]
+    fn unicode_to_multibyte() {
+        let mut m = Mem::default();
+        m.put_wstr(S2, "dashuisk\u{263A}");
+        for i in 0..12 { m.write_u8(BUF + i, 0xEE); }
+        // the dash's section name: 8 characters, byte length 16, exact-size buffer
+        assert_eq!(rtl_unicode_to_multibyte_n(&mut m, BUF, 8, 0x5000, S2, 16), 0);
+        assert_eq!((m.read_u32(0x5000), m.read_u8(BUF + 7), m.read_u8(BUF + 8)), (8, b'k', 0xEE)); // no NUL written
+        // characters >= 0x100 become '?'; source length in bytes is halved
+        assert_eq!(rtl_unicode_to_multibyte_n(&mut m, BUF, 64, 0x5000, S2, 18), 0);
+        assert_eq!((m.read_u32(0x5000), m.read_u8(BUF + 8)), (9, b'?'));
+        // destination smaller than the source: truncated to dst_len; NULL written_ptr is allowed
+        assert_eq!(rtl_unicode_to_multibyte_n(&mut m, BUF, 4, 0, S2, 18), 0);
+        assert_eq!(m.read_u8(BUF + 3), b'h');
+    }
+
+    #[test]
+    fn multibyte_to_unicode() {
+        let mut m = Mem::default();
+        m.put_str(S1, "xam\u{e9}"); // UTF-8 bytes: 'x' 'a' 'm' 0xC3 0xA9 (copied byte by byte)
+        assert_eq!(rtl_multibyte_to_unicode_n(&mut m, BUF, 64, 0x5000, S1, 5), 0);
+        assert_eq!(m.read_u32(0x5000), 10);
+        assert_eq!((m.read_u16(BUF), m.read_u16(BUF + 6), m.read_u16(BUF + 8)), ('x' as u16, 0xC3, 0xA9));
+        // destination length is in bytes: room for 2 characters
+        m.write_u16(BUF + 4, 0xEEEE);
+        assert_eq!(rtl_multibyte_to_unicode_n(&mut m, BUF, 5, 0x5000, S1, 5), 0);
+        assert_eq!((m.read_u32(0x5000), m.read_u16(BUF + 4)), (4, 0xEEEE));
     }
 
     #[test]
