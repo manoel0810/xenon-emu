@@ -27,7 +27,7 @@ Rodar o **dashboard retail original do Xbox 360 (`dash.xex`, build 17559)** como
 
 | Camada | Abordagem | Estado |
 |---|---|---|
-| CPU PPC | LLE, interpretador (`cpu/interpreter.rs`, `cpu/altivec.rs`) | Estável. Thread principal roda 400+ frames sem trap (~8,6M passos). Faltam `vpkd3d128` e `vupkd3d128` tipos 2 e 6. |
+| CPU PPC | LLE, interpretador (`cpu/interpreter.rs` decodifica; semântica em `cpu/ops/{int,branch,loadstore,float,vmx,system}.rs`; `cpu/altivec.rs`) | Estável. Thread principal roda 400+ frames sem trap (~8,6M passos). Faltam `vpkd3d128` e `vupkd3d128` tipos 2 e 6. |
 | Kernel (xboxkrnl) | HLE (`kernel/dispatcher.rs`, `kernel/xboxkrnl/*`, `kernel/xam/*`, nomes em `kernel/exports/`) | Funcional, mas **esperas não bloqueiam** (`KeWait*`/`NtWait*` retornam sucesso). Sem escalonador, sem object manager real. |
 | XAM | HLE (stubs offline) | Suficiente para a dash avançar; sem UI, notify ou rede reais. |
 | GPU (Xenos) | Improvisada (`gpu/xenos.rs`, `gpu/pm4.rs`, `gpu/shader.rs`, `gpu/display.rs`) | A tabela PM4 de `pm4.rs` é **inventada** (só NOP 0x10, WAIT_REG_MEM 0x3C, INDIRECT 0x3F, ME_INIT 0x48 batem). Shaders ucode não são executados. 0 draws rasterizados. |
@@ -39,7 +39,7 @@ Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24,
 
 ## 3. Mapa de código (tamanhos aproximados)
 
-`cpu/interpreter.rs` 2469, `kernel/` (`dispatcher.rs` estado + entrada, `util.rs`, `xboxkrnl/{ex,ke,mm,nt,rtl,xe_crypt,vd,misc}.rs`, `xam/{net,user,content,notify,ui,input,app,misc}.rs`, `exports/` tabelas de nomes geradas), `gpu/display.rs` 1707, `app/` (ex-`main.rs`: `boot`, `frame_loop`, `threads`, `legacy`, `xui`, `gpu`), `ui/window.rs`, `diag/` (`watchdog`, `trace`, `hooks`, `profile`), `gpu/xenos.rs` 876, `loader/xex.rs` 544, `gpu/shader.rs` 417, `memory/bus.rs` 281, `cpu/altivec.rs` 262.
+`cpu/ops/` (ex-`interpreter.rs`; maiores: `int.rs` ~890, `vmx.rs` ~770, `loadstore.rs` ~540), `kernel/` (`dispatcher.rs` estado + entrada, `util.rs`, `xboxkrnl/{ex,ke,mm,nt,rtl,xe_crypt,vd,misc}.rs`, `xam/{net,user,content,notify,ui,input,app,misc}.rs`, `exports/` tabelas de nomes geradas), `gpu/display.rs` 1707, `app/` (ex-`main.rs`: `boot`, `frame_loop`, `threads`, `legacy`, `xui`, `gpu`), `ui/window.rs`, `diag/` (`watchdog`, `trace`, `hooks`, `profile`), `gpu/xenos.rs` 876, `loader/xex.rs` 544, `gpu/shader.rs` 417, `memory/bus.rs` 281, `cpu/altivec.rs` 262.
 
 Memória:
 - Janela virtual guest `0x40000000..0x8FFFFFFF` com backing privado sob demanda em chunks de 64KB do pool físico `0x14000000..0x1FFFFFFF`. `valloc_bump` começa em `0x40000000`.
