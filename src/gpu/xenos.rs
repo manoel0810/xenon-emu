@@ -428,11 +428,20 @@ impl XenosGpu {
                             }
                         }
                     }
-                    PM4_REG_RMW if data.len() >= 3 => {
-                        // reg = data[0] & 0x1FFF, new = (old & and_mask) | or_mask
-                        let reg = data[0] & 0x1FFF;
-                        let old = bus.gpu_regs.get(reg);
-                        self.write_register(reg, (old & data[1]) | data[2], bus);
+                    PM4_REG_RMW => {
+                        // [rmw_info, and_mask, or_mask]: reg = rmw_info & 0x1FFF; bit 31 = AND with a register
+                        // (and_mask & 0x1FFF) instead of the immediate, bit 30 = same for OR
+                        let (info, and_mask, or_mask) = (word(0), word(1), word(2));
+                        let reg = info & 0x1FFF;
+                        let and_value = if (info >> 31) & 1 != 0 { bus.gpu_regs.get(and_mask & 0x1FFF) } else { and_mask };
+                        let or_value = if (info >> 30) & 1 != 0 { bus.gpu_regs.get(or_mask & 0x1FFF) } else { or_mask };
+                        let value = (bus.gpu_regs.get(reg) & and_value) | or_value;
+                        self.write_register(reg, value, bus);
+                    }
+                    PM4_REG_TO_MEM => {
+                        // [register, address | endian]
+                        let value = bus.gpu_regs.get(word(0));
+                        gpu_store(bus, word(1), value);
                     }
                     PM4_WAIT_REG_MEM => {
                         // [wait_info, poll_reg_or_addr, reference, mask, wait_interval]
@@ -444,10 +453,8 @@ impl XenosGpu {
 
                             let is_mem = (wait_info & 0x10) != 0;
                             let function = wait_info & 0x07;
-                            let mem_addr = (poll_addr & !0x3) as u64;
-
                             let current_val = if is_mem {
-                                bus.read_u32(mem_addr).unwrap_or(0)
+                                gpu_load(bus, poll_addr)
                             } else {
                                 bus.gpu_regs.get(poll_addr)
                             };
@@ -469,7 +476,7 @@ impl XenosGpu {
                             if !satisfied {
                                 let forced = (current_val & !mask) | (reference & mask);
                                 if is_mem {
-                                    let _ = bus.write_u32(mem_addr, forced);
+                                    gpu_store(bus, poll_addr, forced);
                                 } else {
                                     bus.gpu_regs.set(poll_addr, forced);
                                 }
@@ -477,42 +484,44 @@ impl XenosGpu {
                         }
                     }
                     PM4_MEM_WRITE => {
-                        if data.len() >= 2 {
-                            bus.write_u32((data[0] & !3) as u64, data[1])?;
+                        // [address | endian, data...]: count - 1 consecutive dwords
+                        let address = word(0);
+                        for (i, &v) in data.iter().skip(1).enumerate() {
+                            gpu_store(bus, address.wrapping_add(4 * i as u32), v);
                         }
                     }
                     PM4_EVENT_WRITE_SHD => {
                         // EVENT_WRITE_SHD: [initiator, address, value]. Low 2 address bits = endianness of the stored word.
-                        if data.len() >= 3 {
-                            let initiator = data[0];
-                            let address = data[1];
-                            let value = if (initiator >> 31) & 1 != 0 { self.gpu_counter } else { data[2] };
-                            // The low 2 address bits select the Xenos endian-swap mode used when the GPU writes into a
-                            // little-endian host. Guest memory in this emulator is already big-endian (what the PowerPC
-                            // lwz sees), so the logical value is stored unchanged. Swapping here wrote 0x03000000 where the
-                            // dash polls for 3, which left its fence wait spinning forever.
-                            let stored = value;
-                            let dst = (address & !3) as u64;
-                            let _ = bus.write_u32(dst, stored);
+                        let (initiator, address) = (word(0), word(1));
+                        bus.gpu_regs.set(VGT_EVENT_INITIATOR, initiator & 0x3F);
+                        let value = if (initiator >> 31) & 1 != 0 { self.gpu_counter } else { word(2) };
+                        // Addresses above 0x1FFFFFFF inside the writeback window (WRITEBACK_START/SIZE, once the
+                        // guest set them) land at virtual 0x7F000000 + offset.
+                        let writeback_base = bus.gpu_regs.get(WRITEBACK_START);
+                        let offset = (address & !3).wrapping_sub(writeback_base);
+                        if address & !3 > 0x1FFF_FFFF && writeback_base != 0 && offset < bus.gpu_regs.get(WRITEBACK_SIZE) {
+                            let _ = bus.write_u32(0x7F00_0000 + offset as u64, guest_endian_swap(value, address));
+                        } else {
+                            gpu_store(bus, address, value);
                         }
                     }
                     PM4_EVENT_WRITE => {
                         // EVENT_WRITE: [initiator] (+ optional address, unused by the dash)
-                        if let Some(&init) = data.first() { bus.gpu_regs.set(0x21F9, init & 0x3F); }
+                        bus.gpu_regs.set(VGT_EVENT_INITIATOR, word(0) & 0x3F);
                     }
                     PM4_COND_WRITE => {
                         // COND_WRITE: [wait_info, poll_addr, reference, mask, write_addr, write_data]
                         if data.len() >= 6 {
                             let wait_info = data[0];
                             let is_mem = (wait_info & 0x10) != 0;
-                            let cur = if is_mem { bus.read_u32((data[1] & !3) as u64).unwrap_or(0) } else { bus.gpu_regs.get(data[1]) };
+                            let cur = if is_mem { gpu_load(bus, data[1]) } else { bus.gpu_regs.get(data[1]) };
                             let masked = cur & data[3];
                             let ok = match wait_info & 7 {
                                 0 => false, 1 => masked < data[2], 2 => masked <= data[2], 3 => masked == data[2],
                                 4 => masked != data[2], 5 => masked >= data[2], 6 => masked > data[2], _ => true,
                             };
                             if ok {
-                                if (wait_info & 0x100) != 0 { let _ = bus.write_u32((data[4] & !3) as u64, data[5]); }
+                                if (wait_info & 0x100) != 0 { gpu_store(bus, data[4], data[5]); }
                                 else { self.write_register(data[4], data[5], bus); }
                             }
                         }
@@ -577,9 +586,9 @@ impl XenosGpu {
                     PM4_SET_BIN_MASK => self.bin_mask = (word(0) as u64) << 32 | word(1) as u64,
                     PM4_SET_BIN_SELECT => self.bin_select = (word(0) as u64) << 32 | word(1) as u64,
                     PM4_IM_LOAD | PM4_IM_LOAD_IMMEDIATE | PM4_INVALIDATE_STATE | PM4_VIZ_QUERY | PM4_EVENT_WRITE_EXT
-                    | PM4_EVENT_WRITE_ZPD | PM4_REG_TO_MEM => {
+                    | PM4_EVENT_WRITE_ZPD => {
                         // Implemented by Xenia but with no effect yet on this software GPU (shader upload, viz queries,
-                        // extents, z-pass counts, register readback: Phase 4 / closing items).
+                        // extents, z-pass counts: Phase 4).
                     }
                     _ => {
                         // Unimplemented in Xenia too (HitUnimplementedOpcode); counted in real_opcode_counts.
@@ -668,6 +677,33 @@ impl XenosGpu {
 
 
 /// XENON_PM4_LOG=1 prints every PM4 packet the Command Processor executes (cached after first call).
+const VGT_EVENT_INITIATOR: u32 = 0x21F9;
+const WRITEBACK_START: u32 = 0x0A04;
+const WRITEBACK_SIZE: u32 = 0x0A05;
+
+/// A 32-bit value the GPU moves between memory and itself with endian mode `endian & 3` (xenos::Endian, the low
+/// address bits), as the big-endian guest sees it. Xenia stores GpuSwap(v, endian) with a little-endian host store
+/// (and loads the same way), so through lwz/stw: kNone = byte swap, k8in16 = half-words swapped, k8in32 = unchanged,
+/// k16in32 = bytes swapped inside each half-word. Each mode is its own inverse.
+fn guest_endian_swap(value: u32, endian: u32) -> u32 {
+    match endian & 3 {
+        0 => value.swap_bytes(),
+        1 => value.rotate_left(16),
+        2 => value,
+        _ => ((value << 8) & 0xFF00_FF00) | ((value >> 8) & 0x00FF_00FF),
+    }
+}
+
+/// GPU store to `address` (physical; bits 0..1 = endian mode), as Xenia's TranslatePhysical + GpuSwap.
+fn gpu_store(bus: &mut MemoryBus, address: u32, value: u32) {
+    let _ = bus.write_u32((address & 0x1FFF_FFFC) as u64, guest_endian_swap(value, address));
+}
+
+/// GPU load from `address` (physical; bits 0..1 = endian mode).
+fn gpu_load(bus: &MemoryBus, address: u32) -> u32 {
+    guest_endian_swap(bus.read_u32((address & 0x1FFF_FFFC) as u64).unwrap_or(0), address)
+}
+
 /// First register of a SET_CONSTANT / LOAD_ALU_CONSTANT type (Xenia Write{ALU,Fetch,Bool,Loop,REGISTERS}Range*).
 fn constant_register_base(kind: u32) -> Option<u32> {
     match kind {
@@ -768,6 +804,61 @@ mod cp_tests {
         let before = bus.gpu_regs.non_zero().count();
         gpu.execute_packet(&mut bus, &t3(PM4_DRAW_INDX, &[0x84, 0x1234])).unwrap();
         assert_eq!((gpu.real_draws, bus.gpu_regs.non_zero().count()), (1, before));
+    }
+
+    #[test]
+    fn gpu_memory_writes_honor_the_endian_mode() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        const A: u32 = 0x0100_0000;
+        // MEM_WRITE: N dwords from the address; endian 2 (k8in32) keeps the value as lwz sees it
+        gpu.execute_packet(&mut bus, &t3(PM4_MEM_WRITE, &[A | 2, 0xAABB_CCDD, 0x1122_3344, 0x5566_7788])).unwrap();
+        assert_eq!((bus.read_u32(A as u64).unwrap(), bus.read_u32(A as u64 + 8).unwrap()), (0xAABB_CCDD, 0x5566_7788));
+        // other modes: none = byte swap, k8in16 = halves swapped, k16in32 = bytes swapped inside halves
+        for (endian, seen) in [(0, 0xDDCC_BBAA), (1, 0xCCDD_AABB), (3, 0xBBAA_DDCC)] {
+            gpu.execute_packet(&mut bus, &t3(PM4_MEM_WRITE, &[A | endian, 0xAABB_CCDD])).unwrap();
+            assert_eq!(bus.read_u32(A as u64).unwrap(), seen, "endian {}", endian);
+            assert_eq!(gpu_load(&bus, A | endian), 0xAABB_CCDD, "loads undo the same mode");
+        }
+        // COND_WRITE polls memory with endian 0 and writes memory with endian 0
+        bus.write_u32(A as u64, 0x0300_0000).unwrap();
+        gpu.execute_packet(&mut bus, &t3(PM4_COND_WRITE, &[0x113, A, 3, 0xFF, (A + 4), 7])).unwrap();
+        assert_eq!(bus.read_u32(A as u64 + 4).unwrap(), 0x0700_0000);
+        // EVENT_WRITE_SHD with endian 0, and the initiator lands in VGT_EVENT_INITIATOR
+        gpu.execute_packet(&mut bus, &t3(PM4_EVENT_WRITE_SHD, &[0x14, A + 8, 9])).unwrap();
+        assert_eq!((bus.read_u32(A as u64 + 8).unwrap(), bus.gpu_regs.get(0x21F9)), (0x0900_0000, 0x14));
+        // REG_TO_MEM
+        bus.gpu_regs.set(0x2000, 0x1234_5678);
+        gpu.execute_packet(&mut bus, &t3(PM4_REG_TO_MEM, &[0x2000, (A + 12) | 2])).unwrap();
+        assert_eq!(bus.read_u32(A as u64 + 12).unwrap(), 0x1234_5678);
+    }
+
+    #[test]
+    fn event_write_shd_uses_the_writeback_window() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        // no window set: an address above 0x1FFFFFFF goes to its physical alias
+        gpu.execute_packet(&mut bus, &t3(PM4_EVENT_WRITE_SHD, &[0, 0xC000_0102, 5])).unwrap();
+        assert_eq!(bus.read_u32(0x0000_0100).unwrap(), 5);
+        bus.gpu_regs.set(0x0A04, 0xC000_0000);
+        bus.gpu_regs.set(0x0A05, 0x1000);
+        gpu.execute_packet(&mut bus, &t3(PM4_EVENT_WRITE_SHD, &[0, 0xC000_0042, 6])).unwrap();
+        assert_eq!(bus.read_u32(0x7F00_0040).unwrap(), 6);
+    }
+
+    #[test]
+    fn reg_rmw_register_operands() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        bus.gpu_regs.set(0x100, 0xFFFF);
+        bus.gpu_regs.set(0x101, 0x0F0F);
+        bus.gpu_regs.set(0x102, 0x3000_0000);
+        // AND with register 0x101, OR with register 0x102
+        gpu.execute_packet(&mut bus, &t3(PM4_REG_RMW, &[0xC000_0100, 0x101, 0x102])).unwrap();
+        assert_eq!(bus.gpu_regs.get(0x100), 0x3000_0F0F);
+        // immediates
+        gpu.execute_packet(&mut bus, &t3(PM4_REG_RMW, &[0x100, 0xFF, 0x100])).unwrap();
+        assert_eq!(bus.gpu_regs.get(0x100), 0x10F);
     }
 
     #[test]
