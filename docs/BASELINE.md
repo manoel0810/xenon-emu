@@ -151,6 +151,11 @@ O `main` não retorna mais. Em 1500 frames a thread principal para no frame 1100
 3000 frames (~28 s headless): 415 escritas de `CP_RB_WPTR` (último `7775`), fence até `0x62D`, 75 660 pacotes PM4, sem trap; thread principal em `0x921C69B4`.
 5000 frames (~43 s): o ring dá a volta (WPTR `4731`), 177 711 pacotes, `XE_SWAP` ×1044, `DRAW_INDX_2` ×2112; thread principal em `0x921AEE20`, 121 322 324 passos.
 
+## Depois de tirar as pilhas da imagem (fechamento da Fase 2, item 1)
+
+3000 frames: 411 escritas de `CP_RB_WPTR` (último `7715`), fence até `0x621`, sem trap. A sequência de submissões é a mesma do baseline anterior (que o HEAD reproduz exatamente: 415 / `0x62D`), só que atrasada: a primeira submissão depois da carga passa do frame 1128 para 1158 e o regime fica ~11 frames atrás. A pilha não cai mais sobre `hubapp`.
+Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1`).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

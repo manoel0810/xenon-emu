@@ -274,10 +274,11 @@ pub fn boot() -> Result<Boot, Box<dyn std::error::Error>> {
     println!("[*] Thunk 0x9268F684: {:?}", thunk_map.get(&0x9268F684));
     println!("[*] Thunk 0x9268EC04: {:?}", thunk_map.get(&0x9268EC04));
 
-    let stack_top = vaddr_base + dash_xex.image_size as u64 - 0x10000;
+    // Primary thread stack: its own region outside the image (it used to sit over the dash's XEX resources).
+    let stack_top = super::threads::PRIMARY_STACK_TOP;
 
     // Setup KPCR (Processor Control Region / TEB). Slot 0 = primary/boot thread; every other guest thread gets its own slot.
-    let kpcr_base = setup_kpcr(&mut bus, 0, stack_top, stack_top - 0x50000);
+    let kpcr_base = setup_kpcr(&mut bus, 0, stack_top, stack_top - super::threads::PRIMARY_STACK_SIZE);
 
     Ok(Boot {
         bus,

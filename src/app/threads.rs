@@ -4,6 +4,36 @@ use xenon_emu::cpu::Cpu;
 use xenon_emu::kernel::dpc::{self, DpcCall};
 use xenon_emu::memory::MemoryBus;
 
+// ---- Guest thread stacks ----
+// Stacks live in their own part of the virtual window (0x40000000..0x8FFFFFFF, backed on demand), away from the
+// dash image (0x92000000..0x93028000, whose tail holds XEX resources such as `hubapp`) and from the heap that grows
+// up from 0x40000000. They used to be carved out of the image's last 2 MB, over the dash's own resources.
+
+/// Top of the primary (boot) thread's stack; 0x71000000..0x71400000 is reserved for it (and for the fixed offsets
+/// the legacy non-Metro path subtracts from it).
+pub const PRIMARY_STACK_TOP: u64 = 0x7140_0000;
+pub const PRIMARY_STACK_SIZE: u64 = 0x10_0000;
+const DYNAMIC_STACKS_BASE: u64 = 0x7200_0000;
+pub const DYNAMIC_STACK_SIZE: u64 = 0x4_0000;
+const CALLBACK_STACKS_BASE: u64 = 0x7E00_0000;
+pub const CALLBACK_STACK_SIZE: u64 = 0x1_0000;
+/// Space left above each stack top for the frame the thread setup writes there (back chain / LR slots).
+const STACK_TOP_GAP: u64 = 0x1000;
+
+/// Dynamic thread stacks that fit between DYNAMIC_STACKS_BASE and the callback stacks.
+pub const MAX_DYNAMIC_THREADS: u64 = (CALLBACK_STACKS_BASE - DYNAMIC_STACKS_BASE) / DYNAMIC_STACK_SIZE;
+
+/// Stack top of the n-th dynamically created thread (ExCreateThread); n is never reused.
+pub fn dynamic_thread_stack_top(n: u64) -> u64 {
+    assert!(n < MAX_DYNAMIC_THREADS, "out of guest thread stacks ({} created)", n);
+    DYNAMIC_STACKS_BASE + (n + 1) * DYNAMIC_STACK_SIZE - STACK_TOP_GAP
+}
+
+/// Stack top of interrupt-callback slot `slot` (0..15, rotating like the callback KPCR slots).
+pub fn callback_stack_top(slot: u64) -> u64 {
+    CALLBACK_STACKS_BASE + (slot % 16 + 1) * CALLBACK_STACK_SIZE - STACK_TOP_GAP
+}
+
 /// Guest address of the DPC return trampoline (`sc; blr`), registered in the thunk map as a pseudo export.
 pub const DPC_RETURN_TRAMPOLINE: u64 = 0x80001010;
 /// Pseudo ordinal of the DPC return trampoline (not a real xboxkrnl export; never reaches the kernel).
@@ -275,6 +305,34 @@ pub fn register_initial(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stacks_stay_out_of_the_image_and_do_not_overlap() {
+        // dash image (incl. XEX resources up to 0x93027EF2), KPCR blocks, loader entries, GPU MMIO, 0x70000000 sentinel
+        let forbidden = [(0x9200_0000u64, 0x9302_8000u64), (0x9310_0000, 0x9318_0000), (0x931F_0000, 0x9320_0000),
+            (0x7FC8_0000, 0x7FC9_0000), (0x7000_0000, 0x7000_1000)];
+        let mut ranges = vec![(PRIMARY_STACK_TOP - PRIMARY_STACK_SIZE, PRIMARY_STACK_TOP + STACK_TOP_GAP)];
+        for n in [0u64, 1, 2, 100, MAX_DYNAMIC_THREADS - 1] {
+            let top = dynamic_thread_stack_top(n);
+            ranges.push((top + STACK_TOP_GAP - DYNAMIC_STACK_SIZE, top + STACK_TOP_GAP));
+        }
+        for s in 0..16u64 {
+            let top = callback_stack_top(s);
+            ranges.push((top + STACK_TOP_GAP - CALLBACK_STACK_SIZE, top + STACK_TOP_GAP));
+        }
+        assert_eq!(callback_stack_top(16), callback_stack_top(0));
+        for (i, &(lo, hi)) in ranges.iter().enumerate() {
+            assert!(lo >= 0x4000_0000 && hi <= 0x9000_0000, "inside the virtual window");
+            for &(flo, fhi) in &forbidden {
+                assert!(hi <= flo || lo >= fhi, "stack {:#x}..{:#x} overlaps {:#x}..{:#x}", lo, hi, flo, fhi);
+            }
+            for &(lo2, hi2) in &ranges[i + 1..] {
+                assert!(hi <= lo2 || lo >= hi2, "stacks overlap");
+            }
+        }
+        assert_eq!(MAX_DYNAMIC_THREADS, 768);
+        assert!(std::panic::catch_unwind(|| dynamic_thread_stack_top(MAX_DYNAMIC_THREADS)).is_err());
+    }
 
     #[test]
     fn dpc_runs_inline_and_returns_to_the_caller() {

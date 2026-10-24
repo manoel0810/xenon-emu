@@ -9,7 +9,7 @@ use xenon_emu::gpu::{GpuDisplay, RingBuffer, XenosGpu};
 use xenon_emu::memory;
 
 use super::boot::Boot;
-use super::threads::{begin_dpc_call, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL};
+use super::threads::{begin_dpc_call, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
 
 pub fn run(
     boot: Boot,
@@ -18,7 +18,7 @@ pub fn run(
     mut ring_buffer: RingBuffer,
     mut xenos_gpu: XenosGpu,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Boot { mut bus, mut kernel, thunk_map, is_metro, stack_top, mut next_kpcr_slot, .. } = boot;
+    let Boot { mut bus, mut kernel, thunk_map, is_metro, mut next_kpcr_slot, .. } = boot;
 
     let diag = diag::config();
     let initial_fb = kernel.active_frontbuffer();
@@ -59,6 +59,7 @@ pub fn run(
     let mut profiler = Profiler::new();
 
     let mut next_callback_slot: u64 = 0;
+    let mut dynamic_threads_created: u64 = 0;
     // DPC routines running inline on a guest thread (KeInsertQueueDpc), by thread name
     let mut dpc_frames: HashMap<String, Vec<DpcFrame>> = HashMap::new();
     let mut frame = 0u64;
@@ -75,14 +76,15 @@ pub fn run(
 
         // 1. Process any pending dynamic thread creations from ExCreateThread
         while let Some(pending) = kernel.pending_threads.pop() {
-            let thread_stack = stack_top - 0x160000 - (guest_threads.len() as u64 * 0x20000);
+            let thread_stack = dynamic_thread_stack_top(dynamic_threads_created);
+            dynamic_threads_created += 1;
             let _ = bus.write_u32(thread_stack - 8, 0x80001000);
             let _ = bus.write_u32(thread_stack + 0x100 - 8, 0x80001000);
             let routine = (pending.start_routine & 0xFFFF_FFFF) as u64;
             let mut thread_cpu = Cpu::new(routine);
             thread_cpu.regs.gpr[1] = thread_stack;
             thread_cpu.regs.gpr[3] = pending.start_context;
-            thread_cpu.regs.gpr[13] = { let s = 8 + (next_kpcr_slot % 40); next_kpcr_slot += 1; setup_kpcr(&mut bus, s, thread_stack, thread_stack - 0x20000) };
+            thread_cpu.regs.gpr[13] = { let s = 8 + (next_kpcr_slot % 40); next_kpcr_slot += 1; setup_kpcr(&mut bus, s, thread_stack, thread_stack - (DYNAMIC_STACK_SIZE - 0x1000)) };
             thread_cpu.regs.lr = 0x80001000;
             println!("  [SCHEDULER] Spawning dynamic guest thread TID=0x{:X} (@0x{:08X})",
                 pending.tid, routine
@@ -337,7 +339,7 @@ pub fn run(
         let cp_interrupts = std::mem::take(&mut xenos_gpu.pending_cp_interrupts);
         if kernel.graphics_interrupt_callback != 0 {
             let sources = std::iter::once((0u64, 2u8)).chain(cp_interrupts.iter().map(|&n| (1u64, n as u8)));
-            for (k, (source, cpu)) in sources.enumerate() {
+            for (source, cpu) in sources {
                 let name = if source == 0 { format!("VBlank Interrupt Callback #{}", frame) } else { format!("CP Interrupt Callback #{}.{}", frame, cpu) };
                 let slot = 48 + (next_callback_slot % 16);
                 next_callback_slot += 1;
@@ -347,7 +349,7 @@ pub fn run(
                     kernel.graphics_interrupt_context,
                     source,
                     cpu,
-                    stack_top - 0x1E0000 - 0x2000 * k as u64,
+                    callback_stack_top(slot - 48),
                     slot,
                     name,
                 ));

@@ -20,7 +20,7 @@ Idioma de trabalho com o usuário: **português**. Respostas concisas.
 
 Rodar o **dashboard retail original do Xbox 360 (`dash.xex`, build 17559)** como código guest, "como se fosse um Xbox 360 real".
 
-- Imagem da dash: `D:\XBOX 360 - Firmeware Emulator\SystemUpdate_17559_USB\$SystemUpdate\dash.xex` (base `0x92000000`, entry `0x92196610`, stack_top `0x93018000`).
+- Imagem da dash: `D:\XBOX 360 - Firmeware Emulator\SystemUpdate_17559_USB\$SystemUpdate\dash.xex` (base `0x92000000`, entry `0x92196610`; pilha principal com topo em `0x71400000`, fora da imagem — ver `app/threads.rs`).
 - Projeto: `D:\XBOX 360 - Firmeware Emulator\xenon-emu` (Rust). Módulos: `cpu`, `crypto`, `gpu`, `kernel`, `loader`, `memory`, mais `tools/` (crate `xenon-tools` no workspace, 42 ferramentas em `tools/src/bin`).
 - Extras na raiz: `extracted_xui/` (XUR/XUI extraídos), `Corona 16mb/` (dump de NAND), `_archive/` (scripts de análise antigos, fora do git: pesquisa de untile em `scratch-untile-2026-10-22/`), `_git_backup/` (o `.git` contaminado anterior), `xbox360_real_framebuffer.raw` (dump de referência do framebuffer real).
 
@@ -50,7 +50,7 @@ O laço de fence em `0x921AFFF8..0x921B0020` (fence `0x90102000`, valor 5) visto
 
 - **`XexGetModuleHandle` (xboxkrnl `0x0195`) está errado.** A dash chama `GetModuleHandle(NULL)` em `0x921927C8` → `XexGetModuleHandle(NULL, &h)`; nosso HLE devolve `0x92000000` como **status** e não escreve `*h`. A dash lê 0 da pilha e grava `[0x92969854] = 0` em `0x92187108` (watchpoint). Daí o `0` no locator.
 - **`XexGetModuleSection` (`0x0196`) ignora o nome** e sempre devolve `0x92105000`/`0x58A894`. A seção certa vem da tabela de recursos do cabeçalho XEX (`0x000002FF`, em `0x1AAC` no arquivo): 36 entradas de `{nome[8], endereço, tamanho}`, por exemplo `dashuisk` em `0x92C51700`, tamanho `0x127F0`. Referência: Xenia `xboxkrnl_modules.cc` e `UserModule::GetSection`.
-- **Sobreposição da pilha com recursos:** `stack_top = vaddr_base + image_size - 0x10000 = 0x93018000` fica **dentro** do recurso `hubapp` (`0x92FF6780..0x93026A12`). A pilha da thread principal cresce para baixo sobre esse recurso (e `arcade` vai até `0x93027EF2`). A pilha precisa sair da imagem.
+- **Sobreposição da pilha com recursos:** `stack_top = vaddr_base + image_size - 0x10000 = 0x93018000` fica **dentro** do recurso `hubapp` (`0x92FF6780..0x93026A12`). A pilha da thread principal cresce para baixo sobre esse recurso (e `arcade` vai até `0x93027EF2`). A pilha precisa sair da imagem. **Resolvido (fechamento da Fase 2, item 1):** as pilhas têm região própria na janela virtual: principal `0x71000000..0x71400000`, threads dinâmicas a partir de `0x72000000` (256 KB cada, nunca reaproveitadas, máximo 768) e callbacks de interrupção em 16 slots rotativos a partir de `0x7E000000` (64 KB cada). Teste `stacks_stay_out_of_the_image_and_do_not_overlap`.
 
 **Atualização 2 (2026-10-24, depois de `XexGetModuleHandle`/`XexGetModuleSection` em `src/kernel/modules.rs`):** os módulos (dash, `xboxkrnl.exe`, `xam.xex`) têm `X_LDR_DATA_TABLE_ENTRY` em `0x931F0000 + 0x70·i`, e o handle é o endereço dessa entrada. O locator sai correto (`section://931F0000,dashuisk#skin.xur`), e o carregamento da skin passa a falhar com `0x80004005` (E_FAIL; o `main` retorna esse código no frame 257). Nomes pedidos pela dash: `NULL`, `xam.xex` (×2), `xboxkrnl.exe`, `xbdm.xex` (este dá NOT_FOUND, como num console retail).
 
