@@ -156,6 +156,10 @@ O `main` não retorna mais. Em 1500 frames a thread principal para no frame 1100
 3000 frames: 411 escritas de `CP_RB_WPTR` (último `7715`), fence até `0x621`, sem trap. A sequência de submissões é a mesma do baseline anterior (que o HEAD reproduz exatamente: 415 / `0x62D`), só que atrasada: a primeira submissão depois da carga passa do frame 1128 para 1158 e o regime fica ~11 frames atrás. A pilha não cai mais sobre `hubapp`.
 Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1`).
 
+## Depois do `mftb` global (fechamento da Fase 2, item 2)
+
+3000 frames: idêntico ao item 1 (411 escritas de `CP_RB_WPTR`, último `7715`, fence `0x621`). Esperado: o único `mftb` da dash (`0x92617738`) não executa nessa janela (`XENON_PC_HOOK`).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

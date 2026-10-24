@@ -105,6 +105,8 @@ pub fn run(
         kernel.update_gamepad(gp_state);
 
         // 3. Interleave continuous guest execution of genuine dashboard threads
+        let active_threads = guest_threads.iter().filter(|t| t.active).count() as u64;
+        bus.timebase.begin_frame(frame, active_threads * 25000);
         for thread in &mut guest_threads {
             if !thread.active {
                 continue;

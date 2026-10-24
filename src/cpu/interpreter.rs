@@ -69,6 +69,7 @@ impl Cpu {
         let insn = bus.read_u32(pc).map_err(|e| format!("Fetch error at 0x{:016X}: {}", pc, e))?;
         self.regs.pc += 4;
         self.step_count += 1;
+        bus.timebase.tick();
 
         let opcode = (insn >> 26) & 0x3F;
 

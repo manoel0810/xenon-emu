@@ -25,6 +25,8 @@ pub struct MemoryBus {
     /// Key = 64 KB chunk index inside the window, value = physical RAM offset of the chunk.
     window_map: Vec<u32>,
     window_pool_next: usize,
+    /// Guest time base shared by all threads (mftb), advanced by Cpu::step.
+    pub timebase: crate::cpu::timebase::TimeBase,
 }
 
 /// Guest virtual-alloc window (0x40000000..0x8FFFFFFF) handed out by NtAllocateVirtualMemory. These addresses used to be
@@ -90,6 +92,7 @@ impl MemoryBus {
             watch_hits: 0,
             window_map: vec![u32::MAX; ((WINDOW_END - WINDOW_START) / WINDOW_CHUNK) as usize],
             window_pool_next: WINDOW_POOL_START,
+            timebase: Default::default(),
         }
     }
 

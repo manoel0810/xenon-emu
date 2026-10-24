@@ -92,8 +92,8 @@ impl Cpu {
                 match spr {
                     8 => self.regs.gpr[rd] = self.regs.lr,
                     9 => self.regs.gpr[rd] = self.regs.ctr,
-                    268 => self.regs.gpr[rd] = (self.step_count as u64).wrapping_mul(50),
-                    269 => self.regs.gpr[rd] = ((self.step_count as u64).wrapping_mul(50)) >> 32,
+                    268 => self.regs.gpr[rd] = bus.timebase.now(),
+                    269 => self.regs.gpr[rd] = bus.timebase.now() >> 32,
                     _ => return Err(format!("Unknown mfspr {}", spr)),
                 }
             }
@@ -104,7 +104,7 @@ impl Cpu {
                 let tbr_lo = (insn >> 16) & 0x1F;
                 let tbr_hi = (insn >> 11) & 0x1F;
                 let tbr = (tbr_hi << 5) | tbr_lo;
-                let tb = (self.step_count as u64).wrapping_mul(50);
+                let tb = bus.timebase.now(); // one TB shared by all threads (cpu/timebase.rs)
                 match tbr {
                     268 => self.regs.gpr[rd] = tb,
                     269 => self.regs.gpr[rd] = tb >> 32,
