@@ -44,6 +44,19 @@ pub const GPU_MMIO_SIZE: u64 = 0x1_0000;
 pub const GPU_MMIO_CP_RB_WPTR: u32 = 0x714;
 
 #[inline(always)]
+/// GPU registers whose MMIO reads return fixed values (Xenia Canary 451f9155, GraphicsSystem::ReadRegister in
+/// src/xenia/gpu/graphics_system.cc). Other registers read back the last value written. `reg` = offset / 4.
+pub fn gpu_mmio_fixed_read(reg: u32) -> Option<u32> {
+    match reg {
+        0x0F00 => Some(0x0810_0748), // RB_EDRAM_TIMING
+        0x0F01 => Some(0x0000_200E), // RB_BC_CONTROL
+        0x0F2D => Some(0x00BB_BBBB), // RB_HSIO_INTERFACE_ALIGNER_VALUE
+        0x1951 => Some(1),           // interrupt status: vblank (the dash's interrupt callback checks bit 0)
+        0x1961 => Some(0x0500_02D0), // AVIVO_D1MODE_VIEWPORT_SIZE: 1280x720
+        _ => None,
+    }
+}
+
 fn mmio_offset(addr: u64) -> Option<u32> {
     let a = addr & 0xFFFF_FFFF;
     if a >= GPU_MMIO_BASE && a < GPU_MMIO_BASE + GPU_MMIO_SIZE { Some((a - GPU_MMIO_BASE) as u32) } else { None }
@@ -242,6 +255,9 @@ impl MemoryBus {
 
     pub fn read_u32(&self, addr: u64) -> Result<u32, String> {
         if let Some(off) = mmio_offset(addr) {
+            if let Some(v) = gpu_mmio_fixed_read(off / 4) {
+                return Ok(v);
+            }
             return Ok(self.gpu_mmio.get(&off).copied().unwrap_or(0));
         }
         let slice = self.translate_address(addr)?;
@@ -298,5 +314,25 @@ impl MemoryBus {
             self.write_u8(start_addr + i as u64, b)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_mmio_fixed_reads_and_write_back() {
+        let mut bus = MemoryBus::new();
+        // 0x7FC86544 = register 0x1951 (read by the dash's interrupt callback at 0x921AFD18)
+        assert_eq!(bus.read_u32(0x7FC8_6544).unwrap(), 1);
+        bus.write_u32(0x7FC8_6544, 0).unwrap();
+        assert_eq!(bus.read_u32(0x7FC8_6544).unwrap(), 1, "fixed registers ignore writes on read");
+        assert_eq!(bus.read_u32(0x7FC8_0000 + 0x0F00 * 4).unwrap(), 0x0810_0748);
+        assert_eq!(bus.read_u32(0x7FC8_0000 + 0x1961 * 4).unwrap(), 0x0500_02D0);
+        // other registers read back what was written (CP_RB_WPTR)
+        bus.write_u32(0x7FC8_0000 + GPU_MMIO_CP_RB_WPTR as u64, 49).unwrap();
+        assert_eq!(bus.read_u32(0x7FC8_0714).unwrap(), 49);
+        assert_eq!(bus.gpu_mmio.get(&GPU_MMIO_CP_RB_WPTR), Some(&49));
     }
 }

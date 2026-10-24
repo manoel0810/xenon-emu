@@ -50,6 +50,34 @@ pub fn restart_thread(cpu: &mut Cpu, entry: u64, init: Option<&(u64, u64, u64, u
     }
 }
 
+/// Graphics interrupt callback (VdSetGraphicsInterruptCallback), invoked like Xenia's
+/// KernelState::EmulateCPInterruptDPC: callback(source, context) with `cpu` as the active CPU (KPCR+0x10C).
+/// source 0 = vblank (Xenia MarkVblank uses cpu 2), 1 = CP interrupt from a PM4 INTERRUPT packet.
+/// Runs as a short-lived guest thread on its own stack and KPCR slot.
+pub fn interrupt_callback_thread(
+    bus: &mut MemoryBus,
+    routine: u64,
+    context: u64,
+    source: u64,
+    cpu: u8,
+    stack: u64,
+    kpcr_slot: u64,
+    name: String,
+) -> GuestThread {
+    let routine = routine & 0xFFFF_FFFF;
+    let _ = bus.write_u32(stack - 8, 0x80001000);
+    let _ = bus.write_u32(stack + 0x100 - 8, 0x80001000);
+    let mut cb_cpu = Cpu::new(routine);
+    cb_cpu.regs.gpr[1] = stack;
+    cb_cpu.regs.gpr[3] = source;
+    cb_cpu.regs.gpr[4] = context;
+    let kpcr = setup_kpcr(bus, kpcr_slot, stack, stack - 0x20000);
+    let _ = bus.write_u8(kpcr + 0x10C, cpu); // current_cpu: the dash clears this CPU's bit for CP interrupts
+    cb_cpu.regs.gpr[13] = kpcr;
+    cb_cpu.regs.lr = 0x80001000;
+    GuestThread { name, cpu: cb_cpu, entry_pc: routine, active: true, total_steps: 0, continuous: false }
+}
+
 /// Registers the threads that exist before the first frame (Metro: only the primary thread).
 pub fn register_initial(
     bus: &mut MemoryBus,
@@ -202,4 +230,20 @@ pub fn register_initial(
         println!("  - Thread '{}' -> Entry PC: 0x{:08X}, SP: 0x{:08X}", t.name, t.cpu.regs.pc, t.cpu.regs.gpr[1]);
     }
     Ok(guest_threads)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupt_callback_gets_source_then_context_and_active_cpu() {
+        let mut bus = MemoryBus::new();
+        // the dash's callback is 0x921AFCA0(r3 = source, r4 = device)
+        let t = interrupt_callback_thread(&mut bus, 0x921A_FCA0, 0x4000_2400, 1, 3, 0x92E3_8000, 60, "cb".into());
+        assert_eq!((t.cpu.regs.pc, t.cpu.regs.gpr[3], t.cpu.regs.gpr[4]), (0x921A_FCA0, 1, 0x4000_2400));
+        assert_eq!(t.cpu.regs.gpr[13], KPCR_AREA + 60 * KPCR_STRIDE);
+        assert_eq!(bus.read_u8(t.cpu.regs.gpr[13] + 0x10C).unwrap(), 3);
+        assert_eq!((t.cpu.regs.lr, t.cpu.regs.gpr[1], t.continuous), (0x80001000, 0x92E3_8000, false));
+    }
 }

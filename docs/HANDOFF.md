@@ -98,6 +98,16 @@ Diferenças em relação ao Xenia (`451f9155`: `graphics_system.cc`, `kernel_sta
 
 Hipótese principal (não confirmada): a submissão do trabalho seguinte depende do processamento de VBlank/interrupção da D3D (`0x921A4BF0` e o handler de CP), que nunca roda. Próximo passo proposto: corrigir argumentos e cadência do callback, `INTERRUPT`, `0x1951` e `counter_` segundo o Xenia e verificar se o `CP_RB_WPTR` volta a andar e o fence passa de `0xB`.
 
+**Atualização 7 (2026-10-24, interrupções corrigidas segundo o Xenia):** callback chamado como `(source, context)` com a CPU ativa no KPCR (`+0x10C`), em toda VBlank (`source 0`, CPU 2, com `counter_++`) e para cada bit de `cpu_mask` de `INTERRUPT` (`source 1`); `counter_` deixou de avançar em `EVENT_WRITE_SHD` (avança em VBlank e `XE_SWAP`); leituras MMIO fixas `0x0F00`, `0x0F01`, `0x0F2D`, **`0x1951` = 1**, `0x1961`. Verificado: o handler de VBlank da D3D `0x921A4BF0` agora roda em todo frame e o ramo de interrupção de CP rodou no frame 1130.
+
+**O `CP_RB_WPTR` continua parado** (lotes agora nos frames 1128/1129, WPTR 49; depois nada). A hipótese do callback não era a causa. Evidência nova, que **corrige a anterior**:
+
+- A rotina de submissão real é `0x921B0480` (monta pacotes `INDIRECT_BUFFER` `0xC0013F00`/`INDIRECT_BUFFER_PFD` `0xC0013700` no ring e escreve o WPTR em `0x921B06FC`). `0x921AFBC0` (que o HANDOFF citava) não é chamada. Chamadores: `0x921B107C`, `0x921B142C`, `0x921B481C`, `0x921B4B7C`, `0x921C8DBC`, `0x921C9514`, `0x921C9548`.
+- Watchpoint em `issued` (`dev+0x2B1C`): os fences `0xD`, `0xF`, `0x11`, `0x13`, `0x15` são emitidos (em `0x921B11BC`, via `0x921B14D0`) **nas mesmas rotinas de kick** dos frames 1128/1129, cujas 10 submissões levam o WPTR até 49; o CP consome tudo (`RPTR = 49`). Ou seja, o trabalho do fence 13 **foi submetido**, mas o CP só executou `EVENT_WRITE_SHD` até `0xB`.
+- A espera (`0x921AFF68`) só faz kick quando `target == issued` e `[dev+0x3520] == 0`; com `target 0xD < issued 0x15` ela só espera (correto do ponto de vista da D3D).
+
+Próximo passo: auditar o processamento dos indirect buffers dessas submissões (tamanhos `0xB`, `0x43`, `0xB`, `0x923`, `0xB`, `0x14` no frame 1129): despejar cada IB e listar onde estão os `EVENT_WRITE_SHD` com os valores `0xD..0x15`. Diferenças conhecidas do decodificador em relação ao Xenia: opcode com máscara `0xFF` (Xenia `0x7F`), bit de predicação (bit 0) e flag de registrador único do Type-0 (bit 15) ignorados; em erro de decodificação dentro de um IB o nosso CP pula 1 dword.
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.
@@ -115,6 +125,8 @@ Memória:
 Threads da dash (entrada): principal Metro; dinâmicas 0x1 (`0x92261CE8`), 0x2 (`0x921C9830`), 0x3/0x4 (`0x9281FBC0`, XUI), 0x5-0x8 (`0x92267C58`), 0x9 (`0x9226A2A8`, KeWaitForMultipleObjects + spinlock por frame), 0xA (`0x927C6D08`, loop XamUser*), 0xB/0xC (`0x9226E410`; 0xB chama ExTerminateThread ~151x e é reiniciada), 0xD..0x13 (ver `XENON_SYSCALL_SUMMARY`).
 
 VMX128: `vpkd3d128` e `vupkd3d128` completos (todos os tipos) em `src/cpu/ops/d3d_pack.rs`.
+
+Callback de interrupção da GPU: argumentos e cadência como no Xenia (`app/threads.rs` `interrupt_callback_thread`, `app/frame_loop.rs`).
 
 Exports HLE ainda não tratados (vistos em 400 frames depois da família printf): xboxkrnl `0x0015, 0x004B, 0x0082, 0x00F5, 0x0111`; xam `0x001A, 0x0200, 0x0282, 0x0291, 0x03CA, 0x058A, 0x058C, 0x058D, 0x059F, 0x05DC, 0x05E7, 0x07E2`. Família printf (`0x013A`, `0x013B`, `0x013D`, `0x013E`, `0x014D`..`0x0151`) implementada em `src/kernel/strings.rs`, com testes (`cargo test --release --lib kernel::strings`).
 

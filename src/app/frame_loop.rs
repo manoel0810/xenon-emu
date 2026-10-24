@@ -9,7 +9,7 @@ use xenon_emu::gpu::{GpuDisplay, RingBuffer, XenosGpu};
 use xenon_emu::memory;
 
 use super::boot::Boot;
-use super::threads::{restart_thread, setup_kpcr, GuestThread};
+use super::threads::{interrupt_callback_thread, restart_thread, setup_kpcr, GuestThread};
 
 pub fn run(
     boot: Boot,
@@ -58,6 +58,7 @@ pub fn run(
     let pc_profile = diag.pc_profile;
     let mut profiler = Profiler::new();
 
+    let mut next_callback_slot: u64 = 0;
     let mut frame = 0u64;
     while display.is_open() {
         frame += 1;
@@ -151,7 +152,7 @@ pub fn run(
                                         trap_ring.dump_watch_hit(bus.watch_hits, current_pc, diag.dump_ring_n);
                                     }
                                 }
-                                if pc_profile && !thread.name.starts_with("VBlank") {
+                                if pc_profile && !thread.name.starts_with("VBlank") && !thread.name.starts_with("CP Interrupt") {
                                     profiler.record_pc(&thread.name, current_pc);
                                 }
                             }
@@ -317,27 +318,27 @@ pub fn run(
         let frontbuffer = kernel.active_frontbuffer();
         kernel.dispatch("xboxkrnl.exe", 0x025B, &[frontbuffer, frame], &mut bus);
 
-        // Disparar VBlank Graphics Interrupt Callback se configurado pelo guest (#0x01D5)
-        if kernel.graphics_interrupt_callback != 0 && frame % 2 == 0 {
-            let cb_routine = (kernel.graphics_interrupt_callback & 0xFFFF_FFFF) as u64;
-            let cb_stack = stack_top - 0x1E0000;
-            let _ = bus.write_u32(cb_stack - 8, 0x80001000);
-            let _ = bus.write_u32(cb_stack + 0x100 - 8, 0x80001000);
-            let mut cb_cpu = Cpu::new(cb_routine);
-            cb_cpu.regs.gpr[1] = cb_stack;
-            cb_cpu.regs.gpr[3] = kernel.graphics_interrupt_context;
-            cb_cpu.regs.gpr[4] = 1; // 1 = VBLANK interrupt reason
-            cb_cpu.regs.gpr[5] = frame;
-            cb_cpu.regs.gpr[13] = setup_kpcr(&mut bus, 56 + (frame / 2) % 8, cb_stack, cb_stack - 0x20000);
-            cb_cpu.regs.lr = 0x80001000;
-            guest_threads.push(GuestThread {
-                name: format!("VBlank Interrupt Callback #{}", frame),
-                cpu: cb_cpu,
-                entry_pc: cb_routine,
-                active: true,
-                total_steps: 0,
-                continuous: false,
-            });
+        // 5b. Graphics interrupts (VdSetGraphicsInterruptCallback, #0x01D5), as Xenia: every vblank advances the GPU
+        // counter and calls callback(0, context) on cpu 2; each PM4 INTERRUPT queued a callback(1, context) on its cpu.
+        xenos_gpu.mark_vblank();
+        let cp_interrupts = std::mem::take(&mut xenos_gpu.pending_cp_interrupts);
+        if kernel.graphics_interrupt_callback != 0 {
+            let sources = std::iter::once((0u64, 2u8)).chain(cp_interrupts.iter().map(|&n| (1u64, n as u8)));
+            for (k, (source, cpu)) in sources.enumerate() {
+                let name = if source == 0 { format!("VBlank Interrupt Callback #{}", frame) } else { format!("CP Interrupt Callback #{}.{}", frame, cpu) };
+                let slot = 48 + (next_callback_slot % 16);
+                next_callback_slot += 1;
+                guest_threads.push(interrupt_callback_thread(
+                    &mut bus,
+                    kernel.graphics_interrupt_callback,
+                    kernel.graphics_interrupt_context,
+                    source,
+                    cpu,
+                    stack_top - 0x1E0000 - 0x2000 * k as u64,
+                    slot,
+                    name,
+                ));
+            }
         }
 
         // 6. Direct Presentation: Boot Animation -> Direct ATI Xenos GPU Framebuffer

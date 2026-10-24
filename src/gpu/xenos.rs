@@ -134,11 +134,14 @@ pub struct XenosGpu {
     pub packets_executed: u64,
     /// Real Xenos opcodes (as emitted by the Direct3D driver in the dash) seen so far, by opcode value
     pub real_opcode_counts: HashMap<u8, u64>,
-    /// GPU "counter" written by EVENT_WRITE_SHD when bit 31 of the initiator is set (increments per swap/event)
+    /// GPU counter (Xenia `counter_`): written by EVENT_WRITE_SHD when bit 31 of the initiator is set;
+    /// incremented once per vblank (`mark_vblank`) and per XE_SWAP.
     pub gpu_counter: u32,
     /// Draws submitted with the real DRAW_INDX_2 / DRAW_INDX opcodes (not rasterised yet: the dash shaders are Xenos microcode)
     pub real_draws: u64,
-    pub pending_interrupts: u64,
+    /// CPU numbers of CP interrupts raised by PM4 INTERRUPT packets, not yet delivered to the guest's graphics
+    /// interrupt callback (delivered by the frame loop with source = 1).
+    pub pending_cp_interrupts: Vec<u32>,
     pub draw_calls: u64,
     pub primitives_drawn: u64,
 }
@@ -185,7 +188,7 @@ impl XenosGpu {
             real_opcode_counts: HashMap::new(),
             gpu_counter: 0,
             real_draws: 0,
-            pending_interrupts: 0,
+            pending_cp_interrupts: Vec::new(),
             draw_calls: 0,
             primitives_drawn: 0,
         }
@@ -366,6 +369,12 @@ impl XenosGpu {
     }
 
     /// Dispatches execution of a single decoded PM4 packet
+    /// One vertical blank (Xenia GraphicsSystem::MarkVblank): advances the GPU counter. The frame loop then calls
+    /// the guest's interrupt callback with source 0.
+    pub fn mark_vblank(&mut self) {
+        self.gpu_counter = self.gpu_counter.wrapping_add(1);
+    }
+
     pub fn execute_packet(&mut self, bus: &mut MemoryBus, packet: &Pm4Packet) -> Result<(), String> {
         if pm4_log_enabled() {
             match packet {
@@ -571,8 +580,6 @@ impl XenosGpu {
                             let stored = value;
                             let dst = (address & !3) as u64;
                             let _ = bus.write_u32(dst, stored);
-                            // A shader/pixel done event also advances the GPU counter
-                            self.gpu_counter = self.gpu_counter.wrapping_add(1);
                         }
                     }
                     0x46 => {
@@ -597,8 +604,19 @@ impl XenosGpu {
                         }
                     }
                     0x54 => {
-                        // INTERRUPT: raise the graphics interrupt; the vblank callback is driven by the frame loop already
-                        self.pending_interrupts += 1;
+                        // INTERRUPT: [cpu_mask]; one CP interrupt (callback source 1) per set bit 0..5
+                        // (Xenia ExecutePacketType3_INTERRUPT -> DispatchInterruptCallback(1, n)).
+                        let cpu_mask = data.first().copied().unwrap_or(0);
+                        for n in 0..6 {
+                            if cpu_mask & (1 << n) != 0 {
+                                self.pending_cp_interrupts.push(n);
+                            }
+                        }
+                    }
+                    0x64 => {
+                        // XE_SWAP (Xenia-specific VdSwap hook): the frontbuffer swap itself is done by the VdSwap HLE;
+                        // Xenia also advances the GPU counter here.
+                        self.gpu_counter = self.gpu_counter.wrapping_add(1);
                     }
                     0x36 | 0x35 => {
                         // DRAW_INDX_2 / DRAW_INDX_2_BIN: [VGT_DRAW_INITIATOR, (indices...)]. Counted; Xenos microcode shaders are not rasterised yet.
@@ -942,4 +960,41 @@ fn pm4_log_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| crate::diag::config().pm4_log)
+}
+
+#[cfg(test)]
+mod cp_tests {
+    use super::*;
+
+    fn t3(opcode: u8, data: &[u32]) -> Pm4Packet {
+        Pm4Packet::Type3 { opcode, count: data.len(), data: data.to_vec() }
+    }
+
+    #[test]
+    fn interrupt_queues_one_cp_interrupt_per_cpu_bit() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        gpu.execute_packet(&mut bus, &t3(0x54, &[0b10_0101])).unwrap();
+        assert_eq!(gpu.pending_cp_interrupts, vec![0, 2, 5]);
+        // bits above 5 are ignored (six hardware threads)
+        gpu.execute_packet(&mut bus, &t3(0x54, &[0xC0])).unwrap();
+        assert_eq!(gpu.pending_cp_interrupts, vec![0, 2, 5]);
+    }
+
+    #[test]
+    fn counter_advances_on_vblank_and_swap_not_on_event_write_shd() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        const FENCE: u64 = 0x1010_2000;
+        // the dash's fence write: [initiator 3, address | endian 2, value]
+        gpu.execute_packet(&mut bus, &t3(0x58, &[3, 0x1010_2002, 0xB])).unwrap();
+        assert_eq!((bus.read_u32(FENCE).unwrap(), gpu.gpu_counter), (0xB, 0));
+        gpu.mark_vblank();
+        gpu.mark_vblank();
+        gpu.execute_packet(&mut bus, &t3(0x64, &[0x5357_4150, 0, 1280, 720])).unwrap();
+        assert_eq!(gpu.gpu_counter, 3);
+        // initiator bit 31 writes the counter instead of the value
+        gpu.execute_packet(&mut bus, &t3(0x58, &[0x8000_0003, 0x1010_2002, 0xDEAD])).unwrap();
+        assert_eq!((bus.read_u32(FENCE).unwrap(), gpu.gpu_counter), (3, 3));
+    }
 }
