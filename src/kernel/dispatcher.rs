@@ -77,6 +77,8 @@ pub struct KernelDispatcher {
     pub queued_dpcs: std::collections::HashSet<u32>,
     /// DPC routine the calling thread must run before returning from KeInsertQueueDpc (taken by the frame loop).
     pub pending_dpc_call: Option<super::dpc::DpcCall>,
+    /// Set by XamLoaderTerminateTitle: the title exits to the dashboard, the frame loop stops emulation.
+    pub title_terminated: bool,
     /// Video mode reported by VdQueryVideoMode.
     pub video: super::video::VideoConfig,
     pub vfs_handles: HashMap<u32, VfsFileHandle>,
@@ -116,6 +118,7 @@ impl KernelDispatcher {
             modules: super::modules::ModuleTable::default(),
             queued_dpcs: std::collections::HashSet::new(),
             pending_dpc_call: None,
+            title_terminated: false,
             video: super::video::VideoConfig::default(),
             vfs_handles: HashMap::new(),
         }

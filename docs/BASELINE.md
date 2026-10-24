@@ -173,6 +173,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico ao item 4 (411 / `7715` / fence `0x621`). A dash usa endian 2 (k8in32) nos endereços de memória do CP.
 
+## Depois de VdQueryVideoFlags/XamLoaderTerminateTitle (fechamento da Fase 2, item 6)
+
+3000 frames: idêntico ao item 5 (411 / `7715` / fence `0x621`); nenhum dos dois exports é chamado nessa janela (`XENON_LOG_SYSCALLS=1`).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

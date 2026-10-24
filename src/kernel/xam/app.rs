@@ -20,6 +20,14 @@ impl KernelDispatcher {
                 0 // STATUS_SUCCESS
             }
 
+            // 0x01A9: XamLoaderTerminateTitle() - does not return: Xenia ends the title (KernelState::TerminateTitle,
+            // xam_info.cc); here the frame loop stops emulation.
+            0x01A9 => {
+                println!("    -> XamLoaderTerminateTitle: title requested exit to the dashboard; stopping emulation");
+                self.title_terminated = true;
+                0
+            }
+
             // 0x01AA: XamLoaderGetDvdTrayState
             0x01AA => 0, // Tray closed
 
@@ -97,5 +105,21 @@ impl KernelDispatcher {
 
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::kernel::KernelDispatcher;
+    use crate::memory::MemoryBus;
+
+    #[test]
+    fn terminate_title_stops_the_title_and_video_flags_match_the_mode() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01C9, &[], &mut bus), 3, "VdQueryVideoFlags: 1280x720 16:9");
+        assert!(!k.title_terminated);
+        k.dispatch("xam.xex", 0x01A9, &[], &mut bus);
+        assert!(k.title_terminated);
     }
 }

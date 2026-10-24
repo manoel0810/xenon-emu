@@ -1,7 +1,7 @@
 // Derived from Xenia (BSD-3-Clause), Copyright (c) 2015 Ben Vanik; file headers: Copyright 2026 Xenia Canary.
 // See docs/THIRD_PARTY.md. Xenia Canary commit 451f915566d57436555c6eb4ee77bb4717eb01de:
 //   src/xenia/kernel/kernel.h                  struct X_VIDEO_MODE (48 bytes)
-//   src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc VdQueryVideoMode, GetVideoRefreshRate, GetVideoStandard
+//   src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc VdQueryVideoMode, VdQueryVideoFlags, GetVideoRefreshRate, GetVideoStandard
 //   src/xenia/kernel/xconfig.h                 X_AV_VIDEO_STANDARD
 //   src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc VdSwap; src/xenia/gpu/xenos.h MakePacketType0/2/3,
 //   xe_gpu_texture_fetch_t, kSwapSignature; src/xenia/gpu/register_table.inc SHADER_CONSTANT_FETCH_00_0
@@ -38,6 +38,11 @@ impl Default for VideoConfig {
 }
 
 impl VideoConfig {
+    /// VdQueryVideoFlags: bit 0 widescreen, bit 1 width >= 1280, bit 2 width >= 1920.
+    pub fn video_flags(&self) -> u32 {
+        (self.widescreen as u32) | (((self.width >= 1280) as u32) << 1) | (((self.width >= 1920) as u32) << 2)
+    }
+
     /// VdQueryVideoMode: zero the X_VIDEO_MODE and fill it.
     pub fn write_video_mode(&self, mem: &mut dyn GuestMem, ptr: u64) {
         let p = ptr & 0xFFFF_FFFF;
@@ -138,6 +143,13 @@ mod tests {
     use crate::kernel::guest_mem::fake::FakeMem;
 
     const P: u64 = 0x9301_7E70; // like the dash's stack buffer at r1+0x60
+
+    #[test]
+    fn video_flags_follow_the_video_mode() {
+        assert_eq!(VideoConfig::default().video_flags(), 3);
+        assert_eq!(VideoConfig { width: 1920, height: 1080, ..Default::default() }.video_flags(), 7);
+        assert_eq!(VideoConfig { width: 640, height: 480, widescreen: false, ..Default::default() }.video_flags(), 0);
+    }
 
     #[test]
     fn default_mode_layout() {

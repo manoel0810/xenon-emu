@@ -65,6 +65,10 @@ pub fn run(
     while display.is_open() {
         frame += 1;
         diag::watchdog::set_frame(frame);
+        if kernel.title_terminated {
+            println!("[*] Title terminated (XamLoaderTerminateTitle) at frame {} - stopping emulation.", frame);
+            break;
+        }
         if let Some(mf) = max_frames {
             if frame > mf {
                 println!("[*] Reached XENON_MAX_FRAMES limit ({} frames) - terminating loop cleanly.", mf);
@@ -107,7 +111,7 @@ pub fn run(
         let active_threads = guest_threads.iter().filter(|t| t.active).count() as u64;
         bus.timebase.begin_frame(frame, active_threads * 25000);
         for thread in &mut guest_threads {
-            if !thread.active {
+            if !thread.active || kernel.title_terminated {
                 continue;
             }
             if heartbeat {
@@ -208,6 +212,10 @@ pub fn run(
                                     if let Some(call) = kernel.pending_dpc_call.take() {
                                         // KeInsertQueueDpc: run the DPC routine inline on this thread before returning
                                         begin_dpc_call(&mut thread.cpu, &mut bus, dpc_frames.entry(thread.name.clone()).or_default(), call);
+                                    }
+                                    if kernel.title_terminated {
+                                        // XamLoaderTerminateTitle does not return
+                                        break;
                                     }
 
                                     if is_term {

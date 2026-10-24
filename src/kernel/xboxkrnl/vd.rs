@@ -80,8 +80,8 @@ impl KernelDispatcher {
             // 0x01C7: VdPersistDisplay
             0x01C7 => 0,
 
-            // 0x01C9: VdQueryVideoFlags
-            0x01C9 => 0x0000_0001, // Widescreen 16:9
+            // 0x01C9: VdQueryVideoFlags() -> flags of the current video mode (kernel/video.rs; 3 for 1280x720 16:9)
+            0x01C9 => self.video.video_flags() as u64,
 
             // 0x01CA: VdQueryVideoMode(X_VIDEO_MODE*) - see kernel/video.rs
             0x01CA => {
