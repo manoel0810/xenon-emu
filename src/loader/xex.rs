@@ -48,6 +48,73 @@ pub struct BasicBlock {
     pub zero_size: u32,
 }
 
+/// One entry of XEX_HEADER_RESOURCE_INFO (0x000002FF): a named region of the loaded image ("section" for
+/// XexGetModuleSection and XUI `section://` locators). Layout per Xenia's xex2_info.h (`xex2_resource`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct XexResource {
+    /// Raw 8-byte name, NUL-padded (not necessarily NUL-terminated).
+    pub name: [u8; 8],
+    pub address: u32,
+    pub size: u32,
+}
+
+impl XexResource {
+    /// Name up to the first NUL.
+    pub fn name_bytes(&self) -> &[u8] {
+        let n = self.name.iter().position(|&b| b == 0).unwrap_or(8);
+        &self.name[..n]
+    }
+}
+
+/// Parses an `xex2_opt_resource_info` block at `off`: `{ u32 size; xex2_resource[(size - 4) / 16] }`.
+pub fn parse_resource_info(data: &[u8], off: usize) -> Vec<XexResource> {
+    let mut out = Vec::new();
+    if off + 4 > data.len() {
+        return out;
+    }
+    let size = BigEndian::read_u32(&data[off..off + 4]) as usize;
+    let count = size.saturating_sub(4) / 16;
+    for i in 0..count {
+        let e = off + 4 + 16 * i;
+        if e + 16 > data.len() {
+            break;
+        }
+        let mut name = [0u8; 8];
+        name.copy_from_slice(&data[e..e + 8]);
+        out.push(XexResource {
+            name,
+            address: BigEndian::read_u32(&data[e + 8..e + 12]),
+            size: BigEndian::read_u32(&data[e + 12..e + 16]),
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn parses_resource_info() {
+        // size = 4 + 2 * 16; one 8-character name and one NUL-padded name
+        let mut d = vec![0xAAu8; 3];
+        d.extend_from_slice(&36u32.to_be_bytes());
+        d.extend_from_slice(b"dashuisk");
+        d.extend_from_slice(&0x92C5_1700u32.to_be_bytes());
+        d.extend_from_slice(&0x127F0u32.to_be_bytes());
+        d.extend_from_slice(b"hubui\0\0\0");
+        d.extend_from_slice(&0x92FC_F700u32.to_be_bytes());
+        d.extend_from_slice(&0x2714u32.to_be_bytes());
+        let r = parse_resource_info(&d, 3);
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].name_bytes(), r[0].address, r[0].size), (&b"dashuisk"[..], 0x92C5_1700, 0x127F0));
+        assert_eq!((r[1].name_bytes(), r[1].address, r[1].size), (&b"hubui"[..], 0x92FC_F700, 0x2714));
+        // truncated input: no panic, partial result
+        assert_eq!(parse_resource_info(&d[..3 + 4 + 20], 3).len(), 1);
+        assert!(parse_resource_info(&d, d.len()).is_empty());
+    }
+}
+
 pub struct XexFile {
     pub magic: [u8; 4],
     pub module_flags: u32,
@@ -69,6 +136,8 @@ pub struct XexFile {
     pub basic_blocks: Vec<BasicBlock>,
     pub import_libraries: Vec<ImportLibrary>,
     pub pe_sections: Vec<PeSectionHeader>,
+    /// XEX_HEADER_RESOURCE_INFO (0x000002FF) entries, empty when the header is absent.
+    pub resources: Vec<XexResource>,
 }
 
 impl XexFile {
@@ -259,6 +328,11 @@ impl XexFile {
             }
         }
 
+        let resources = optional_headers
+            .get(&0x0000_02FF)
+            .map(|&off| parse_resource_info(data, off as usize))
+            .unwrap_or_default();
+
         Ok(Self {
             magic,
             module_flags,
@@ -280,6 +354,7 @@ impl XexFile {
             basic_blocks,
             import_libraries,
             pe_sections: Vec::new(),
+            resources,
         })
     }
 

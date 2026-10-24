@@ -52,6 +52,10 @@ O laço de fence em `0x921AFFF8..0x921B0020` (fence `0x90102000`, valor 5) visto
 - **`XexGetModuleSection` (`0x0196`) ignora o nome** e sempre devolve `0x92105000`/`0x58A894`. A seção certa vem da tabela de recursos do cabeçalho XEX (`0x000002FF`, em `0x1AAC` no arquivo): 36 entradas de `{nome[8], endereço, tamanho}`, por exemplo `dashuisk` em `0x92C51700`, tamanho `0x127F0`. Referência: Xenia `xboxkrnl_modules.cc` e `UserModule::GetSection`.
 - **Sobreposição da pilha com recursos:** `stack_top = vaddr_base + image_size - 0x10000 = 0x93018000` fica **dentro** do recurso `hubapp` (`0x92FF6780..0x93026A12`). A pilha da thread principal cresce para baixo sobre esse recurso (e `arcade` vai até `0x93027EF2`). A pilha precisa sair da imagem.
 
+**Atualização 2 (2026-10-24, depois de `XexGetModuleHandle`/`XexGetModuleSection` em `src/kernel/modules.rs`):** os módulos (dash, `xboxkrnl.exe`, `xam.xex`) têm `X_LDR_DATA_TABLE_ENTRY` em `0x931F0000 + 0x70·i`, e o handle é o endereço dessa entrada. O locator sai correto (`section://931F0000,dashuisk#skin.xur`), e o carregamento da skin passa a falhar com `0x80004005` (E_FAIL; o `main` retorna esse código no frame 257). Nomes pedidos pela dash: `NULL`, `xam.xex` (×2), `xboxkrnl.exe`, `xbdm.xex` (este dá NOT_FOUND, como num console retail).
+
+Próximo bloqueio, com evidência: **todas** as chamadas de `XexGetModuleSection` (frames 85, 104, 122, 127, 128 e 217) retornam `X_STATUS_NOT_FOUND`, porque o nome da seção chega como lixo. A dash separa o locator em `0x922192C0` (handle em hex até a `,`, por `0x92219180`) e converte o nome wide para narrow em `0x92219218` → `0x92192B60` (`WideCharToMultiByte`) → **`RtlUnicodeToMultiByteN` (xboxkrnl `0x0143`), que é um stub `=> 0`** (não escreve nada). O inverso `RtlMultiByteToUnicodeN` (`0x0133`) também é stub. Referência: Xenia `xboxkrnl_rtl.cc`.
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.

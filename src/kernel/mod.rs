@@ -1,6 +1,8 @@
 pub mod dispatcher;
 pub mod exports;
+pub mod guest_mem;
 pub mod input;
+pub mod modules;
 pub mod strings;
 mod util;
 mod xam;

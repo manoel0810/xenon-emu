@@ -193,6 +193,18 @@ pub fn boot() -> Result<Boot, Box<dyn std::error::Error>> {
     thunk_map.insert(0x80001000, ("xboxkrnl.exe".to_string(), 0x0019));
 
     let mut kernel = KernelDispatcher::new();
+    // Loader data entries for XexGetModuleHandle / XexGetModuleSection: the title executable and the HLE kernel modules.
+    kernel.modules.register_executable(
+        &mut bus,
+        "dash",
+        if is_metro { "game:\\dash.xex" } else { "game:\\$flash_dash.xex" },
+        vaddr_base as u32,
+        dash_xex.image_size,
+        dash_xex.entry_point,
+        dash_xex.resources.clone(),
+    );
+    kernel.modules.register_kernel(&mut bus, "xboxkrnl.exe");
+    kernel.modules.register_kernel(&mut bus, "xam.xex");
 
     println!("\n[*] Populating Kernel Virtual File System (VFS) with authentic Dashboard resources:");
     let mut total_embedded_files = 0usize;

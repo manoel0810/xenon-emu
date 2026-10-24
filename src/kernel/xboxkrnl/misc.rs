@@ -49,29 +49,16 @@ impl KernelDispatcher {
             // 0x0194: XexCheckExecutablePrivilege
             0x0194 => 1, // TRUE (Privilege Granted)
 
-            // 0x0195: XexGetModuleHandle
+            // 0x0195: XexGetModuleHandle(module_name, hmodule_ptr) - see kernel/modules.rs
             0x0195 => {
-                let mod_name_ptr = args.first().copied().unwrap_or(0);
-                if mod_name_ptr == 0 {
-                    0x9200_0000 // Self (Dashboard)
-                } else {
-                    0x9000_0000
-                }
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                self.modules.xex_get_module_handle(bus, arg(0), arg(1))
             }
 
-            // 0x0196: XexGetModuleSection (hMod, name, pBase, pSize)
+            // 0x0196: XexGetModuleSection(hmodule, name, data_ptr, size_ptr) - see kernel/modules.rs
             0x0196 => {
-                if let Some(&p_base) = args.get(2) {
-                    if p_base != 0 {
-                        let _ = bus.write_u32(p_base, 0x9210_5000);
-                    }
-                }
-                if let Some(&p_sz) = args.get(3) {
-                    if p_sz != 0 {
-                        let _ = bus.write_u32(p_sz, 0x0058_A894);
-                    }
-                }
-                0 // STATUS_SUCCESS
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                self.modules.xex_get_module_section(bus, arg(0), arg(1), arg(2), arg(3))
             }
 
             // 0x0197: XexGetProcedureAddress

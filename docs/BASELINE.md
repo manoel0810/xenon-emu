@@ -114,6 +114,16 @@ GPU: [GPU CP] Frame 00268 | Processed 2 PM4 packets (Total: 120, Draw Calls: 0, 
 
 O `main` agora retorna `0x8030001C` no frame 258 (antes: `0x80070057` no frame 255). Ver `HANDOFF.md` seção 2.
 
+## Depois de XexGetModuleHandle/XexGetModuleSection (Fase 2, 2026-10-24)
+
+```
+NO TRAP: primary thread did not stop within 400 frames.
+Primary at end: "Metro 17559 Primary Thread" | PC: 0x9219867C | LR: 0x921967D8 | Steps: 8597958
+GPU: [GPU CP] Frame 00267 | Processed 2 PM4 packets (Total: 120, Draw Calls: 0, Primitives: 0) | WPTR: 49, RPTR: 49
+```
+
+O `main` retorna `0x80004005` no frame 257.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

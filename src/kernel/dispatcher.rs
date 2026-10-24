@@ -71,6 +71,8 @@ pub struct KernelDispatcher {
     pub events: HashMap<u32, KernelEvent>,
     pub event_by_ptr: HashMap<u64, u32>,
     pub vfs_files: HashMap<String, Vec<u8>>,
+    /// Loaded modules and their loader data entries (XexGetModuleHandle / XexGetModuleSection).
+    pub modules: super::modules::ModuleTable,
     pub vfs_handles: HashMap<u32, VfsFileHandle>,
 }
 
@@ -105,6 +107,7 @@ impl KernelDispatcher {
             events: HashMap::new(),
             event_by_ptr: HashMap::new(),
             vfs_files: HashMap::new(),
+            modules: super::modules::ModuleTable::default(),
             vfs_handles: HashMap::new(),
         }
     }
