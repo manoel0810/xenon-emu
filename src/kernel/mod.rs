@@ -4,6 +4,7 @@ pub mod guest_mem;
 pub mod input;
 pub mod modules;
 pub mod strings;
+pub mod video;
 mod util;
 mod xam;
 mod xboxkrnl;

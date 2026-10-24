@@ -83,18 +83,10 @@ impl KernelDispatcher {
             // 0x01C9: VdQueryVideoFlags
             0x01C9 => 0x0000_0001, // Widescreen 16:9
 
-            // 0x01CA: VdQueryVideoMode
-            // Fills XVIDEO_MODE at args[0]: (1280x720, 60Hz, 16:9)
+            // 0x01CA: VdQueryVideoMode(X_VIDEO_MODE*) - see kernel/video.rs
             0x01CA => {
-                if let Some(&p_mode) = args.first() {
-                    if p_mode != 0 {
-                        let _ = bus.write_u32(p_mode + 0, 1280); // Width
-                        let _ = bus.write_u32(p_mode + 4, 720);  // Height
-                        let _ = bus.write_u32(p_mode + 8, 0);    // Interlaced (0=Progressive)
-                        let _ = bus.write_u32(p_mode + 12, 1);   // Widescreen (1=16:9)
-                        let _ = bus.write_u32(p_mode + 16, 60);  // RefreshRate (60Hz)
-                    }
-                }
+                let video = self.video;
+                video.write_video_mode(bus, args.first().copied().unwrap_or(0));
                 0
             }
 

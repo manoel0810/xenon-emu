@@ -138,6 +138,10 @@ O `main` não retorna mais. Em 1500 frames a thread principal para no frame 1100
 
 3000 frames (~23 s headless): a thread principal para no frame 1175 com `Trap condition met (twi TO=6 r9=0 SIMM=0) at PC=0x921BEB30`. Último PM4: frame 1175, total 178 pacotes, 0 draws. Frontbuffer a partir do frame 1175: `0x90314000`.
 
+## Depois de VdQueryVideoMode (Fase 2, 2026-10-24)
+
+4000 frames (~28 s headless): a thread principal para no frame 1175 com `Unimplemented opcode 31 xo 567 (insn=0x7DAA4C6E)` em `0x921BE5A0` (`lfsux`). PM4 igual ao anterior (último no frame 1175, total 178, 0 draws); frontbuffer `0x90314000`.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

@@ -66,6 +66,12 @@ Observação: com a dash seguindo o caminho normal, o PM4 para no frame 28 (72 p
 
 A dash passa do frame 1100, troca o frontbuffer (`0x906AC000` → `0x90314000`) e envia mais PM4 (178 pacotes no total no frame 1175). Próximo bloqueio: **frame 1175**, `twi 6, r9, 0` em `0x921BEB30` (checagem de divisão por zero do compilador antes de `divwu r11, r10, r9`, com `r10 = [[0x92000EC0]]`). `r9 = [r1+0x7C]` é o campo `+0x1C` (`pixel_rate`) do `X_VIDEO_MODE` em `r1+0x60`, preenchido por `VdQueryVideoMode` (chamado em `0x921BE904`). **Nossa HLE de `VdQueryVideoMode` (`0x01CA`) usa layout errado:** grava 60 (inteiro) em `+0x10` (`is_hi_def`) e deixa `refresh_rate` (`+0x14`, float), `video_standard`, `pixel_rate` e `widescreen_flag` em 0. Layout de 48 bytes e valores do Xenia: `kernel.h` (`X_VIDEO_MODE`) e `xboxkrnl_video.cc` (`pixel_rate = 0x8A`, `refresh_rate` 60.0/50.0, `widescreen_flag` 1/3, `is_hi_def = width >= 0x500`).
 
+**Atualização 5 (2026-10-24, depois de `VdQueryVideoMode` em `src/kernel/video.rs`):** `X_VIDEO_MODE` de 48 bytes como no Xenia (`pixel_rate = 0x8A`, `refresh_rate` 60.0 float, `is_hi_def`, `video_standard` NTSC-M, `widescreen_flag`), a partir de `VideoConfig` (padrão 1280×720 progressivo 16:9, 60 Hz). A divisão por zero em `0x921BEB30` sumiu.
+
+Próximo bloqueio, ainda no **frame 1175**: `Unimplemented opcode 31 xo 567 (insn=0x7DAA4C6E)` em `0x921BE5A0`, ou seja `lfsux f13, r10, r9`. Faltam as quatro formas FP indexadas com update: `lfsux` (567), `lfdux` (631), `stfsux` (695), `stfdux` (759). As formas D com update (opcodes 49/51/53/55) e as indexadas sem update (535/599/663/727) existem em `cpu/ops/loadstore.rs`.
+
+Também divergente do Xenia (não corrigido): `VdQueryVideoFlags` (`0x01C9`) devolve 1; pelo mesmo modo deveria devolver 3 (widescreen | largura ≥ 1280).
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.

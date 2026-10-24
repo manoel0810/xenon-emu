@@ -73,6 +73,8 @@ pub struct KernelDispatcher {
     pub vfs_files: HashMap<String, Vec<u8>>,
     /// Loaded modules and their loader data entries (XexGetModuleHandle / XexGetModuleSection).
     pub modules: super::modules::ModuleTable,
+    /// Video mode reported by VdQueryVideoMode.
+    pub video: super::video::VideoConfig,
     pub vfs_handles: HashMap<u32, VfsFileHandle>,
 }
 
@@ -108,6 +110,7 @@ impl KernelDispatcher {
             event_by_ptr: HashMap::new(),
             vfs_files: HashMap::new(),
             modules: super::modules::ModuleTable::default(),
+            video: super::video::VideoConfig::default(),
             vfs_handles: HashMap::new(),
         }
     }
