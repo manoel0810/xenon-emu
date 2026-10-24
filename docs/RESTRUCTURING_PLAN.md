@@ -248,7 +248,7 @@ Aceite: baseline reproduzível, documentada.
 
 Objetivo: arrumar o código sem alterar semântica.
 
-1. Mover `src/bin/*` para `tools/` (crate separado ou `examples`), ajustando `Cargo.toml`. Manter `ppcdis` compilável.
+1. ~~Mover `src/bin/*` para `tools/`~~ **Feito:** crate `xenon-tools` em `tools/` (workspace com `default-members`, então `cargo build --release` continua gerando `ppcdis.exe` em `target/release`). Baseline idêntica.
 2. Criar `diag/` com `DiagConfig` lido uma vez; substituir leituras dispersas de `XENON_*`.
 3. Quebrar `main.rs` em `app/`, `ui/`, `diag/`.
 4. Quebrar `exports.rs` e `xboxkrnl.rs` por área mantendo a mesma tabela de ordinals.

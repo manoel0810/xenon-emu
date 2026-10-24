@@ -20,7 +20,7 @@ Idioma de trabalho com o usuário: **português**. Respostas concisas.
 Rodar o **dashboard retail original do Xbox 360 (`dash.xex`, build 17559)** como código guest, "como se fosse um Xbox 360 real".
 
 - Imagem da dash: `D:\XBOX 360 - Firmeware Emulator\SystemUpdate_17559_USB\$SystemUpdate\dash.xex` (base `0x92000000`, entry `0x92196610`, stack_top `0x93018000`).
-- Projeto: `D:\XBOX 360 - Firmeware Emulator\xenon-emu` (Rust). Módulos: `cpu`, `crypto`, `gpu`, `kernel`, `loader`, `memory`, mais `src/bin/` (42 ferramentas).
+- Projeto: `D:\XBOX 360 - Firmeware Emulator\xenon-emu` (Rust). Módulos: `cpu`, `crypto`, `gpu`, `kernel`, `loader`, `memory`, mais `tools/` (crate `xenon-tools` no workspace, 42 ferramentas em `tools/src/bin`).
 - Extras na raiz: `extracted_xui/` (XUR/XUI extraídos), `Corona 16mb/` (dump de NAND), `scratch/` (scripts e Python de análise), `xbox360_real_framebuffer.raw` (dump de referência do framebuffer real).
 
 ## 2. Estado atual (resumo honesto)
