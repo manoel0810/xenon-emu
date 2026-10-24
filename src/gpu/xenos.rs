@@ -142,6 +142,10 @@ pub struct XenosGpu {
     /// CPU numbers of CP interrupts raised by PM4 INTERRUPT packets, not yet delivered to the guest's graphics
     /// interrupt callback (delivered by the frame loop with source = 1).
     pub pending_cp_interrupts: Vec<u32>,
+    /// XE_SWAP packets executed (written by VdSwap into the guest command buffer).
+    pub swaps: u64,
+    /// Last XE_SWAP: (frontbuffer physical address, width, height), as passed to Xenia's IssueSwap.
+    pub last_swap: Option<(u32, u32, u32)>,
     pub draw_calls: u64,
     pub primitives_drawn: u64,
 }
@@ -189,6 +193,8 @@ impl XenosGpu {
             gpu_counter: 0,
             real_draws: 0,
             pending_cp_interrupts: Vec::new(),
+            swaps: 0,
+            last_swap: None,
             draw_calls: 0,
             primitives_drawn: 0,
         }
@@ -614,8 +620,12 @@ impl XenosGpu {
                         }
                     }
                     0x64 => {
-                        // XE_SWAP (Xenia-specific VdSwap hook): the frontbuffer swap itself is done by the VdSwap HLE;
-                        // Xenia also advances the GPU counter here.
+                        // XE_SWAP (Xenia ExecutePacketType3_XE_SWAP): [signature 'SWAP', frontbuffer physical, width,
+                        // height, ...]; issues the swap and advances the GPU counter.
+                        if data.first() == Some(&crate::kernel::video::SWAP_SIGNATURE) && data.len() >= 4 {
+                            self.last_swap = Some((data[1], data[2], data[3]));
+                            self.swaps += 1;
+                        }
                         self.gpu_counter = self.gpu_counter.wrapping_add(1);
                     }
                     0x36 | 0x35 => {
@@ -991,8 +1001,9 @@ mod cp_tests {
         assert_eq!((bus.read_u32(FENCE).unwrap(), gpu.gpu_counter), (0xB, 0));
         gpu.mark_vblank();
         gpu.mark_vblank();
-        gpu.execute_packet(&mut bus, &t3(0x64, &[0x5357_4150, 0, 1280, 720])).unwrap();
+        gpu.execute_packet(&mut bus, &t3(0x64, &[0x5357_4150, 0x1031_4000, 1280, 720])).unwrap();
         assert_eq!(gpu.gpu_counter, 3);
+        assert_eq!((gpu.swaps, gpu.last_swap), (1, Some((0x1031_4000, 1280, 720))));
         // initiator bit 31 writes the counter instead of the value
         gpu.execute_packet(&mut bus, &t3(0x58, &[0x8000_0003, 0x1010_2002, 0xDEAD])).unwrap();
         assert_eq!((bus.read_u32(FENCE).unwrap(), gpu.gpu_counter), (3, 3));

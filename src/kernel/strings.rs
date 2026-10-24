@@ -12,7 +12,13 @@ pub use super::guest_mem::GuestMem;
 
 // ---- argument sources ----
 
-/// Variadic arguments: index 0..7 come from r3..r10, the rest from the caller's stack (util::get_arg_64).
+/// Arguments by index: 0..7 come from r3..r10, the rest from the caller's parameter save area, one 8-byte slot per
+/// argument starting at r1 + 0x50 (the 32-bit value is the low word, at r1 + 0x54 + 8 * i).
+///
+/// Deviation from Xenia: Xenia's get_arg_32 reads the u32 at r1 + 0x54 + 8 * i (same as `get32` here), but its
+/// StackArgList (printf) uses get_arg_64, which loads a u64 at r1 + 0x54 and so mixes the low word of one slot with
+/// the high word of the next. Here a slot is read whole (r1 + 0x50 + 8 * i), which matches the guest stack observed
+/// at the dash's VdSwap call (width/height pointers at r1 + 0x54 / r1 + 0x5C).
 pub struct StackArgs<'a> {
     regs: &'a [u64],
     sp: u64,
@@ -52,7 +58,7 @@ impl ArgSource for StackArgs<'_> {
         if i <= 7 {
             self.regs.get(i).copied().unwrap_or(0)
         } else {
-            let addr = ((self.sp as u32) as u64) + 0x54 + (i as u64 - 8) * 8;
+            let addr = ((self.sp as u32) as u64) + 0x50 + (i as u64 - 8) * 8;
             mem.read_u64(addr)
         }
     }
@@ -831,11 +837,11 @@ mod tests {
     #[test]
     fn stack_and_va_list_arguments() {
         let mut m = Mem::default();
-        // 10 integers: r3..r10 hold buf, fmt and the first 6; the rest at r1 + 0x54 + 8*i (u64 big-endian)
+        // 10 integers: r3..r10 hold buf, fmt and the first 6; the rest in 8-byte slots at r1 + 0x50 + 8*i
         let sp = 0x8000;
         for i in 0..4u64 {
-            m.write_u32(sp + 0x54 + 8 * i, 0);
-            m.write_u32(sp + 0x58 + 8 * i, 7 + i as u32);
+            m.write_u32(sp + 0x50 + 8 * i, 0);
+            m.write_u32(sp + 0x54 + 8 * i, 7 + i as u32);
         }
         m.put_str(FMT, "%d%d%d%d%d%d%d%d%d%d");
         let regs = [BUF, FMT, 1, 2, 3, 4, 5, 6];

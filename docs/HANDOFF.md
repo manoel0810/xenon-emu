@@ -139,6 +139,12 @@ Achados novos:
 
 Próximo passo proposto: `VdSwap` segundo o Xenia (escrever fetch + `XE_SWAP` + NOPs em `buffer_ptr`), CP executando `XE_SWAP` (swap + `counter_`), e remover a chamada sintética de `VdSwap` do frame loop; depois verificar se a D3D sai do modo `[dev+0x2B90]` e volta a escrever o WPTR. Também pendente: `mftb` global (timebase única).
 
+**Atualização 9 (2026-10-24, `VdSwap` segundo o Xenia):** `VdSwap` (`kernel/video.rs`) escreve nos 64 dwords de `buffer_ptr` o Type-0 do fetch do frontbuffer (`SHADER_CONSTANT_FETCH_00_0`, endereço convertido para físico), `XE_SWAP` (`0xC0036400`, `'SWAP'` = `0x53574150`, endereço físico, largura, altura) e NOPs; o CP executa `XE_SWAP` (registra o swap e `counter_++`); o frame loop não chama mais `VdSwap` sozinho e o frontbuffer apresentado é o do último `VdSwap` real. Corrigido junto: **argumentos de pilha** (`StackArgs`) passam a ler slots de 8 bytes em `r1 + 0x50 + 8·i` (valor de 32 bits em `r1 + 0x54 + 8·i`, como o `get_arg_32` do Xenia), confirmado pela pilha na chamada da dash (`r1+0x50 = 00000000 93017A80 00000000 93017A84` → ponteiros de largura/altura). Antes, os ponteiros de largura/altura liam 0 e o `VdSwap` não escrevia nada.
+
+Verificado: o CP agora executa os pacotes de swap (total de pacotes 178 → 200, troca de 32 Type-0 de zeros por 54 pacotes). **Não destravou**: WPTR continua em 49 e o fence em `0xB`; a D3D continua no modo `[dev+0x2B90] = 1` depois do present do frame 1128.
+
+Situação: já corrigidos e verificados, sem efeito no travamento: argumentos/cadência do callback, `INTERRUPT`, MMIO fixos, `counter_`, `KeQueryPerformanceFrequency`, `VdSwap`/`XE_SWAP`. O que falta entender é **o que tira a D3D do modo `[dev+0x2B90] != 0`** ou o que submete o buffer onde `0x921B0188` encadeia os IBs (`r25` no caminho de `0x921B0F1C`). Pontos de leitura de `0x2B90` ainda não examinados: `0x921B127C`, `0x921B12D8`, `0x921B17D8`. Também em aberto: `mftb` por thread e `VdQueryVideoFlags`.
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.

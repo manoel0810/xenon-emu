@@ -226,6 +226,10 @@ impl KernelDispatcher {
     /// Returns the currently active frontbuffer address for presentation,
     /// alternating between frontbuffer and backbuffer across VdSwap cycles.
     pub fn active_frontbuffer(&self) -> u64 {
+        // The frontbuffer of the last guest VdSwap is what the GPU scans out (Xenia: XE_SWAP -> IssueSwap).
+        if self.last_swap_frontbuffer != 0 && self.last_swap_frontbuffer != 0x7000_0000 {
+            return self.last_swap_frontbuffer;
+        }
         if self.frontbuffer_ptr != 0 && self.backbuffer_ptr != 0 {
             if self.swap_count % 2 == 0 {
                 self.frontbuffer_ptr

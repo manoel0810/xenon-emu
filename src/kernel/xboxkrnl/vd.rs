@@ -117,13 +117,12 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x025B: VdSwap (Presentation / Frame Swap)
+            // 0x025B: VdSwap - writes the swap packets into the caller's command buffer (see kernel/video.rs)
             0x025B => {
-                self.swap_count += 1;
-                if let Some(&fb) = args.first() {
-                    if fb != 0 {
-                        self.last_swap_frontbuffer = fb;
-                    }
+                let sp = bus.current_sp;
+                if let Some(info) = super::super::video::vd_swap(bus, args, sp) {
+                    self.swap_count += 1;
+                    self.last_swap_frontbuffer = info.frontbuffer as u64;
                 }
                 0
             }

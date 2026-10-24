@@ -314,9 +314,9 @@ pub fn run(
             );
         }
 
-        // 5. Dispatch authentic VdSwap (#0x025B / 603) for frame presentation
+        // 5. Frontbuffer to present: the one passed to the guest's last VdSwap (the guest calls VdSwap itself; the
+        // swap packets it writes are executed by the CP as XE_SWAP).
         let frontbuffer = kernel.active_frontbuffer();
-        kernel.dispatch("xboxkrnl.exe", 0x025B, &[frontbuffer, frame], &mut bus);
 
         // 5b. Graphics interrupts (VdSetGraphicsInterruptCallback, #0x01D5), as Xenia: every vblank advances the GPU
         // counter and calls callback(0, context) on cpu 2; each PM4 INTERRUPT queued a callback(1, context) on its cpu.
