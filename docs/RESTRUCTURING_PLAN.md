@@ -136,7 +136,7 @@ xenon-emu/
   vendor/       módulos C/C++ isolados (estratégia B)
   tools/        os binários hoje em src/bin (ppcdis etc.)
   tests/        instruções PPC, PM4, shaders, golden frames, regressão da dash
-  scratch/      só scripts operacionais (iter.ps1, trapscan.ps1); descartáveis são removidos
+  scripts/      scripts operacionais (iter, trapscan, build_ref, cmp_diag, time_runs)
 ```
 
 ### 5.2 Regras de dependência
@@ -231,7 +231,7 @@ Detalhe completo em `THIRD_PARTY.md`. Resumo operacional:
 
 ## 8. Plano de execução por fases
 
-Cada fase tem objetivo, tarefas, critério de aceite e como validar. Rodar o emulador sempre com timeout (`scratch\iter.ps1`, `scratch\trapscan.ps1`).
+Cada fase tem objetivo, tarefas, critério de aceite e como validar. Rodar o emulador sempre com timeout (`xenon-emu\scripts\iter.ps1`, `xenon-emu\scripts\trapscan.ps1`).
 
 ### Fase 0: Linha de base e segurança (1 sessão)
 
@@ -253,7 +253,9 @@ Objetivo: arrumar o código sem alterar semântica.
 3. ~~Quebrar `main.rs` em `app/`, `ui/`, `diag/`~~ **Feito:** `main.rs` só chama `app::run()` e usa a lib (não recompila mais os módulos). `app/boot.rs` (milestones 1-4, VFS, KPCR), `app/legacy.rs` (caminho não-Metro: fases 1-5 e PM4 sintético), `app/xui.rs`, `app/gpu.rs`, `app/threads.rs` (`GuestThread`, `setup_kpcr`, restart), `app/frame_loop.rs`; `ui/window.rs`; na lib, `diag/{watchdog,trace,hooks,profile}.rs`. Saída idêntica ao build anterior (stdout e stderr) nos três conjuntos de variáveis; trapscan idêntico à baseline. Não exercitados: dump de trap (não há trap), disparo do watchdog e o caminho não-Metro.
 4. ~~Quebrar `exports.rs` e `xboxkrnl.rs` por área~~ **Feito:** `kernel/dispatcher.rs` (estado do `KernelDispatcher` e `dispatch`), `kernel/util.rs` (leitura de strings/paths do guest), `kernel/xboxkrnl/{ex,ke,mm,nt,rtl,xe_crypt,vd,misc}.rs` e `kernel/xam/{net,user,content,notify,ui,input,app,misc}.rs`. Cada área devolve `None` para ordinal que não trata; os ordinals são disjuntos, então a ordem de tentativa não muda nada. Área decidida pelo nome oficial do primeiro ordinal do braço; `Io*` e `Ob*` ficaram em `nt.rs` (poucos braços). Nomes de exports em `kernel/exports/{xboxkrnl,xam}_names.rs` (gerados por `gen_exports`, caminho público `kernel::exports::*` mantido). Verificado: as 1707 linhas de braço e os 321 ordinals são os mesmos; saída idêntica ao build anterior.
 5. ~~Dividir `cpu/interpreter.rs` por grupo de opcode~~ **Feito:** `Cpu::step` só busca, decodifica e despacha; a semântica está em `cpu/ops/{int,branch,loadstore,float,vmx,system}.rs` (`exec_<grupo>` para opcodes primários e `exec_<grupo>_x31` para o opcode 31 por `xo`). Braços copiados literalmente; os helpers VMX128 foram para `ops/vmx.rs`. Saída idêntica ao build anterior e tempo de execução igual (dentro do ruído).
-6. Limpar `scratch/`: manter `iter.ps1`, `trapscan.ps1`; arquivar/remover os Python de análise já obsoletos **após confirmação do usuário** (deleção em lote exige confirmação).
+6. ~~Limpar `scratch/`~~ **Feito (com confirmação do usuário):** `iter.ps1` e `trapscan.ps1` foram para `xenon-emu/scripts/` (versionados), junto com `build_ref.ps1`, `cmp_diag.ps1` e `time_runs.ps1`; 17 scripts da pesquisa de untile arquivados em `_archive/scratch-untile-2026-10-22/` (fora do git, dependem do dump proprietário); 9 scripts cujas entradas não existem mais foram removidos. As pastas `scratch/` deixaram de existir.
+
+**Fase 1 concluída.**
 
 Aceite: baseline da Fase 0 idêntica (mesmos passos, PCs e contadores) após cada etapa. Uma etapa por vez, com build e `trapscan` entre elas.
 
@@ -370,7 +372,7 @@ Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem
 
 - Promover para workspace Cargo com vários crates já na Fase 1, ou só após estabilizar?
 - Backend gráfico preferido para a Fase 4: wgpu, Vulkan direto ou rasterizador em CPU primeiro?
-- Quais scripts de `scratch/` e binários de `src/bin` podem ser removidos?
+- Quais binários de `tools/` (ex-`src/bin`) podem ser removidos? (`scratch/` já resolvido na Fase 1.)
 - Nível de rede real desejado (apenas local/DNS/HTTP, ou algo mais)?
 
 ---

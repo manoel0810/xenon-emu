@@ -6,8 +6,9 @@ Idioma de trabalho com o usuário: **português**. Respostas concisas.
 
 - **Não usar workflows** (o usuário pediu explicitamente). Trabalhar direto.
 - **Sempre usar timeout** ao executar o emulador ou scripts externos. Travar a ferramenta congela a sessão.
-  - `.\scratch\iter.ps1 -Frames N [-NoBuild] [-TimeoutSec 60] [-Env 'XENON_X=1',...]` (saída em `%TEMP%\iter_run.txt` e `.err`)
-  - `.\scratch\trapscan.ps1 -Frames 400 -TimeoutSec 150`
+  - `.\xenon-emu\scripts\iter.ps1 -Frames N [-NoBuild] [-TimeoutSec 60] [-Env 'XENON_X=1',...]` (saída em `%TEMP%\iter_run.txt` e `.err`; roda a partir da raiz do workspace)
+  - `.\xenon-emu\scripts\trapscan.ps1 -Frames 400 -TimeoutSec 150`
+  - Refactor sem mudança de comportamento: `build_ref.ps1`, `cmp_diag.ps1`, `time_runs.ps1` em `xenon-emu\scripts\` (ver `docs/BASELINE.md`).
   - Verificar o build com uma chamada separada de `cargo build --release` e conferir "Finished" (a saída de build às vezes é engolida). O `XenonEmu.exe` na raiz pode estar travado.
 - Não criar commits sem pedido explícito. Nunca `git add .`.
 - **Decisão do usuário (fechada): estratégia A + B pontual.** Portar para Rust usando o Xenia/Canary como especificação; chamar C/C++ **apenas** para módulos isolados e de baixo acoplamento (via FFI). **Proibido** fazer fork do Xenia ou embutir seu runtime (JIT, `Processor`, `Memory`, backends D3D12/Vulkan, `GraphicsSystem`). O produto continua sendo o xenon-emu em Rust.
@@ -21,7 +22,7 @@ Rodar o **dashboard retail original do Xbox 360 (`dash.xex`, build 17559)** como
 
 - Imagem da dash: `D:\XBOX 360 - Firmeware Emulator\SystemUpdate_17559_USB\$SystemUpdate\dash.xex` (base `0x92000000`, entry `0x92196610`, stack_top `0x93018000`).
 - Projeto: `D:\XBOX 360 - Firmeware Emulator\xenon-emu` (Rust). Módulos: `cpu`, `crypto`, `gpu`, `kernel`, `loader`, `memory`, mais `tools/` (crate `xenon-tools` no workspace, 42 ferramentas em `tools/src/bin`).
-- Extras na raiz: `extracted_xui/` (XUR/XUI extraídos), `Corona 16mb/` (dump de NAND), `scratch/` (scripts e Python de análise), `xbox360_real_framebuffer.raw` (dump de referência do framebuffer real).
+- Extras na raiz: `extracted_xui/` (XUR/XUI extraídos), `Corona 16mb/` (dump de NAND), `_archive/` (scripts de análise antigos, fora do git: pesquisa de untile em `scratch-untile-2026-10-22/`), `_git_backup/` (o `.git` contaminado anterior), `xbox360_real_framebuffer.raw` (dump de referência do framebuffer real).
 
 ## 2. Estado atual (resumo honesto)
 

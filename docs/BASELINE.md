@@ -13,9 +13,9 @@ Referência de comportamento antes da reestruturação. Toda etapa da Fase 1 dev
 A partir de `D:\XBOX 360 - Firmeware Emulator`:
 
 ```powershell
-.\scratch\trapscan.ps1 -Frames 400 -TimeoutSec 150
-.\scratch\iter.ps1 -Frames 400 -NoBuild -TimeoutSec 150 -Env 'XENON_HEADLESS=1','XENON_PM4_LOG=1'
-.\scratch\iter.ps1 -Frames 400 -NoBuild -TimeoutSec 150 -Env 'XENON_HEADLESS=1','XENON_PC_PROFILE=1'
+.\xenon-emu\scripts\trapscan.ps1 -Frames 400 -TimeoutSec 150
+.\xenon-emu\scripts\iter.ps1 -Frames 400 -NoBuild -TimeoutSec 150 -Env 'XENON_HEADLESS=1','XENON_PM4_LOG=1'
+.\xenon-emu\scripts\iter.ps1 -Frames 400 -NoBuild -TimeoutSec 150 -Env 'XENON_HEADLESS=1','XENON_PC_PROFILE=1'
 ```
 
 As três execuções deram números idênticos (execução determinística).
@@ -90,6 +90,17 @@ Syscalls mais chamadas: thread 0x3 `xboxkrnl #0x0125` e `#0x0130` (121712 cada),
 ## Não determinismo conhecido
 
 Tabelas montadas a partir de `HashMap` mudam de ordem entre execuções: o dump de campos opcionais do cabeçalho XEX no boot e, nas tabelas top-N (`[PROFILE]`, `[SYSCALL SUMMARY]`), a ordem e o último item entre entradas empatadas. Comparar essas seções como conjunto, ignorando empates no corte.
+
+## Comparar com um build anterior
+
+Para refactors que não devem mudar comportamento (a partir de `D:\XBOX 360 - Firmeware Emulator`):
+
+```powershell
+$old = .\xenon-emu\scripts\build_ref.ps1 -Ref HEAD   # build do commit de referência num worktree temporário
+.\xenon-emu\scripts\cmp_diag.ps1 -Old $old          # 3 conjuntos de XENON_* (logs, hooks, watch): stdout e stderr
+.\xenon-emu\scripts\time_runs.ps1 -Old $old         # tempo de 400 frames, alternando old/new
+.\xenon-emu\scripts\build_ref.ps1 -Clean            # remove o worktree
+```
 
 ## Critério de regressão (Fase 1)
 
