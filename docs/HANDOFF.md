@@ -76,6 +76,28 @@ Também divergente do Xenia (não corrigido): `VdQueryVideoFlags` (`0x01C9`) dev
 
 **Bloqueio atual (é o da Fase 2):** a thread principal gira em `0x921A40B0` (laço quente `0x921A40D0..0x921A40EC`), chamada a partir do laço de fence (`LR = 0x921B0000`, faixa `0x921AFFF8..0x921B0020`). Cadeia: `0x921A61C0` ← `0x92187048` ← `0x9218585C` ← `0x921871F0` (retorno de `0x92185790`, o laço principal da aplicação chamado pelo `main`). Ou seja, agora a espera de fence acontece no caminho normal, não no shutdown. Histograma PM4 até o frame 1400: `0x10`×5, `0x21`×3, `0x2B`×5, `0x36`×26, `0x3B`×8, `0x3C`×10, `0x3F`×13, **`0x45` (COND_WRITE)×256**, `0x46`×1, `0x48`×1, `0x54` (INTERRUPT)×1, `0x58`×12, `0x60`×3, `0x61`..`0x63`×2; Type-0: 396. Próximo passo: instrumentar a condição do fence (`0x90102000`?) com watchpoint e conferir `COND_WRITE`, `EVENT_WRITE_SHD`, `INTERRUPT` e a entrega de interrupções contra o `command_processor.cc` do Xenia.
 
+**Diagnóstico do fence (2026-10-24, Fase 2; só instrumentação, CP não alterado):**
+
+1. **O que a thread principal espera.** Laço em `0x921B0008..0x921B0020`: `while ((issued − target) < (issued − *fence_ptr)) 0x921A40B0()`, com device D3D `r31 = 0x40002400`, `fence_ptr = [dev+0x2B10] = 0x90102000`, `issued = [dev+0x2B1C] = 0x15`, **`target = 0xD`** (frame 1233).
+2. **O que a GPU escreveu.** Watchpoint em `0x90102000`: `1 → 3 → 5 → 7 → 9 → 0xB`, cada um por `EVENT_WRITE_SHD [3, 0x10102002, n]` (endereço físico `0x10102000`, endian 2). O último (`0xB`) vem do lote do frame 1176.
+3. **O CP não está travado: não chega mais trabalho.** A última escrita em `CP_RB_WPTR` é no frame 1176 (`WPTR = 49`, ring `0x10104000`, 8192 dwords), e o CP consumiu tudo (`RPTR = 49`). O fence 13 já foi emitido pela D3D (`issued = 0x15`), mas os comandos dele nunca foram submetidos. O WPTR é escrito por `0x921AFBC0`, chamada por `0x921B4DC8`/`0x921B4FDC` (rotinas de kick).
+4. **O callback de interrupção da GPU nunca fez nada.** Callback da dash: `0x921AFCA0(r3 = source, r4 = device)`. `source == 1` (CP): chama o handler em `[[dev+0x2B14]+0x10]` e limpa o bit da CPU em `[[dev+0x2B14]]`. `source == 0` (VBlank): lê o MMIO `0x7FC86544` (registrador `0x1951`, "interrupt status") e, com o bit 0 ligado, chama `0x921A4BF0(device)`, que mexe no MMIO da GPU e faz `KeSetEvent`. O nosso frame loop chama com **`r3 = data` (`0x40002400`), `r4 = 1`, `r5 = frame`**: nenhum ramo executa.
+
+Diferenças em relação ao Xenia (`451f9155`: `graphics_system.cc`, `kernel_state.cc` `EmulateCPInterruptDPC`, `pm4_command_processor_implement.h`):
+
+| Ponto | Xenia | Nosso | Efeito |
+|---|---|---|---|
+| Argumentos do callback | `(source, interrupt_callback_data)`, como DPC na thread atual (process type title) | `(data, 1, frame)`, como thread agendada | callback inerte |
+| VBlank | `MarkVblank`: `counter_++` e callback `(0, cpu 2)` em toda VBlank | callback a cada 2 frames | sem VBlank para a D3D |
+| `INTERRUPT` (`0x54`) | callback `(1, n)` para cada bit de `cpu_mask` | só `pending_interrupts += 1` | interrupção de CP perdida |
+| MMIO `0x1951` | leitura devolve 1 (VBlank); também `0x0F00`, `0x0F01`, `0x0F2D`, `0x1961` fixos | devolve o último valor escrito (0) | ramo de VBlank não roda |
+| `counter_` | incrementa em VBlank e `XE_SWAP` | incrementa a cada `EVENT_WRITE_SHD` | valor errado com bit 31 do initiator |
+| Endianness em `EVENT_WRITE_SHD`/`COND_WRITE`/`MEM_WRITE` | `GpuSwap` pelos 2 bits baixos do endereço | ignora (certo só no modo 2, o que a dash usa hoje) | latente |
+| Janela de writeback em `EVENT_WRITE_SHD` | endereço > `0x1FFFFFFF` vai para `0x7F000000 + (addr − WRITEBACK_START)` | ausente | latente |
+| `WAIT_REG_MEM` | espera de verdade | força a condição | ok enquanto o CP for síncrono |
+
+Hipótese principal (não confirmada): a submissão do trabalho seguinte depende do processamento de VBlank/interrupção da D3D (`0x921A4BF0` e o handler de CP), que nunca roda. Próximo passo proposto: corrigir argumentos e cadência do callback, `INTERRUPT`, `0x1951` e `counter_` segundo o Xenia e verificar se o `CP_RB_WPTR` volta a andar e o fence passa de `0xB`.
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.
