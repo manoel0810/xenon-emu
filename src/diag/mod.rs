@@ -3,6 +3,11 @@
 
 use std::sync::OnceLock;
 
+pub mod hooks;
+pub mod profile;
+pub mod trace;
+pub mod watchdog;
+
 #[derive(Debug, Clone, Default)]
 pub struct DiagConfig {
     // ---- Run control / presentation ----

@@ -250,7 +250,7 @@ Objetivo: arrumar o código sem alterar semântica.
 
 1. ~~Mover `src/bin/*` para `tools/`~~ **Feito:** crate `xenon-tools` em `tools/` (workspace com `default-members`, então `cargo build --release` continua gerando `ppcdis.exe` em `target/release`). Baseline idêntica.
 2. ~~Criar `diag/` com `DiagConfig`~~ **Feito:** `src/diag/mod.rs` (`DiagConfig::from_env`, `diag::config()` com `OnceLock`); nenhum `std::env::var` fora dele. Saída comparada com o build anterior em três conjuntos de variáveis: idêntica.
-3. Quebrar `main.rs` em `app/`, `ui/`, `diag/`.
+3. ~~Quebrar `main.rs` em `app/`, `ui/`, `diag/`~~ **Feito:** `main.rs` só chama `app::run()` e usa a lib (não recompila mais os módulos). `app/boot.rs` (milestones 1-4, VFS, KPCR), `app/legacy.rs` (caminho não-Metro: fases 1-5 e PM4 sintético), `app/xui.rs`, `app/gpu.rs`, `app/threads.rs` (`GuestThread`, `setup_kpcr`, restart), `app/frame_loop.rs`; `ui/window.rs`; na lib, `diag/{watchdog,trace,hooks,profile}.rs`. Saída idêntica ao build anterior (stdout e stderr) nos três conjuntos de variáveis; trapscan idêntico à baseline. Não exercitados: dump de trap (não há trap), disparo do watchdog e o caminho não-Metro.
 4. Quebrar `exports.rs` e `xboxkrnl.rs` por área mantendo a mesma tabela de ordinals.
 5. Dividir `cpu/interpreter.rs` por grupo de opcode.
 6. Limpar `scratch/`: manter `iter.ps1`, `trapscan.ps1`; arquivar/remover os Python de análise já obsoletos **após confirmação do usuário** (deleção em lote exige confirmação).

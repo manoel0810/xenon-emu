@@ -39,7 +39,7 @@ Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24,
 
 ## 3. Mapa de código (tamanhos aproximados)
 
-`kernel/exports.rs` 2674, `cpu/interpreter.rs` 2469, `kernel/xboxkrnl.rs` 2073, `gpu/display.rs` 1707, `main.rs` 1471 (monolítico), `gpu/xenos.rs` 876, `loader/xex.rs` 544, `gpu/shader.rs` 417, `memory/bus.rs` 281, `cpu/altivec.rs` 262.
+`kernel/exports.rs` 2674, `cpu/interpreter.rs` 2469, `kernel/xboxkrnl.rs` 2073, `gpu/display.rs` 1707, `app/` (ex-`main.rs`: `boot`, `frame_loop`, `threads`, `legacy`, `xui`, `gpu`), `ui/window.rs`, `diag/` (`watchdog`, `trace`, `hooks`, `profile`), `gpu/xenos.rs` 876, `loader/xex.rs` 544, `gpu/shader.rs` 417, `memory/bus.rs` 281, `cpu/altivec.rs` 262.
 
 Memória:
 - Janela virtual guest `0x40000000..0x8FFFFFFF` com backing privado sob demanda em chunks de 64KB do pool físico `0x14000000..0x1FFFFFFF`. `valloc_bump` começa em `0x40000000`.
