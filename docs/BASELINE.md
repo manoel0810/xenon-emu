@@ -134,6 +134,10 @@ GPU: [GPU CP] Frame 00028 | Processed 3 PM4 packets (Total: 72, Draw Calls: 0, P
 
 O `main` não retorna mais. Em 1500 frames a thread principal para no frame 1100: `Unimplemented VMX128 vpkd3d128 (insn=0x1BE166D4)` em `0x9221FA28`.
 
+## Depois de vpkd3d128 (Fase 2, 2026-10-24)
+
+3000 frames (~23 s headless): a thread principal para no frame 1175 com `Trap condition met (twi TO=6 r9=0 SIMM=0) at PC=0x921BEB30`. Último PM4: frame 1175, total 178 pacotes, 0 draws. Frontbuffer a partir do frame 1175: `0x90314000`.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

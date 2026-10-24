@@ -2,6 +2,7 @@
 
 mod int;
 mod branch;
+mod d3d_pack;
 mod loadstore;
 mod float;
 mod vmx;

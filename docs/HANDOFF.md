@@ -28,7 +28,7 @@ Rodar o **dashboard retail original do Xbox 360 (`dash.xex`, build 17559)** como
 
 | Camada | Abordagem | Estado |
 |---|---|---|
-| CPU PPC | LLE, interpretador (`cpu/interpreter.rs` decodifica; semântica em `cpu/ops/{int,branch,loadstore,float,vmx,system}.rs`; `cpu/altivec.rs`) | Estável. Thread principal roda 400+ frames sem trap (~8,6M passos). Faltam `vpkd3d128` e `vupkd3d128` tipos 2 e 6. |
+| CPU PPC | LLE, interpretador (`cpu/interpreter.rs` decodifica; semântica em `cpu/ops/{int,branch,loadstore,float,vmx,system,d3d_pack}.rs`; `cpu/altivec.rs`) | Estável. VMX128 D3D pack/unpack completos (`cpu/ops/d3d_pack.rs`). A thread principal roda até o frame 1175 (bloqueio de HLE, ver abaixo). |
 | Kernel (xboxkrnl) | HLE (`kernel/dispatcher.rs`, `kernel/xboxkrnl/*`, `kernel/xam/*`, nomes em `kernel/exports/`) | Funcional, mas **esperas não bloqueiam** (`KeWait*`/`NtWait*` retornam sucesso). Sem escalonador, sem object manager real. |
 | XAM | HLE (stubs offline) | Suficiente para a dash avançar; sem UI, notify ou rede reais. |
 | GPU (Xenos) | Improvisada (`gpu/xenos.rs`, `gpu/pm4.rs`, `gpu/shader.rs`, `gpu/display.rs`) | A tabela PM4 de `pm4.rs` é **inventada** (só NOP 0x10, WAIT_REG_MEM 0x3C, INDIRECT 0x3F, ME_INIT 0x48 batem). Shaders ucode não são executados. 0 draws rasterizados. |
@@ -62,6 +62,10 @@ Próximo bloqueio: no **frame 1100** a thread principal para em `0x9221FA28` com
 
 Observação: com a dash seguindo o caminho normal, o PM4 para no frame 28 (72 pacotes). Os 120 pacotes e os 24 `DRAW_INDX_2` da baseline vinham do **caminho de erro/shutdown** (frames 216..255), não da inicialização normal. A thread 0x3 continua girando em `RtlEnterCriticalSection`/`RtlLeaveCriticalSection` (`0x0125`/`0x0130`) e `0x00F4` (esperas não bloqueantes, Fase 3).
 
+**Atualização 4 (2026-10-24, depois de `vpkd3d128` e `vupkd3d128` completos em `src/cpu/ops/d3d_pack.rs`):** todos os 7 tipos de pack/unpack e as máscaras pack 1/2/3 × shift 0..3. A instrução da dash (`0x1BE166D4`) é `vpkd3d128 v63, v12`, D3DCOLOR, VPACK_32, shift 3. Os tipos 3/5 do unpack passaram a usar a conversão half do Xenos (`xenos_half_to_float`: expoente 31 é normal, denormais zeram), em vez de IEEE.
+
+A dash passa do frame 1100, troca o frontbuffer (`0x906AC000` → `0x90314000`) e envia mais PM4 (178 pacotes no total no frame 1175). Próximo bloqueio: **frame 1175**, `twi 6, r9, 0` em `0x921BEB30` (checagem de divisão por zero do compilador antes de `divwu r11, r10, r9`, com `r10 = [[0x92000EC0]]`). `r9 = [r1+0x7C]` é o campo `+0x1C` (`pixel_rate`) do `X_VIDEO_MODE` em `r1+0x60`, preenchido por `VdQueryVideoMode` (chamado em `0x921BE904`). **Nossa HLE de `VdQueryVideoMode` (`0x01CA`) usa layout errado:** grava 60 (inteiro) em `+0x10` (`is_hi_def`) e deixa `refresh_rate` (`+0x14`, float), `video_standard`, `pixel_rate` e `widescreen_flag` em 0. Layout de 48 bytes e valores do Xenia: `kernel.h` (`X_VIDEO_MODE`) e `xboxkrnl_video.cc` (`pixel_rate = 0x8A`, `refresh_rate` 60.0/50.0, `widescreen_flag` 1/3, `is_hi_def = width >= 0x500`).
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.
@@ -77,6 +81,8 @@ Memória:
 - KPCR por thread: `0x93100000 + slot*0x2000` (`setup_kpcr`). Um KPCR compartilhado vazava last-error entre threads.
 
 Threads da dash (entrada): principal Metro; dinâmicas 0x1 (`0x92261CE8`), 0x2 (`0x921C9830`), 0x3/0x4 (`0x9281FBC0`, XUI), 0x5-0x8 (`0x92267C58`), 0x9 (`0x9226A2A8`, KeWaitForMultipleObjects + spinlock por frame), 0xA (`0x927C6D08`, loop XamUser*), 0xB/0xC (`0x9226E410`; 0xB chama ExTerminateThread ~151x e é reiniciada), 0xD..0x13 (ver `XENON_SYSCALL_SUMMARY`).
+
+VMX128: `vpkd3d128` e `vupkd3d128` completos (todos os tipos) em `src/cpu/ops/d3d_pack.rs`.
 
 Exports HLE ainda não tratados (vistos em 400 frames depois da família printf): xboxkrnl `0x0015, 0x004B, 0x0082, 0x00F5, 0x0111`; xam `0x001A, 0x0200, 0x0282, 0x0291, 0x03CA, 0x058A, 0x058C, 0x058D, 0x059F, 0x05DC, 0x05E7, 0x07E2`. Família printf (`0x013A`, `0x013B`, `0x013D`, `0x013E`, `0x014D`..`0x0151`) implementada em `src/kernel/strings.rs`, com testes (`cargo test --release --lib kernel::strings`).
 

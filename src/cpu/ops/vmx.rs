@@ -3,6 +3,8 @@
 use crate::cpu::interpreter::{Cpu, StepResult};
 use crate::memory::MemoryBus;
 
+use super::d3d_pack;
+
 impl Cpu {
     /// Primary opcodes: 4 | 5 | 6.
     #[inline(always)]
@@ -372,50 +374,16 @@ impl Cpu {
                             res[i * 2..i * 2 + 2].copy_from_slice(&h.to_be_bytes());
                         }
                     }
-                    // vupkd3d128: D3D-type unpack, not implemented yet
-                    0x7F0 => match imm >> 2 {
-                        // VPACK_D3DCOLOR: word 3 = 0xAARRGGBB -> (R, G, B, A) as 1.0f | byte
-                        0 => {
-                            let c = vw(&b, 3);
-                            set_vw(&mut res, 0, 0x3F80_0000 | ((c >> 16) & 0xFF));
-                            set_vw(&mut res, 1, 0x3F80_0000 | ((c >> 8) & 0xFF));
-                            set_vw(&mut res, 2, 0x3F80_0000 | (c & 0xFF));
-                            set_vw(&mut res, 3, 0x3F80_0000 | (c >> 24));
+                    // vupkd3d128: D3D-type unpack, IMM >> 2 = type (see ops/d3d_pack.rs)
+                    0x7F0 => {
+                        let lanes = [vw(&b, 0), vw(&b, 1), vw(&b, 2), vw(&b, 3)];
+                        let Some(out) = d3d_pack::unpack(imm >> 2, lanes) else {
+                            return Err(format!("Unimplemented VMX128 vupkd3d128 type {} (insn=0x{:08X}) at PC=0x{:08X}", imm >> 2, insn, pc));
+                        };
+                        for i in 0..4 {
+                            set_vw(&mut res, i, out[i]);
                         }
-                        // VPACK_NORMSHORT2: signed shorts of word 3 -> (3.0 + hi*2^-22, 3.0 + lo*2^-22, 0.0, 1.0)
-                        1 => {
-                            let w = vw(&b, 3);
-                            set_vw(&mut res, 0, unpack_short_as_3(((w >> 16) as u16) as i16));
-                            set_vw(&mut res, 1, unpack_short_as_3((w as u16) as i16));
-                            set_vf(&mut res, 2, 0.0);
-                            set_vf(&mut res, 3, 1.0);
-                        }
-                        // VPACK_NORMSHORT4: words 2 and 3 -> four signed shorts as 3.0 + s*2^-22
-                        4 => {
-                            let (w2, w3) = (vw(&b, 2), vw(&b, 3));
-                            set_vw(&mut res, 0, unpack_short_as_3(((w2 >> 16) as u16) as i16));
-                            set_vw(&mut res, 1, unpack_short_as_3((w2 as u16) as i16));
-                            set_vw(&mut res, 2, unpack_short_as_3(((w3 >> 16) as u16) as i16));
-                            set_vw(&mut res, 3, unpack_short_as_3((w3 as u16) as i16));
-                        }
-                        // VPACK_FLOAT16_2: two halves in word 3 -> (x, y, 0.0, 1.0)
-                        3 => {
-                            let w = vw(&b, 3);
-                            set_vf(&mut res, 0, half_to_f32((w >> 16) as u16));
-                            set_vf(&mut res, 1, half_to_f32(w as u16));
-                            set_vf(&mut res, 2, 0.0);
-                            set_vf(&mut res, 3, 1.0);
-                        }
-                        // VPACK_FLOAT16_4: words 2 and 3 -> four halves
-                        5 => {
-                            let (w2, w3) = (vw(&b, 2), vw(&b, 3));
-                            set_vf(&mut res, 0, half_to_f32((w2 >> 16) as u16));
-                            set_vf(&mut res, 1, half_to_f32(w2 as u16));
-                            set_vf(&mut res, 2, half_to_f32((w3 >> 16) as u16));
-                            set_vf(&mut res, 3, half_to_f32(w3 as u16));
-                        }
-                        t => return Err(format!("Unimplemented VMX128 vupkd3d128 type {} (insn=0x{:08X}) at PC=0x{:08X}", t, insn, pc)),
-                    },
+                    }
                     _ => {
                         if (insn & 0x630) == 0x210 {
                             // vpermwi128: 8-bit permute = PERMh(bits 8..6) << 5 | PERMl(bits 20..16)
@@ -425,7 +393,17 @@ impl Cpu {
                                 set_vw(&mut res, i, vw(&b, sel));
                             }
                         } else if (insn & 0x730) == 0x610 {
-                            return Err(format!("Unimplemented VMX128 vpkd3d128 (insn=0x{:08X}) at PC=0x{:08X}", insn, pc));
+                            // vpkd3d128: pack VB (type = IMM >> 2) and merge into VD by IMM & 3 / z (see ops/d3d_pack.rs)
+                            let z = (insn >> 6) & 3;
+                            let d = self.regs.vr[vd];
+                            let old = [vw(&d, 0), vw(&d, 1), vw(&d, 2), vw(&d, 3)];
+                            let lanes = [vw(&b, 0), vw(&b, 1), vw(&b, 2), vw(&b, 3)];
+                            let Ok(out) = d3d_pack::vpkd3d128(old, lanes, imm, z) else {
+                                return Err(format!("Unimplemented VMX128 vpkd3d128 type {} pack {} (insn=0x{:08X}) at PC=0x{:08X}", imm >> 2, imm & 3, insn, pc));
+                            };
+                            for i in 0..4 {
+                                set_vw(&mut res, i, out[i]);
+                            }
                         } else if (insn & 0x730) == 0x710 {
                             // vrlimi128: rotate VB left by z words, then insert words selected by mask (imm[3:0], MSB = word 0)
                             let z = ((insn >> 6) & 3) as usize;
@@ -732,31 +710,4 @@ fn fmax_ppc(a: f32, b: f32) -> f32 {
 }
 fn fmin_ppc(a: f32, b: f32) -> f32 {
     if a.is_nan() { a } else if b.is_nan() { b } else if a < b { a } else { b }
-}
-/// IEEE 754 binary16 -> binary32
-fn half_to_f32(h: u16) -> f32 {
-    let sign = ((h >> 15) & 1) as u32;
-    let exp = ((h >> 10) & 0x1F) as u32;
-    let man = (h & 0x3FF) as u32;
-    let bits = if exp == 0 {
-        if man == 0 {
-            sign << 31
-        } else {
-            // subnormal: normalize
-            let mut e = 127 - 15 + 1;
-            let mut m = man;
-            while m & 0x400 == 0 { m <<= 1; e -= 1; }
-            (sign << 31) | ((e as u32) << 23) | ((m & 0x3FF) << 13)
-        }
-    } else if exp == 0x1F {
-        (sign << 31) | 0x7F80_0000 | (man << 13)
-    } else {
-        (sign << 31) | ((exp + 127 - 15) << 23) | (man << 13)
-    };
-    f32::from_bits(bits)
-}
-/// vupkd3d NORMSHORT helper: bits of 3.0f plus the sign-extended short; -32768 yields a quiet NaN (hardware overflow marker).
-fn unpack_short_as_3(s: i16) -> u32 {
-    let r = 0x4040_0000u32.wrapping_add(s as i32 as u32);
-    if r == 0x403F_8000 { 0x7FC0_0000 } else { r }
 }
