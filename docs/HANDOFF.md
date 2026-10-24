@@ -108,6 +108,26 @@ Hipótese principal (não confirmada): a submissão do trabalho seguinte depende
 
 Próximo passo: auditar o processamento dos indirect buffers dessas submissões (tamanhos `0xB`, `0x43`, `0xB`, `0x923`, `0xB`, `0x14` no frame 1129): despejar cada IB e listar onde estão os `EVENT_WRITE_SHD` com os valores `0xD..0x15`. Diferenças conhecidas do decodificador em relação ao Xenia: opcode com máscara `0xFF` (Xenia `0x7F`), bit de predicação (bit 0) e flag de registrador único do Type-0 (bit 15) ignorados; em erro de decodificação dentro de um IB o nosso CP pula 1 dword.
 
+**Auditoria dos indirect buffers (2026-10-24, só instrumentação; CP não alterado):**
+
+1. **O CP executou tudo o que recebeu.** Nos frames 1128/1129 o ring recebeu 8 IBs; os 4 `EVENT_WRITE_SHD` de fence estão nos IBs de conteúdo e foram executados:
+
+   | Frame | IB | Tamanho | Conteúdo | Fence |
+   |---|---|---|---|---|
+   | 1128 | `0x1011C120` | 6 | 3 × T0 | — |
+   | 1128 | `0x1010C120` | 0x198 | 101 pacotes (2 draws) | 5 |
+   | 1129 | `0x1011C160` / `0x1011C1A0` / `0x1011C1E0` | 0xB | WAIT_REG_MEM + 2 × T0 (coerência) | — |
+   | 1129 | `0x1010C780` | 0x43 | 21 (`INTERRUPT`, 5 × WAIT_REG_MEM) | 7 |
+   | 1129 | `0x1010C8A0` | 0x923 | 524 (256 × COND_WRITE) | 9 |
+   | 1129 | `0x1010ED40` | 0x14 | 8 | 0xB |
+
+   Os fences `0xD..0x15` **não estão em nenhum IB submetido**. (O watch anterior de `issued` misturava execuções; o que vale é este.)
+2. **Fluxo de kick da D3D.** Cada kick: IB de coerência por `0x921B14C8`; fence gravado no segmento (`0x921B0960`, retorno em `0x921B11BC`); conteúdo por `0x921B0EB0` → submissão `0x921B0480` (escreve WPTR em `0x921B06FC`). `0x921B0EB0` tem 3 caminhos: `[dev+0x3520] != 0` → lista adiada (`dev+0x35C0`); `[dev+0x2B90] != 0` → caminho assíncrono com spinlock (`0x921B0188`/`0x921C9BB8`) que incrementa `[dev+0x2B90]`; senão submissão direta.
+3. **O segmento do fence 0xD foi para o caminho assíncrono.** Kicks dos fences 5..0xB: `[dev+0x2B90] = 0` (diretos). Kick do fence 0xD (via `0x921A6188`, caminho de present): **`[dev+0x2B90] = 1`**, sem submissão. A fila da thread 0x2 (`ctx 0x400051A4`, `[ctx+0x54] = [ctx+0x58] = 0`) está vazia; o segmento não foi para lá.
+4. **O handler de interrupção de CP da D3D cai num trap.** O `INTERRUPT` do IB `0x1010C780` é entregue (frame 1130) e o callback chama `[[dev+0x2B14]+0x10] = 0x921A4D20` com `r3 = [0x90103014] = 0x100`. `0x921A4D20` (temporização do present) chama **`KeQueryPerformanceFrequency`** e faz `r11 = freq / r28` (`r28 = [dev+0x55CC]` ou 60), `twi 6, r28, 0`, `twi 6, r11, 0`. **Nosso `KeQueryPerformanceFrequency` (`0x0083`) trata `r3` como ponteiro, grava 50 000 000 (u64) nesse endereço e devolve 1.** No Xenia (`xboxkrnl_threading.cc`) a função **não tem argumento e devolve a frequência** (`Clock::guest_tick_frequency()`, 50 MHz). Resultado: `freq = 1`, `r11 = 0` em `0x921A4DB4` → trap (hook confirmou `r11 = 0`; `0x921A4DB8` nunca executa). A thread do callback não é contínua e é desativada em silêncio. Efeito colateral: cada chamada grava 8 bytes no endereço que estiver em `r3` (aqui `0x100`).
+
+**Diagnóstico:** o CP não perde nada; o trabalho após o fence 0xB fica no caminho assíncrono da D3D, cuja continuação depende do handler de interrupção de CP, e esse handler cai num trap por causa da assinatura errada de `KeQueryPerformanceFrequency`. Elo ainda não verificado: que o handler `0x921A4D20` (ou o que ele dispara) seja quem submete o segmento pendente e zera `[dev+0x2B90]`.
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.
