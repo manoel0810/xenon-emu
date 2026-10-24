@@ -34,7 +34,25 @@ Rodar o **dashboard retail original do Xbox 360 (`dash.xex`, build 17559)** como
 | GPU (Xenos) | Improvisada (`gpu/xenos.rs`, `gpu/pm4.rs`, `gpu/shader.rs`, `gpu/display.rs`) | A tabela PM4 de `pm4.rs` é **inventada** (só NOP 0x10, WAIT_REG_MEM 0x3C, INDIRECT 0x3F, ME_INIT 0x48 batem). Shaders ucode não são executados. 0 draws rasterizados. |
 | Apresentação | `BufferSource::LiveEmulation` (guest) por padrão; `XENON_FB_SOURCE=reference` usa o dump; tecla `[B]` alterna. |
 
-**Bloqueio atual:** a thread principal gira no loop de espera de fence em `0x921AFFF8..0x921B0020`, chamando `0x921A40B0` (~206x/frame). Ela compara com o fence em `0x90102000` (objeto r31+0x2B10) e espera o valor 5. A dash envia PM4 pelo ring `0x10104000` (32KB) e atualiza `CP_RB_WPTR` por MMIO `0x7FC80714` (código em `0x921AFBC0`). Fence 3 e depois 5 são escritos por `EVENT_WRITE_SHD (0x58)`; o 5 chega tarde pelo caminho do callback de VBlank. A causa exata de o loop não liberar **não está confirmada**.
+**Bloqueio atual (confirmado em 2026-10-24, Fase 2):** a thread principal **não** está presa no fence. O `main` da dash (`0x921870A0`, entra no frame 3) **retorna `0x80070057` (E_INVALIDARG) no frame 255**, e o CRT encerra o título. Cadeia, verificada com `XENON_PC_HOOK` nos pontos de retorno:
+
+1. `mainCRTStartup` (`0x92196780..0x921967C4`): `r30 = main(argc, argv)` → `DbgPrint("[XAPI RETURN VALUE] %d\n", r30)` (fmt em `0x9200557C`) → `XamLoaderTerminateTitle` (xam `0x01A9`). Nosso HLE retorna desse export (no console ele não retorna), a execução cai na função seguinte `0x921967C8` com `LR=0x921967C8` e gira para sempre (é o laço quente `0x921967C8`/`0x92198658` do profile).
+2. `main`: `r30 = 0x92186CD8(app)`; com `r30 < 0` pula `0x92185790`, chama o shutdown `0x92183938` (frames 216..255) e retorna `r30`.
+3. `0x92186CD8`: `0x92186AA0` ok (frame 128); `0x921860B8` retorna E_INVALIDARG (frame 216).
+4. `0x921860B8`: `0x92185650` (chamado em `0x9218621C`) retorna E_INVALIDARG.
+5. `0x92185650`: `0x921887D8(0, L"dashuiskin.xzp", L"skin.xur", buf, 128)` monta o locator XUI e `0x921E8FB8(buf, 0)` o carrega. O buffer chega **vazio**, e o carregamento retorna E_INVALIDARG.
+6. `0x921887D8` → `0x92187BE0`: `_snwprintf(buf, 128, L"section://%X,%s%s%s", hModule, nome, L"#", L"skin.xur")` (fmt em `0x92003624`; `nome` = até 8 caracteres de `dashuiskin` antes do `.`, passados por `0x921996E0`; em execução resultou em `dashuisk`, minúsculo, que é o nome da seção de recurso); sucesso se o retorno ≥ 0.
+7. **Causa raiz: `_snwprintf` (xboxkrnl `0x013D`) não tem HLE.** O default devolve 0 sem escrever nada ("Unhandled xboxkrnl.exe ordinal 0x013D", 12× em 220 frames). A família toda está quebrada: `_snprintf`/`sprintf` (`0x013A`/`0x013B`) e `_vsnprintf`/`_vscwprintf`/`vswprintf` (`0x014D`/`0x014F`/`0x0151`) retornam 0 sem escrever.
+
+O laço de fence em `0x921AFFF8..0x921B0020` (fence `0x90102000`, valor 5) visto antes pertence ao período de shutdown (frames 216..255), não ao bloqueio. Referência para a implementação: Xenia `src/xenia/kernel/xboxkrnl/xboxkrnl_strings.cc` (formatação estilo MSVC, `%s` em funções wide = string wide).
+
+**Atualização (2026-10-24, depois da família printf em `src/kernel/strings.rs`):** `_snwprintf` agora monta o locator, que sai `section://0,dashuisk#skin.xur`. O carregamento da skin passa a falhar com `0x8030001C` (frame 218; o `main` retorna esse código no frame 258). Próximo bloqueio, com evidência:
+
+- **`XexGetModuleHandle` (xboxkrnl `0x0195`) está errado.** A dash chama `GetModuleHandle(NULL)` em `0x921927C8` → `XexGetModuleHandle(NULL, &h)`; nosso HLE devolve `0x92000000` como **status** e não escreve `*h`. A dash lê 0 da pilha e grava `[0x92969854] = 0` em `0x92187108` (watchpoint). Daí o `0` no locator.
+- **`XexGetModuleSection` (`0x0196`) ignora o nome** e sempre devolve `0x92105000`/`0x58A894`. A seção certa vem da tabela de recursos do cabeçalho XEX (`0x000002FF`, em `0x1AAC` no arquivo): 36 entradas de `{nome[8], endereço, tamanho}`, por exemplo `dashuisk` em `0x92C51700`, tamanho `0x127F0`. Referência: Xenia `xboxkrnl_modules.cc` e `UserModule::GetSection`.
+- **Sobreposição da pilha com recursos:** `stack_top = vaddr_base + image_size - 0x10000 = 0x93018000` fica **dentro** do recurso `hubapp` (`0x92FF6780..0x93026A12`). A pilha da thread principal cresce para baixo sobre esse recurso (e `arcade` vai até `0x93027EF2`). A pilha precisa sair da imagem.
+
+Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.
 
@@ -50,7 +68,7 @@ Memória:
 
 Threads da dash (entrada): principal Metro; dinâmicas 0x1 (`0x92261CE8`), 0x2 (`0x921C9830`), 0x3/0x4 (`0x9281FBC0`, XUI), 0x5-0x8 (`0x92267C58`), 0x9 (`0x9226A2A8`, KeWaitForMultipleObjects + spinlock por frame), 0xA (`0x927C6D08`, loop XamUser*), 0xB/0xC (`0x9226E410`; 0xB chama ExTerminateThread ~151x e é reiniciada), 0xD..0x13 (ver `XENON_SYSCALL_SUMMARY`).
 
-Exports HLE ainda não tratados: xboxkrnl `0x0111, 0x013D, 0x0015, 0x00F5`; xam `0x0282, 0x001A, 0x0200, 0x07E2`.
+Exports HLE ainda não tratados (vistos em 400 frames depois da família printf): xboxkrnl `0x0015, 0x004B, 0x0082, 0x00F5, 0x0111`; xam `0x001A, 0x0200, 0x0282, 0x0291, 0x03CA, 0x058A, 0x058C, 0x058D, 0x059F, 0x05DC, 0x05E7, 0x07E2`. Família printf (`0x013A`, `0x013B`, `0x013D`, `0x013E`, `0x014D`..`0x0151`) implementada em `src/kernel/strings.rs`, com testes (`cargo test --release --lib kernel::strings`).
 
 ## 4. Ferramentas de depuração existentes
 

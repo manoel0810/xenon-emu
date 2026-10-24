@@ -13,11 +13,13 @@ Este arquivo deve ser atualizado **sempre** que código, tabelas ou algoritmos f
 
 | Projeto | Licença | Como é usado | Commit fixado | Arquivos/áreas |
 |---|---|---|---|---|
-| Xenia Canary (https://github.com/xenia-canary/xenia-canary) | BSD 3-Clause, Copyright (c) 2015 Ben Vanik (verificado no `LICENSE` do branch `canary_experimental`) | Referência de semântica e tabelas (opcodes PM4, `vmx128.txt`, exports). Futuro: port para Rust (principal) e FFI apenas de módulos isolados (pontual). Sem fork. | **A preencher** ao copiar o primeiro arquivo | Ver "Alvos planejados" |
+| Xenia Canary (https://github.com/xenia-canary/xenia-canary) | BSD 3-Clause, Copyright (c) 2015 Ben Vanik (verificado no `LICENSE` do branch `canary_experimental`) | Referência de semântica e tabelas (opcodes PM4, `vmx128.txt`, exports). Port para Rust (principal) e FFI apenas de módulos isolados (pontual). Sem fork. | `451f915566d57436555c6eb4ee77bb4717eb01de` (`canary_experimental`, 2026-10-24) | `src/kernel/strings.rs` ← `src/xenia/kernel/xboxkrnl/xboxkrnl_strings.{h,cc}` + `util::get_arg_64`/`get_arg_stack_ptr` de `src/xenia/kernel/util/shim_utils.h` (família printf). Desvios documentados no arquivo: `%llx`/`%llu` com aritmética sem sinal; `%hu` estende com zero. |
 | Xenia (https://github.com/xenia-project/xenia) | BSD 3-Clause (mesma licença) | Idem, documentação (`docs/cpu.md`, `docs/gpu.md`) | A preencher | |
 | Free60 (https://free60.org) | Documentação da comunidade (verificar licença da página usada) | Formatos XEX/STFS/hardware | n/a | |
 
-Já aproveitado até agora (como **referência de dados**, sem cópia de arquivo): lista de opcodes PM4 de `gpu/xenos.h`; encodings VMX128 de `vmx128.txt` (opcodes 5/6).
+Já aproveitado até agora (como **referência de dados**, sem cópia de arquivo): lista de opcodes PM4 de `gpu/xenos.h`; encodings VMX128 de `vmx128.txt` (opcodes 5/6); nomes de exports em `src/kernel/exports/{xboxkrnl,xam}_names.rs`, gerados por `tools/src/bin/gen_exports.rs` a partir das tabelas `xboxkrnl_table.inc`/`xam_table.inc` do Xenia (commit de origem não registrado; regerar a partir do commit fixado acima quando o gerador for usado de novo).
+
+O cabeçalho de copyright dos arquivos do Canary nesse commit diz "Copyright 2026 Xenia Canary"; o `LICENSE` do repositório é BSD 3-Clause, "Copyright (c) 2015, Ben Vanik" (verificado no mesmo commit). Os arquivos portados citam os dois.
 
 ## Alvos planejados no Xenia Canary (`src/xenia/`)
 

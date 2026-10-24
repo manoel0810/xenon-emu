@@ -1,6 +1,7 @@
 pub mod dispatcher;
 pub mod exports;
 pub mod input;
+pub mod strings;
 mod util;
 mod xam;
 mod xboxkrnl;

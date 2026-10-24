@@ -85,7 +85,7 @@ Pontos mais quentes da thread principal:
 
 Syscalls mais chamadas: thread 0x3 `xboxkrnl #0x0125` e `#0x0130` (121712 cada), `#0x00F4` (30428); principal `#0x0125` (5925).
 
-**Observação:** no frame 400 o laço quente da principal está em `0x92198xxx`/`0x921967xx`, e não no laço de fence `0x921AFFF8..0x921B0020` citado no `HANDOFF.md`. Investigar na Fase 2 antes de assumir que o bloqueio é o fence.
+**Observação:** no frame 400 o laço quente da principal está em `0x92198xxx`/`0x921967xx`, e não no laço de fence `0x921AFFF8..0x921B0020` citado no `HANDOFF.md`. Investigar na Fase 2 antes de assumir que o bloqueio é o fence. **Resolvido na Fase 2:** é o fim do processo (o `main` retornou E_INVALIDARG no frame 255 por falta de `_snwprintf`; ver `HANDOFF.md` seção 2).
 
 ## Não determinismo conhecido
 
@@ -101,6 +101,18 @@ $old = .\xenon-emu\scripts\build_ref.ps1 -Ref HEAD   # build do commit de refer�
 .\xenon-emu\scripts\time_runs.ps1 -Old $old         # tempo de 400 frames, alternando old/new
 .\xenon-emu\scripts\build_ref.ps1 -Clean            # remove o worktree
 ```
+
+## Depois da família printf (Fase 2, 2026-10-24)
+
+Mudança de comportamento intencional (não é refactor). Trapscan de 400 frames:
+
+```
+NO TRAP: primary thread did not stop within 400 frames.
+Primary at end: "Metro 17559 Primary Thread" | PC: 0x9219865C | LR: 0x921967D8 | Steps: 8593026
+GPU: [GPU CP] Frame 00268 | Processed 2 PM4 packets (Total: 120, Draw Calls: 0, Primitives: 0) | WPTR: 49, RPTR: 49
+```
+
+O `main` agora retorna `0x8030001C` no frame 258 (antes: `0x80070057` no frame 255). Ver `HANDOFF.md` seção 2.
 
 ## Critério de regressão (Fase 1)
 

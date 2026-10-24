@@ -1,11 +1,15 @@
 //! xboxkrnl.exe HLE: Rtl*: run-time library (strings, memory, critical sections, time).
 
 use super::super::dispatcher::KernelDispatcher;
+use super::super::strings::{self, ArrayArgs, StackArgs};
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xboxkrnl_rtl(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
+        let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+        // r1 of the calling thread, for variadic arguments beyond r10
+        let sp = bus.current_sp;
         Some(match ordinal {
             // 0x0119: RtlCaptureContext
             0x0119 => 0,
@@ -108,8 +112,25 @@ impl KernelDispatcher {
             // 0x0136: RtlRaiseException
             0x0136 => 0,
 
-            // 0x013A: _snprintf | 0x013B: sprintf
-            0x013A | 0x013B => 0,
+            // printf family: see kernel/strings.rs (port of Xenia's xboxkrnl_strings.cc)
+            // 0x013A: _snprintf(buffer, count, format, ...)
+            0x013A => strings::snprintf(bus, arg(0), arg(1) as u32, arg(2), &mut StackArgs::new(args, sp, 3), false, false),
+            // 0x013B: sprintf(buffer, format, ...)
+            0x013B => strings::sprintf(bus, arg(0), arg(1), &mut StackArgs::new(args, sp, 2), false),
+            // 0x013D: _snwprintf(buffer, count, format, ...)
+            0x013D => strings::snprintf(bus, arg(0), arg(1) as u32, arg(2), &mut StackArgs::new(args, sp, 3), true, false),
+            // 0x013E: swprintf(buffer, format, ...)
+            0x013E => strings::sprintf(bus, arg(0), arg(1), &mut StackArgs::new(args, sp, 2), true),
+            // 0x014D: _vsnprintf(buffer, count, format, va_list)
+            0x014D => strings::snprintf(bus, arg(0), arg(1) as u32, arg(2), &mut ArrayArgs::new(arg(3)), false, false),
+            // 0x014E: vsprintf(buffer, format, va_list)
+            0x014E => strings::sprintf(bus, arg(0), arg(1), &mut ArrayArgs::new(arg(2)), false),
+            // 0x014F: _vscwprintf(format, va_list)
+            0x014F => strings::vscwprintf(bus, arg(0), &mut ArrayArgs::new(arg(1))),
+            // 0x0150: _vsnwprintf(buffer, count, format, va_list): returns the full count on overflow
+            0x0150 => strings::snprintf(bus, arg(0), arg(1) as u32, arg(2), &mut ArrayArgs::new(arg(3)), true, true),
+            // 0x0151: vswprintf(buffer, format, va_list)
+            0x0151 => strings::sprintf(bus, arg(0), arg(1), &mut ArrayArgs::new(arg(2)), true),
 
             // 0x0140: RtlFreeAnsiString | 0x0141: RtlFreeUnicodeString
             0x0140 | 0x0141 => {
@@ -170,8 +191,6 @@ impl KernelDispatcher {
             // 0x0147: RtlUnwind
             0x0147 => 0,
 
-            // 0x014D: _vsnprintf | 0x014F: _vscwprintf | 0x0151: vswprintf
-            0x014D | 0x014F | 0x0151 => 0,
 
             _ => return None,
         })
