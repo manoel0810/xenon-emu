@@ -160,6 +160,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico ao item 1 (411 escritas de `CP_RB_WPTR`, último `7715`, fence `0x621`). Esperado: o único `mftb` da dash (`0x92617738`) não executa nessa janela (`XENON_PC_HOOK`).
 
+## Depois do banco de registradores único (fechamento da Fase 2, item 3)
+
+3000 frames: idêntico ao item 2 (411 / `7715` / fence `0x621`).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

@@ -461,8 +461,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("    - Total packets: {}", xenos_gpu.packets_executed);
             println!("    - Draw calls:    {}", xenos_gpu.draw_calls);
             println!("    - Primitives:    {}", xenos_gpu.primitives_drawn);
-            println!("    - Registers set: {}", xenos_gpu.registers.len());
-            for (reg, val) in &xenos_gpu.registers {
+            println!("    - Non-zero registers: {}", bus.gpu_regs.non_zero().count());
+            for (reg, val) in bus.gpu_regs.non_zero() {
                 println!("        Reg 0x{:04X} = 0x{:08X}", reg, val);
             }
         }

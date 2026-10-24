@@ -6,7 +6,6 @@ use xenon_emu::cpu::{Cpu, StepResult};
 use xenon_emu::diag::{self, profile::Profiler, trace::TrapRing};
 use xenon_emu::gpu::display::resolve_path;
 use xenon_emu::gpu::{GpuDisplay, RingBuffer, XenosGpu};
-use xenon_emu::memory;
 
 use super::boot::Boot;
 use super::threads::{begin_dpc_call, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
@@ -312,7 +311,7 @@ pub fn run(
 
         // The dash signals new commands by storing the ring write pointer (in dwords) to CP_RB_WPTR in the GPU MMIO window.
         // Use it when the guest has ever written it; otherwise fall back to scanning the ring for the last non-zero word.
-        if let Some(&w) = bus.gpu_mmio.get(&memory::bus::GPU_MMIO_CP_RB_WPTR) {
+        if let Some(w) = bus.cp_rb_wptr {
             if gpu_mmio_log && w as usize != ring_buffer.wptr {
                 println!("  [GPU MMIO] frame {} CP_RB_WPTR = {} (was {}) ring={:#X} size={} dwords, total mmio writes={}", frame, w, ring_buffer.wptr, ring_buffer.base_addr, ring_buffer.num_dwords, bus.gpu_mmio_writes);
             }

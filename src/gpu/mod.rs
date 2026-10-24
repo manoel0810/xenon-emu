@@ -1,6 +1,7 @@
 pub mod display;
 pub mod font;
 pub mod pm4;
+pub mod register_file;
 pub mod rasterizer;
 pub mod ring_buffer;
 pub mod shader;

@@ -98,8 +98,6 @@ impl XenosTextureSampler {
 
 /// ATI Xenos (Xbox 360) Command Processor and Graphics Engine
 pub struct XenosGpu {
-    /// Context registers (e.g., RB_COLOR_INFO, PA_SC_WINDOW_OFFSET, etc.)
-    pub registers: HashMap<u32, u32>,
     /// ALU Constant Vector Registers: c0 through c255 (float4 each)
     pub alu_constants: [[f32; 4]; 256],
     /// Currently bound Vertex Shader
@@ -152,13 +150,6 @@ pub struct XenosGpu {
 
 impl XenosGpu {
     pub fn new() -> Self {
-        let mut registers = HashMap::new();
-        // Default Viewport: 1280x720
-        registers.insert(PA_CL_VPORT_XSCALE, (640.0f32).to_bits());
-        registers.insert(PA_CL_VPORT_YSCALE, (-360.0f32).to_bits());
-        registers.insert(PA_CL_VPORT_XOFFSET, (640.0f32).to_bits());
-        registers.insert(PA_CL_VPORT_YOFFSET, (360.0f32).to_bits());
-
         let mut alu_constants = [[0.0f32; 4]; 256];
         // Identity MVP matrix in c0..c3
         alu_constants[0] = [1.0, 0.0, 0.0, 0.0];
@@ -169,7 +160,6 @@ impl XenosGpu {
         alu_constants[4] = [1.0, 1.0, 1.0, 1.0];
 
         Self {
-            registers,
             alu_constants,
             current_vs: None,
             current_ps: None,
@@ -287,9 +277,10 @@ impl XenosGpu {
         Ok(count)
     }
 
-    /// Dispatches a register write, updating state and decoding texture/sampler descriptors
-    pub fn write_register(&mut self, reg: u32, val: u32, bus: &MemoryBus) {
-        self.registers.insert(reg, val);
+    /// Dispatches a register write (into the shared register file, bus.gpu_regs), updating state and decoding
+    /// texture/sampler descriptors
+    pub fn write_register(&mut self, reg: u32, val: u32, bus: &mut MemoryBus) {
+        bus.gpu_regs.set(reg, val);
 
         // Texture Resource Descriptor: 0x0A00..0x0A5F (6 DWORDs per sampler stage 0..15)
         if (SQ_TEX_RESOURCE_BASE..SQ_TEX_RESOURCE_END).contains(&reg) {
@@ -413,7 +404,7 @@ impl XenosGpu {
                     PM4_SET_CONSTANT if data.len() == 3 => {
                         // Real opcode 0x21 = REG_RMW: reg = data[0] & 0x1FFF, new = (old & and_mask) | or_mask
                         let reg = data[0] & 0x1FFF;
-                        let old = *self.registers.get(&reg).unwrap_or(&0);
+                        let old = bus.gpu_regs.get(reg);
                         let and_mask = data[1];
                         let or_mask = data[2];
                         self.write_register(reg, (old & and_mask) | or_mask, bus);
@@ -516,7 +507,7 @@ impl XenosGpu {
                             let current_val = if is_mem {
                                 bus.read_u32(mem_addr).unwrap_or(0)
                             } else {
-                                *self.registers.get(&poll_addr).unwrap_or(&0)
+                                bus.gpu_regs.get(poll_addr)
                             };
 
                             let masked = current_val & mask;
@@ -538,7 +529,7 @@ impl XenosGpu {
                                 if is_mem {
                                     let _ = bus.write_u32(mem_addr, forced);
                                 } else {
-                                    self.registers.insert(poll_addr, forced);
+                                    bus.gpu_regs.set(poll_addr, forced);
                                 }
                             }
                         }
@@ -590,14 +581,14 @@ impl XenosGpu {
                     }
                     0x46 => {
                         // EVENT_WRITE: [initiator] (+ optional address, unused by the dash)
-                        if let Some(&init) = data.first() { self.registers.insert(0x21F9, init & 0x3F); }
+                        if let Some(&init) = data.first() { bus.gpu_regs.set(0x21F9, init & 0x3F); }
                     }
                     0x45 => {
                         // COND_WRITE: [wait_info, poll_addr, reference, mask, write_addr, write_data]
                         if data.len() >= 6 {
                             let wait_info = data[0];
                             let is_mem = (wait_info & 0x10) != 0;
-                            let cur = if is_mem { bus.read_u32((data[1] & !3) as u64).unwrap_or(0) } else { *self.registers.get(&data[1]).unwrap_or(&0) };
+                            let cur = if is_mem { bus.read_u32((data[1] & !3) as u64).unwrap_or(0) } else { bus.gpu_regs.get(data[1]) };
                             let masked = cur & data[3];
                             let ok = match wait_info & 7 {
                                 0 => false, 1 => masked < data[2], 2 => masked <= data[2], 3 => masked == data[2],
@@ -989,6 +980,21 @@ mod cp_tests {
         // bits above 5 are ignored (six hardware threads)
         gpu.execute_packet(&mut bus, &t3(0x54, &[0xC0])).unwrap();
         assert_eq!(gpu.pending_cp_interrupts, vec![0, 2, 5]);
+    }
+
+    #[test]
+    fn cp_and_mmio_share_one_register_file() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        // Type-0: two registers from 0x2000 (a register outside the fixed MMIO ones)
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x2000, count: 2, values: vec![0x1234, 0x5678] }).unwrap();
+        assert_eq!(bus.read_u32(0x7FC8_0000 + 0x2000 * 4).unwrap(), 0x1234);
+        assert_eq!(bus.read_u32(0x7FC8_0000 + 0x2001 * 4).unwrap(), 0x5678);
+        // a CPU MMIO store is what REG_RMW (0x21) reads back: (old & and) | or
+        bus.write_u32(0x7FC8_0000 + 0x0200 * 4, 0xFF00).unwrap();
+        gpu.execute_packet(&mut bus, &t3(0x21, &[0x0200, 0x0F00, 0x0003])).unwrap();
+        assert_eq!(bus.gpu_regs.get(0x0200), 0x0F03);
+        assert_eq!(bus.read_u32(0x7FC8_0800).unwrap(), 0x0F03);
     }
 
     #[test]
