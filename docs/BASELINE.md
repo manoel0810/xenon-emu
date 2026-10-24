@@ -177,6 +177,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico ao item 5 (411 / `7715` / fence `0x621`); nenhum dos dois exports é chamado nessa janela (`XENON_LOG_SYSCALLS=1`).
 
+## Depois da remoção do caminho falso do CP (fechamento da Fase 2, item 7)
+
+3000 frames: idêntico ao item 6 (411 / `7715` / fence `0x621`); log com 13 990 linhas (antes 15 557: saíram as 1577 mensagens `Decoded dynamic texture` da decodificação inventada em 0x0A00..0x0A5F). Último `[GPU CP]`: 75 201 pacotes, `Draws: 772`, `Swaps: 374`.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

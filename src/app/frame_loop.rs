@@ -317,15 +317,13 @@ pub fn run(
             ring_buffer = RingBuffer::new(kernel.ring_buffer_ptr, sz);
         }
 
-        // The dash signals new commands by storing the ring write pointer (in dwords) to CP_RB_WPTR in the GPU MMIO window.
-        // Use it when the guest has ever written it; otherwise fall back to scanning the ring for the last non-zero word.
+        // The dash signals new commands by storing the ring write pointer (in dwords) to CP_RB_WPTR in the GPU MMIO
+        // window; until it does, the CP has nothing to execute.
         if let Some(w) = bus.cp_rb_wptr {
             if gpu_mmio_log && w as usize != ring_buffer.wptr {
                 println!("  [GPU MMIO] frame {} CP_RB_WPTR = {} (was {}) ring={:#X} size={} dwords, total mmio writes={}", frame, w, ring_buffer.wptr, ring_buffer.base_addr, ring_buffer.num_dwords, bus.gpu_mmio_writes);
             }
             ring_buffer.wptr = (w as usize) % ring_buffer.num_dwords.max(1);
-        } else {
-            ring_buffer.sync_wptr_from_memory(&bus);
         }
         let executed_pkts = xenos_gpu
             .execute_ring_with_writeback(&mut bus, &mut ring_buffer, kernel.rptr_writeback_ptr)
@@ -333,8 +331,8 @@ pub fn run(
 
         if executed_pkts > 0 {
             println!(
-                "  [GPU CP] Frame {:05} | Processed {} PM4 packets (Total: {}, Draw Calls: {}, Primitives: {}) | WPTR: {}, RPTR: {}",
-                frame, executed_pkts, xenos_gpu.packets_executed, xenos_gpu.draw_calls, xenos_gpu.primitives_drawn, ring_buffer.wptr, ring_buffer.rptr
+                "  [GPU CP] Frame {:05} | Processed {} PM4 packets (Total: {}, Draws: {}, Swaps: {}) | WPTR: {}, RPTR: {}",
+                frame, executed_pkts, xenos_gpu.packets_executed, xenos_gpu.real_draws, xenos_gpu.swaps, ring_buffer.wptr, ring_buffer.rptr
             );
         }
 

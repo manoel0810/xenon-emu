@@ -261,6 +261,8 @@ Aceite: baseline da Fase 0 idêntica (mesmos passos, PCs e contadores) após cad
 
 ### Fase 2: Command Processor fiel (M1)
 
+**Feito** (2026-10-24): critério atingido (Atualização 10 do HANDOFF) e fechamento em 7 itens, um commit cada (pilhas fora da imagem, `mftb` global, banco de registradores único, tabela PM4 real, endianness/writeback, `VdQueryVideoFlags`/`XamLoaderTerminateTitle`, remoção do caminho falso do CP). Pendente para a Fase 3: `WAIT_REG_MEM` ainda força a condição em vez de esperar.
+
 Objetivo: o guest consegue sincronizar com a GPU.
 
 - Reescrever `gpu/pm4.rs`/`cp/` com os opcodes reais: REG_RMW `0x21`, DRAW_INDX `0x22`, VIZ_QUERY `0x23`, SET_STATE `0x25`, WAIT_FOR_IDLE `0x26`, IM_LOAD `0x27`, IM_LOAD_IMMEDIATE `0x2B`, IM_STORE `0x2C`, SET_CONSTANT `0x2D`, LOAD_CONSTANT_CONTEXT `0x2E`, LOAD_ALU_CONSTANT `0x2F`, DRAW_INDX_BIN `0x34`, DRAW_INDX_2_BIN `0x35`, DRAW_INDX_2 `0x36`, INDIRECT_BUFFER_PFD `0x37`, INVALIDATE_STATE `0x3B`, WAIT_REG_MEM `0x3C`, MEM_WRITE `0x3D`, REG_TO_MEM `0x3E`, INDIRECT_BUFFER `0x3F`, COND_EXEC `0x44`, COND_WRITE `0x45`, EVENT_WRITE `0x46`, INTERRUPT `0x54`, SET_CONSTANT2 `0x55`, SET_SHADER_CONSTANTS `0x56`, EVENT_WRITE_SHD `0x58`, EVENT_WRITE_EXT `0x5A`, SET_BIN_MASK/SELECT `0x60-0x63`, XE_SWAP `0x64`, NOP `0x10`, ME_INIT `0x48`.

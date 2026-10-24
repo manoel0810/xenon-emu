@@ -19,10 +19,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let assets = xui::load();
 
-    let (mut ring_buffer, mut xenos_gpu, ring_base, ring_size) = gpu::setup(b.is_metro);
-    if !b.is_metro {
-        legacy::emit_synthetic_stream(&mut b.bus, &mut b.kernel, &mut ring_buffer, &mut xenos_gpu, ring_base, ring_size, &assets.loaded_scenes, &assets.xus_table)?;
-    }
+    let (ring_buffer, xenos_gpu) = gpu::setup(b.is_metro);
 
     // ==========================================================
     // ETAPA 3: Multi-Thread Guest Dispatcher & Live Input Loop

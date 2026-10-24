@@ -61,31 +61,6 @@ pub const PM4_SET_BIN_MASK_HI: u8 = 0x61;
 pub const PM4_SET_BIN_SELECT_LO: u8 = 0x62;
 pub const PM4_SET_BIN_SELECT_HI: u8 = 0x63;
 
-// Key Xenos Registers
-pub const RB_COLOR_INFO: u32 = 0x2004;
-pub const RB_DEPTH_INFO: u32 = 0x2008;
-pub const PA_SC_WINDOW_OFFSET: u32 = 0x2080;
-pub const PA_CL_VPORT_XSCALE: u32 = 0x2084;
-pub const PA_CL_VPORT_YSCALE: u32 = 0x2088;
-pub const PA_CL_VPORT_XOFFSET: u32 = 0x208C;
-pub const PA_CL_VPORT_YOFFSET: u32 = 0x2090;
-pub const SQ_PROGRAM_CNTL: u32 = 0x2180;
-pub const SQ_CONTEXT_MISC: u32 = 0x2181;
-pub const SQ_INTERPOLATOR_CNTL: u32 = 0x2182;
-pub const SQ_VS_PROGRAM_ADDR: u32 = 0x2183;
-pub const SQ_PS_PROGRAM_ADDR: u32 = 0x2184;
-pub const SQ_VS_CONST_BASE: u32 = 0x2185;
-pub const SQ_PS_CONST_BASE: u32 = 0x2186;
-pub const VGT_DRAW_INITIATOR: u32 = 0x2191;
-pub const VGT_DMA_BASE: u32 = 0x2192;
-pub const VGT_DMA_SIZE: u32 = 0x2193;
-pub const VGT_DMA_STRIDE: u32 = 0x2194;
-pub const PA_SU_SC_MODE_CNTL: u32 = 0x2205;
-pub const SQ_TEX_RESOURCE_BASE: u32 = 0x0A00;
-pub const SQ_TEX_RESOURCE_END: u32 = 0x0A60;
-pub const SQ_TEX_SAMPLER_BASE: u32 = 0x0D00;
-pub const SQ_TEX_SAMPLER_END: u32 = 0x0D10;
-
 /// High-level representation of a decoded ATI Xenos PM4 Packet
 #[derive(Debug, Clone)]
 pub enum Pm4Packet {
@@ -195,7 +170,7 @@ impl Pm4Packet {
 }
 
 // =========================================================================
-// Packet Builders
+// Packet Builders (MakePacketType0 / MakePacketType3)
 // =========================================================================
 
 /// Builds a PM4 Type 0 Packet (Writes consecutive registers), MakePacketType0
@@ -218,45 +193,6 @@ pub fn build_type3(opcode: u8, data: &[u32]) -> Vec<u32> {
     pkt.push(header);
     pkt.extend_from_slice(data);
     pkt
-}
-
-/// Writes one register (a Type-0 packet).
-pub fn build_set_context_reg(reg: u32, value: u32) -> Vec<u32> {
-    build_type0(reg, &[value])
-}
-
-/// SET_CONSTANT (type 0 = ALU) of float4 constants from c`start_idx` (ALU registers 0x4000 + 4 * index).
-pub fn build_load_alu_constant(start_idx: u32, vectors: &[[f32; 4]]) -> Vec<u32> {
-    let mut payload = Vec::with_capacity(1 + vectors.len() * 4);
-    payload.push((start_idx * 4) & 0x7FF);
-    for v in vectors {
-        payload.extend(v.iter().map(|f| f.to_bits()));
-    }
-    build_type3(PM4_SET_CONSTANT, &payload)
-}
-
-/// Helper to build PM4_DRAW_INDX (Opcode 0x22). Payload layout of the old software path, not the Xenos one.
-pub fn build_draw_indexed(prim_type: u32, num_indices: u32, index_ptr: u32) -> Vec<u32> {
-    build_type3(PM4_DRAW_INDX, &[prim_type, num_indices, index_ptr, 0x0002])
-}
-
-/// SET_CONSTANT (type 0 = ALU) of raw values from ALU constant c`reg_idx`.
-pub fn build_set_constant(reg_idx: u32, values: &[u32]) -> Vec<u32> {
-    let mut payload = Vec::with_capacity(1 + values.len());
-    payload.push((reg_idx * 4) & 0x7FF);
-    payload.extend_from_slice(values);
-    build_type3(PM4_SET_CONSTANT, &payload)
-}
-
-/// Helper to bind a Vertex Shader or Pixel Shader program address
-pub fn build_set_shader_program(is_vertex_shader: bool, program_addr: u32) -> Vec<u32> {
-    let reg = if is_vertex_shader { SQ_VS_PROGRAM_ADDR } else { SQ_PS_PROGRAM_ADDR };
-    build_set_context_reg(reg, program_addr)
-}
-
-/// Helper to build PM4_WAIT_FOR_IDLE (Opcode 0x26)
-pub fn build_wait_for_idle() -> Vec<u32> {
-    build_type3(PM4_WAIT_FOR_IDLE, &[0x00000000])
 }
 
 #[cfg(test)]

@@ -1,132 +1,14 @@
 use crate::gpu::pm4::*;
-use crate::gpu::rasterizer::*;
 use crate::gpu::ring_buffer::RingBuffer;
-use crate::gpu::shader::{
-    create_default_xui_pixel_shader, create_default_xui_vertex_shader, PixelShader,
-    VertexShader,
-};
-use crate::gpu::texture::{Texture, TextureAtlas};
 use crate::memory::MemoryBus;
 use std::collections::HashMap;
 
 pub const XENOS_WIDTH: usize = 1280;
 pub const XENOS_HEIGHT: usize = 720;
 
-/// Represents a 2D/3D Vertex sent by Xbox 360 D3D/XUI draw calls
-#[derive(Debug, Clone, Copy)]
-pub struct Vertex {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-    pub color: u32,
-    pub u: f32,
-    pub v: f32,
-}
-
-impl Vertex {
-    pub fn new(x: f32, y: f32, z: f32, color: u32, u: f32, v: f32) -> Self {
-        Self { x, y, z, color, u, v }
-    }
-
-    pub fn pos_color(x: f32, y: f32, z: f32, color: u32) -> Self {
-        Self { x, y, z, color, u: 0.0, v: 0.0 }
-    }
-}
-
-/// Decoded ATI Xenos Texture Resource Descriptor (SQ_TEX_RESOURCE_WORD0..5)
-#[derive(Debug, Clone, Default)]
-pub struct XenosTextureResource {
-    pub words: [u32; 6],
-}
-
-impl XenosTextureResource {
-    pub fn is_valid(&self) -> bool {
-        self.base_address() != 0 && self.width() > 0 && self.height() > 0
-    }
-
-    /// Extracts physical memory base address from the 6-dword descriptor
-    pub fn base_address(&self) -> u64 {
-        let raw = if self.words[2] != 0 && (self.words[2] & 0x1000_0000) != 0 {
-            self.words[2]
-        } else if (self.words[1] & 0x1000_0000) != 0 || (self.words[1] & 0x9000_0000) != 0 {
-            self.words[1]
-        } else if self.words[0] != 0 && (self.words[0] & 0x1000_0000) != 0 {
-            self.words[0]
-        } else {
-            self.words[1] & 0x7FFF_FFFF
-        };
-        (raw & 0x1FFF_FFFF) as u64
-    }
-
-    /// Extracts texture width from descriptor (words[2] bits [12:0] + 1)
-    pub fn width(&self) -> usize {
-        let w = (self.words[2] & 0x1FFF) as usize + 1;
-        if w > 4096 { 1280 } else { w }
-    }
-
-    /// Extracts texture height from descriptor (words[2] bits [25:13] + 1)
-    pub fn height(&self) -> usize {
-        let h = ((self.words[2] >> 13) & 0x1FFF) as usize + 1;
-        if h > 4096 { 720 } else { h }
-    }
-
-    /// Returns true if the texture format specifies 2D micro/macro tiling
-    pub fn is_tiled(&self) -> bool {
-        (self.words[3] & 0x8000_0000) != 0 || (self.words[0] & 0x0001_0000) != 0
-    }
-}
-
-/// Decoded ATI Xenos Texture Sampler Descriptor (SQ_TEX_SAMPLER_WORD0..7)
-#[derive(Debug, Clone, Copy, Default)]
-pub struct XenosTextureSampler {
-    pub raw: u32,
-}
-
-impl XenosTextureSampler {
-    pub fn is_bilinear(&self) -> bool {
-        ((self.raw >> 8) & 0x03) != 0 || ((self.raw >> 10) & 0x03) != 0
-    }
-
-    pub fn clamp_x(&self) -> u32 {
-        self.raw & 0x07
-    }
-
-    pub fn clamp_y(&self) -> u32 {
-        (self.raw >> 3) & 0x07
-    }
-}
-
 /// ATI Xenos (Xbox 360) Command Processor and Graphics Engine
 pub struct XenosGpu {
-    /// ALU Constant Vector Registers: c0 through c255 (float4 each)
-    pub alu_constants: [[f32; 4]; 256],
-    /// Currently bound Vertex Shader
-    pub current_vs: Option<VertexShader>,
-    /// Currently bound Pixel Shader
-    pub current_ps: Option<PixelShader>,
-    /// Default XUI Vertex Shader
-    pub default_vs: VertexShader,
-    /// Default XUI Pixel Shader
-    pub default_ps: PixelShader,
-    /// Viewport parameters
-    pub vport_xscale: f32,
-    pub vport_yscale: f32,
-    pub vport_xoffset: f32,
-    pub vport_yoffset: f32,
-    /// Texture Atlas of authentic Xbox 360 Dashboard assets
-    pub atlas: Option<TextureAtlas>,
-    /// Texture samplers (0..15)
-    pub samplers: [Option<Texture>; 16],
-    pub bound_texture_name: Option<String>,
-    /// Decoded Texture Resource Descriptors (SQ_TEX_RESOURCE_WORD0..5) for stages 0..15
-    pub tex_resources: [XenosTextureResource; 16],
-    /// Decoded Texture Sampler Descriptors (SQ_TEX_SAMPLER_WORD0..7) for stages 0..15
-    pub tex_samplers: [XenosTextureSampler; 16],
-    /// VGT DMA Vertex Buffer Base in guest RAM
-    pub vgt_dma_base: u64,
-    pub vgt_dma_stride: usize,
-    pub vgt_dma_count: usize,
-    /// On-chip internal color buffer (resolves into display framebuffer)
+    /// EDRAM resolve target shown by the display (stays empty until draws are rasterized, Phase 4)
     pub color_buffer: Vec<u32>,
     /// Execution counters
     pub packets_executed: u64,
@@ -144,8 +26,6 @@ pub struct XenosGpu {
     pub swaps: u64,
     /// Last XE_SWAP: (frontbuffer physical address, width, height), as passed to Xenia's IssueSwap.
     pub last_swap: Option<(u32, u32, u32)>,
-    pub draw_calls: u64,
-    pub primitives_drawn: u64,
     /// Bin mask/select for predicated Type-3 packets (Xenia CommandProcessor bin_mask_/bin_select_, both start at
     /// 0xFFFFFFFF).
     pub bin_mask: u64,
@@ -154,33 +34,7 @@ pub struct XenosGpu {
 
 impl XenosGpu {
     pub fn new() -> Self {
-        let mut alu_constants = [[0.0f32; 4]; 256];
-        // Identity MVP matrix in c0..c3
-        alu_constants[0] = [1.0, 0.0, 0.0, 0.0];
-        alu_constants[1] = [0.0, 1.0, 0.0, 0.0];
-        alu_constants[2] = [0.0, 0.0, 1.0, 0.0];
-        alu_constants[3] = [0.0, 0.0, 0.0, 1.0];
-        // Full opacity diffuse tint in c4
-        alu_constants[4] = [1.0, 1.0, 1.0, 1.0];
-
         Self {
-            alu_constants,
-            current_vs: None,
-            current_ps: None,
-            default_vs: create_default_xui_vertex_shader(),
-            default_ps: create_default_xui_pixel_shader(),
-            vport_xscale: 640.0,
-            vport_yscale: -360.0,
-            vport_xoffset: 640.0,
-            vport_yoffset: 360.0,
-            atlas: None,
-            samplers: Default::default(),
-            bound_texture_name: None,
-            tex_resources: Default::default(),
-            tex_samplers: Default::default(),
-            vgt_dma_base: 0,
-            vgt_dma_stride: 24,
-            vgt_dma_count: 0,
             color_buffer: vec![0u32; XENOS_WIDTH * XENOS_HEIGHT],
             packets_executed: 0,
             real_opcode_counts: HashMap::new(),
@@ -189,38 +43,8 @@ impl XenosGpu {
             pending_cp_interrupts: Vec::new(),
             swaps: 0,
             last_swap: None,
-            draw_calls: 0,
-            primitives_drawn: 0,
             bin_mask: 0xFFFF_FFFF,
             bin_select: 0xFFFF_FFFF,
-        }
-    }
-
-    /// Loads the texture atlas from directory containing Dashboard .XZP extracted assets
-    pub fn load_atlas_from_dir<P: AsRef<std::path::Path>>(&mut self, path: P) {
-        let atlas = TextureAtlas::load_from_dir(path);
-        println!("  [XENOS GPU] Loaded TextureAtlas with {} authentic Dashboard textures.", atlas.len());
-        self.atlas = Some(atlas);
-    }
-
-    /// Binds a texture by asset name into the specified sampler stage (e.g. 0)
-    pub fn bind_texture_by_name(&mut self, sampler_idx: usize, name: &str) -> bool {
-        if sampler_idx < 16 {
-            if let Some(ref atlas) = self.atlas {
-                if let Some(tex) = atlas.get(name) {
-                    self.samplers[sampler_idx] = Some(tex.clone());
-                    self.bound_texture_name = Some(name.to_string());
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Binds an existing texture directly into a sampler stage
-    pub fn bind_texture(&mut self, sampler_idx: usize, texture: Texture) {
-        if sampler_idx < 16 {
-            self.samplers[sampler_idx] = Some(texture);
         }
     }
 
@@ -276,92 +100,10 @@ impl XenosGpu {
         Ok(count)
     }
 
-    /// Dispatches a register write (into the shared register file, bus.gpu_regs), updating state and decoding
-    /// texture/sampler descriptors
+    /// A register write from the command processor (Xenia CommandProcessor::WriteRegister): stores it in the
+    /// shared register file, bus.gpu_regs.
     pub fn write_register(&mut self, reg: u32, val: u32, bus: &mut MemoryBus) {
         bus.gpu_regs.set(reg, val);
-
-        // Texture Resource Descriptor: 0x0A00..0x0A5F (6 DWORDs per sampler stage 0..15)
-        if (SQ_TEX_RESOURCE_BASE..SQ_TEX_RESOURCE_END).contains(&reg) {
-            let offset = (reg - SQ_TEX_RESOURCE_BASE) as usize;
-            let sampler_idx = offset / 6;
-            let word_idx = offset % 6;
-            if sampler_idx < 16 && word_idx < 6 {
-                self.tex_resources[sampler_idx].words[word_idx] = val;
-                self.update_sampler_from_resource(sampler_idx, bus);
-            }
-        }
-
-        // Texture Sampler Descriptor: 0x0D00..0x0D0F
-        if (SQ_TEX_SAMPLER_BASE..SQ_TEX_SAMPLER_END).contains(&reg) {
-            let sampler_idx = (reg - SQ_TEX_SAMPLER_BASE) as usize;
-            if sampler_idx < 16 {
-                self.tex_samplers[sampler_idx] = XenosTextureSampler { raw: val };
-            }
-        }
-
-        // Viewport and Geometry Context Registers
-        match reg {
-            PA_CL_VPORT_XSCALE => self.vport_xscale = f32::from_bits(val),
-            PA_CL_VPORT_YSCALE => self.vport_yscale = f32::from_bits(val),
-            PA_CL_VPORT_XOFFSET => self.vport_xoffset = f32::from_bits(val),
-            PA_CL_VPORT_YOFFSET => self.vport_yoffset = f32::from_bits(val),
-            VGT_DMA_BASE => self.vgt_dma_base = val as u64,
-            VGT_DMA_SIZE => self.vgt_dma_count = val as usize,
-            VGT_DMA_STRIDE => self.vgt_dma_stride = val as usize,
-            _ => {}
-        }
-    }
-
-    /// Dynamically constructs or updates a sampler stage from decoded hardware descriptors
-    pub fn update_sampler_from_resource(&mut self, sampler_idx: usize, bus: &MemoryBus) {
-        let res = &self.tex_resources[sampler_idx];
-        let base_addr = res.base_address();
-        let w = res.width();
-        let h = res.height();
-
-        if base_addr > 0 && w > 0 && h > 0 && w <= 4096 && h <= 4096 {
-            let pixel_count = w * h;
-            let byte_count = pixel_count * 4;
-            if byte_count <= 16 * 1024 * 1024 {
-                let mut pixels = Vec::with_capacity(pixel_count);
-                let mut non_zero = 0;
-                for i in 0..pixel_count {
-                    let p_addr = base_addr + (i * 4) as u64;
-                    if let Ok(pix) = bus.read_u32(p_addr) {
-                        pixels.push(pix);
-                        if pix != 0 {
-                            non_zero += 1;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                if non_zero > 0 && pixels.len() == pixel_count {
-                    self.samplers[sampler_idx] = Some(Texture::new(w, h, pixels));
-                    println!("  [XENOS GPU] Sampler {}: Decoded dynamic texture ({}x{}, Base: 0x{:08X}, non-zero: {})",
-                        sampler_idx, w, h, base_addr, non_zero
-                    );
-                    return;
-                }
-            }
-        }
-
-        // Fallback to authentic Dashboard asset if not yet populated in guest memory
-        if self.samplers[sampler_idx].is_none() {
-            if let Some(ref atlas) = self.atlas {
-                let default_name = match sampler_idx {
-                    0 => "xboxLogo",
-                    1 => "Pip_bg",
-                    2 => "guidebug_hd",
-                    3 => "aura_floor",
-                    _ => "xboxLogo",
-                };
-                if let Some(tex) = atlas.get(default_name) {
-                    self.samplers[sampler_idx] = Some(tex.clone());
-                }
-            }
-        }
     }
 
     /// One vertical blank (Xenia GraphicsSystem::MarkVblank): advances the GPU counter. The frame loop then calls
@@ -599,84 +341,9 @@ impl XenosGpu {
         Ok(())
     }
 
-    /// Renders an authentic Microsoft XUI Scene (.xur) using the Xenos GPU rasterizer
-    pub fn render_xui_scene(
-        &mut self,
-        scene: &crate::loader::XurScene,
-        _xus: Option<&crate::loader::XusTable>,
-        primary_color: u32,
-        secondary_color: u32,
-    ) {
-        self.draw_calls += 1;
-
-        // 1. Draw Blade Main Backdrop Container
-        let x = 360.0f32;
-        let y = 110.0f32;
-        let w = 840.0f32;
-        let h = 540.0f32;
-
-        let fill_top = 0xE000_0000 | (primary_color & 0x00FF_FFFF);
-        let fill_bottom = 0xE000_0000 | (secondary_color & 0x00FF_FFFF);
-        let border = 0xFF52_D053;
-
-        rasterize_rounded_card(
-            &mut self.color_buffer,
-            XENOS_WIDTH,
-            XENOS_HEIGHT,
-            x,
-            y,
-            w,
-            h,
-            12.0,
-            fill_top,
-            fill_bottom,
-            border,
-        );
-        self.primitives_drawn += 2;
-
-        // 2. Draw child control items defined in .xur scene
-        let item_h = 75.0f32;
-        let item_gap = 14.0f32;
-        let item_start_y = y + 35.0;
-
-        for (idx, _child) in scene.root.children.iter().take(4).enumerate() {
-            let iy = item_start_y + (idx as f32) * (item_h + item_gap);
-            let is_selected = idx == 0;
-
-            let card_top = if is_selected { 0xF020_6020 } else { 0xC015_2015 };
-            let card_bottom = if is_selected { 0xF010_4010 } else { 0xC00A_150A };
-            let card_border = if is_selected { 0xFF00_FF7F } else { 0x8035_4535 };
-
-            rasterize_rounded_card(
-                &mut self.color_buffer,
-                XENOS_WIDTH,
-                XENOS_HEIGHT,
-                x + 25.0,
-                iy,
-                w - 50.0,
-                item_h,
-                8.0,
-                card_top,
-                card_bottom,
-                card_border,
-            );
-            self.primitives_drawn += 2;
-        }
-    }
-
-    /// Resolves the GPU internal color buffer into the target display framebuffer
-    pub fn resolve_surface(&self, target_fb: &mut [u32]) {
-        let copy_len = self.color_buffer.len().min(target_fb.len());
-        for i in 0..copy_len {
-            let src = self.color_buffer[i];
-            let dst = target_fb[i];
-            target_fb[i] = blend_pixel(src, dst);
-        }
-    }
 }
 
 
-/// XENON_PM4_LOG=1 prints every PM4 packet the Command Processor executes (cached after first call).
 const VGT_EVENT_INITIATOR: u32 = 0x21F9;
 const WRITEBACK_START: u32 = 0x0A04;
 const WRITEBACK_SIZE: u32 = 0x0A05;
@@ -716,6 +383,7 @@ fn constant_register_base(kind: u32) -> Option<u32> {
     }
 }
 
+/// XENON_PM4_LOG=1 prints every PM4 packet the Command Processor executes (cached after first call).
 fn pm4_log_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
@@ -844,6 +512,17 @@ mod cp_tests {
         bus.gpu_regs.set(0x0A05, 0x1000);
         gpu.execute_packet(&mut bus, &t3(PM4_EVENT_WRITE_SHD, &[0, 0xC000_0042, 6])).unwrap();
         assert_eq!(bus.read_u32(0x7F00_0040).unwrap(), 6);
+    }
+
+    #[test]
+    fn writeback_window_set_by_type0_has_no_other_side_effect() {
+        // 0x0A00..0x0A5F (FB_START.., WRITEBACK_START/SIZE) used to be decoded as invented texture descriptors
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x0A04, one_reg: false, values: vec![0xC000_0000, 0x1000] }).unwrap();
+        assert_eq!(bus.gpu_regs.non_zero().collect::<Vec<_>>(), vec![(0x0A04, 0xC000_0000), (0x0A05, 0x1000)]);
+        gpu.execute_packet(&mut bus, &t3(PM4_EVENT_WRITE_SHD, &[0, 0xC000_0012, 7])).unwrap();
+        assert_eq!(bus.read_u32(0x7F00_0010).unwrap(), 7);
     }
 
     #[test]

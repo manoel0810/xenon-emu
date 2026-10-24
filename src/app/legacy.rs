@@ -1,15 +1,9 @@
-//! Pre-Metro dashboard path (blades dash / `$flash_dash.xex`): scripted init phases and a synthetic PM4 stream.
+//! Pre-Metro dashboard path (blades dash / `$flash_dash.xex`): scripted init phases.
 //! Not used by the 17559 Metro dashboard; kept unchanged until it is removed or rewritten.
 
 use std::collections::HashMap;
 use xenon_emu::cpu::{Cpu, StepResult};
-use xenon_emu::gpu::{
-    build_draw_indexed, build_load_alu_constant, build_set_context_reg, build_wait_for_idle,
-    RingBuffer, XenosGpu, PA_SC_WINDOW_OFFSET, RB_COLOR_INFO, VGT_DMA_BASE, VGT_DMA_SIZE,
-    VGT_DMA_STRIDE,
-};
 use xenon_emu::kernel::KernelDispatcher;
-use xenon_emu::loader::{XurScene, XusTable};
 use xenon_emu::memory::MemoryBus;
 
 /// Phases 1-5: DllMain, master initializer, main sequence, graphics init and VdInitializeEngines.
@@ -397,108 +391,5 @@ pub fn run_init_phases(
         }
     }
         println!("[+] Phase 5 (VdInitializeEngines Master Sequence) completed! ({} instructions stepped)", phase5_steps);
-    Ok(())
-}
-
-/// CPU-emitted PM4 stream (old invented opcodes) plus the XUI barycentric rasterizer demo.
-pub fn emit_synthetic_stream(
-    bus: &mut MemoryBus,
-    kernel: &mut KernelDispatcher,
-    ring_buffer: &mut RingBuffer,
-    xenos_gpu: &mut XenosGpu,
-    ring_base: u64,
-    ring_size: usize,
-    loaded_scenes: &[XurScene],
-    xus_table: &Option<XusTable>,
-) -> Result<(), Box<dyn std::error::Error>> {
-        // Link Primary Ring Buffer with Xboxkrnl Video Subsystem
-        let rb_ret = kernel.dispatch("xboxkrnl.exe", 0x01C3, &[ring_base, ring_size as u64], bus);
-        println!("  -> VdInitializeRingBuffer(0x{:08X}, {} KB): status={}", ring_base, ring_size / 1024, rb_ret);
-
-        // CPU emits Direct3D / XUI PM4 packet stream to the Ring Buffer:
-        println!("[*] CPU emitting Direct3D / XUI PM4 packet stream into Ring Buffer:");
-        // 1. Set Context Register: RB_COLOR_INFO (RenderTarget: 1280x720 32-bit ARGB at 0x70000000)
-        let pkt_color = build_set_context_reg(RB_COLOR_INFO, 0x7000_0000);
-        ring_buffer.write_packet(bus, &pkt_color)?;
-        println!("  [PM4 EMIT] SET_CONTEXT_REG (RB_COLOR_INFO: 0x70000000) [{} dwords]", pkt_color.len());
-
-        // 2. Set Context Register: PA_SC_WINDOW_OFFSET (Viewport: (0, 0))
-        let pkt_vport = build_set_context_reg(PA_SC_WINDOW_OFFSET, 0x0000_0000);
-        ring_buffer.write_packet(bus, &pkt_vport)?;
-        println!("  [PM4 EMIT] SET_CONTEXT_REG (PA_SC_WINDOW_OFFSET: 0x0) [{} dwords]", pkt_vport.len());
-
-        // 3. Load ALU Constants (c0..c3: 4x4 Matrix for UI Projection, c4: Diffuse Tint)
-        let shader_constants = [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0, 1.0],
-        ];
-        let pkt_constants = build_load_alu_constant(0, &shader_constants);
-        ring_buffer.write_packet(bus, &pkt_constants)?;
-        println!("  [PM4 EMIT] LOAD_ALU_CONSTANT (c0..c4: Matrix + Diffuse Tint) [{} dwords]", pkt_constants.len());
-
-        // 4. Stream Vertex Buffer in guest RAM at 0x10060000 (VGT DMA)
-        let vgt_addr: u64 = 0x1006_0000;
-        let raw_vertices: [([f32; 3], u32, [f32; 2]); 4] = [
-            ([380.0, 150.0, 0.0], 0xFFFF_FFFF, [0.0, 0.0]),
-            ([1180.0, 150.0, 0.0], 0xFFFF_FFFF, [1.0, 0.0]),
-            ([1180.0, 250.0, 0.0], 0xFFFF_FFFF, [1.0, 1.0]),
-            ([380.0, 250.0, 0.0], 0xFFFF_FFFF, [0.0, 1.0]),
-        ];
-        for (i, (pos, color, uv)) in raw_vertices.iter().enumerate() {
-            let v_base = vgt_addr + (i * 24) as u64;
-            bus.write_u32(v_base, pos[0].to_bits())?;
-            bus.write_u32(v_base + 4, pos[1].to_bits())?;
-            bus.write_u32(v_base + 8, pos[2].to_bits())?;
-            bus.write_u32(v_base + 12, *color)?;
-            bus.write_u32(v_base + 16, uv[0].to_bits())?;
-            bus.write_u32(v_base + 20, uv[1].to_bits())?;
-        }
-        let pkt_dma_base = build_set_context_reg(VGT_DMA_BASE, vgt_addr as u32);
-        let pkt_dma_size = build_set_context_reg(VGT_DMA_SIZE, 4);
-        let pkt_dma_stride = build_set_context_reg(VGT_DMA_STRIDE, 24);
-        ring_buffer.write_packet(bus, &pkt_dma_base)?;
-        ring_buffer.write_packet(bus, &pkt_dma_size)?;
-        ring_buffer.write_packet(bus, &pkt_dma_stride)?;
-        println!("  [PM4 EMIT] SET_CONTEXT_REG (VGT_DMA_BASE: 0x{:08X}, Size: 4, Stride: 24)", vgt_addr);
-
-        // 5. Index buffer setup in guest RAM at 0x10050000
-        let index_ptr: u32 = 0x1005_0000;
-        let indices: [u16; 6] = [0, 1, 2, 2, 3, 0]; // 2 Triangles for UI Quad
-        for (i, &idx) in indices.iter().enumerate() {
-            bus.write_u16(index_ptr as u64 + (i * 2) as u64, idx)?;
-        }
-
-        // 6. Emit Draw Call: PM4_DRAW_INDX (Primitive: Triangles, 6 indices)
-        let pkt_draw = build_draw_indexed(0x04, 6, index_ptr);
-        ring_buffer.write_packet(bus, &pkt_draw)?;
-        println!("  [PM4 EMIT] DRAW_INDX (Primitive: Triangles, 6 Indices, Base: 0x{:08X}) [{} dwords]", index_ptr, pkt_draw.len());
-
-        // 7. Emit WAIT_FOR_IDLE fence
-        let pkt_idle = build_wait_for_idle();
-        ring_buffer.write_packet(bus, &pkt_idle)?;
-        println!("  [PM4 EMIT] WAIT_FOR_IDLE (Pipeline Flush & Fence) [{} dwords]", pkt_idle.len());
-
-        println!("\n[*] Executing Xenos GPU Command Processor (CP) loop on Primary Ring Buffer...");
-        let executed_count = xenos_gpu.execute_ring(bus, ring_buffer)?;
-        println!("[+] Xenos GPU CP successfully processed {} PM4 packets from Ring Buffer!", executed_count);
-        println!("    - Total Packets Processed: {}", xenos_gpu.packets_executed);
-        println!("    - Draw Calls Executed:     {}", xenos_gpu.draw_calls);
-        println!("    - Primitives Drawn:        {}", xenos_gpu.primitives_drawn);
-
-        // ==========================================================
-        // ETAPA 3: Direct3D 9 Subsystem & Barycentric Triangle Rasterizer
-        // ==========================================================
-        println!("\n>>> [ETAPA 3] Direct3D 9 Subsystem & XUI Barycentric Rasterizer <<<");
-        if let Some(games_scene) = loaded_scenes.iter().find(|s| s.name.contains("games")) {
-            println!("[*] Rasterizing authentic XUI Scene '{}' with D3D9 barycentric pipeline...", games_scene.name);
-            xenos_gpu.render_xui_scene(games_scene, xus_table.as_ref(), 0x0010_7C10, 0x000B_4D0B);
-            println!("[+] Direct3D 9 Subsystem successfully rasterized UI nodes into on-chip color buffer!");
-            println!("    - Triangles Shaded:        {}", xenos_gpu.primitives_drawn);
-            println!("    - Active Draw Calls:       {}", xenos_gpu.draw_calls);
-            println!("    - Color Buffer Resolution: 1280x720 32-bit ARGB (EDRAM Target)");
-        }
     Ok(())
 }
