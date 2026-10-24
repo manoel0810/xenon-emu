@@ -53,7 +53,7 @@ Exports HLE ainda não tratados: xboxkrnl `0x0111, 0x013D, 0x0015, 0x00F5`; xam 
 
 ## 4. Ferramentas de depuração existentes
 
-Variáveis de ambiente: `XENON_HEADLESS`, `XENON_WATCHDOG` (4s sem progresso imprime frame/pc/lr/syscall, exit 86), `XENON_HEARTBEAT`, `XENON_SYSCALL_LOG`, `XENON_SYSCALL_SUMMARY`, `XENON_PC_PROFILE`, `XENON_PC_HOOK=0xA,0xB` (+`_LIMIT/_MIN_FRAME/_ALL/_MEM=reg:hexoff:words/_LIST=reg/_STRREGS/_R3STR`), `XENON_WATCH=0xADDR` (+`XENON_WATCH_MEM`, `XENON_WATCH_DUMP_HIT`), `XENON_TRAP_TRACE` (+`_FULL`, `XENON_DUMP_RING_FRAME`, `XENON_DUMP_RING_N`), `XENON_NO_RESTART`, `XENON_RESTART_MAIN`, `XENON_PM4_LOG`, `XENON_GPU_MMIO_LOG`, `XENON_FB_SOURCE=reference`, `XENON_SKIP_BOOTANIM`, `XENON_MAX_FRAMES`.
+Variáveis de ambiente (todas lidas uma única vez em `src/diag/mod.rs` → `diag::config()`; variável nova entra lá): `XENON_HEADLESS`, `XENON_WATCHDOG` (4s sem progresso imprime frame/pc/lr/syscall, exit 86), `XENON_HEARTBEAT`, `XENON_SYSCALL_LOG`, `XENON_LOG_SYSCALLS` (log de cada despacho HLE no kernel), `XENON_SYSCALL_SUMMARY`, `XENON_PC_PROFILE`, `XENON_PC_HOOK=0xA,0xB` (+`_LIMIT/_MIN_FRAME/_ALL/_MEM=reg:hexoff:words/_LIST=reg/_STRREGS/_R3STR`), `XENON_WATCH=0xADDR` (+`XENON_WATCH_MEM`, `XENON_WATCH_DUMP_HIT`), `XENON_TRAP_TRACE` (+`_FULL`, `XENON_DUMP_RING_FRAME`, `XENON_DUMP_RING_N`), `XENON_NO_RESTART`, `XENON_RESTART_MAIN`, `XENON_PM4_LOG`, `XENON_GPU_MMIO_LOG`, `XENON_FB_SOURCE=reference`, `XENON_SKIP_BOOTANIM`, `XENON_MAX_FRAMES`.
 
 Disassembler: `.\target\release\ppcdis.exe` (a partir de `xenon-emu`): `START END`, `words ADDR N`, `str ADDR..` (UTF-16), `refs IMM16 HI16`, `lis IMM`, `callers ADDR`, `importcallers ExportName`.
 

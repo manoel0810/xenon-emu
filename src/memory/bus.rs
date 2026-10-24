@@ -63,12 +63,7 @@ const SRAM_PREFIX: u64 = 0x8000_0200_0000_0000;
 
 impl MemoryBus {
     pub fn new() -> Self {
-        let watch_addr = std::env::var("XENON_WATCH")
-            .ok()
-            .and_then(|s| {
-                let clean = s.trim_start_matches("0x").trim_start_matches("0X");
-                u64::from_str_radix(clean, 16).ok()
-            });
+        let watch_addr = crate::diag::config().watch_addr;
         Self {
             ram: vec![0u8; RAM_SIZE],
             sram: vec![0u8; SRAM_SIZE],
@@ -113,7 +108,7 @@ impl MemoryBus {
                     "      THREAD: {} | LR: 0x{:08X} | SP: 0x{:08X} | callers:{}",
                     self.current_thread, self.current_lr, self.current_sp, chain
                 );
-                if std::env::var("XENON_WATCH_MEM").is_ok() {
+                if crate::diag::config().watch_mem {
                     // state BEFORE this write: 24 words starting 0x30 bytes below the watched address
                     let base = (target & 0xFFFF_FFFF).wrapping_sub(0x30) & !0xF;
                     let mut line = String::new();

@@ -941,5 +941,5 @@ impl XenosGpu {
 fn pm4_log_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("XENON_PM4_LOG").is_ok())
+    *ON.get_or_init(|| crate::diag::config().pm4_log)
 }

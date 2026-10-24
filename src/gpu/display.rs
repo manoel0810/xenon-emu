@@ -194,7 +194,7 @@ impl GpuDisplay {
             ..WindowOptions::default()
         };
 
-        let window = if std::env::var("XENON_HEADLESS").is_ok() {
+        let window = if crate::diag::config().headless {
             println!("[*] XENON_HEADLESS ativo: sem janela (saida via BMP / XENON_MAX_FRAMES).");
             None
         } else {
@@ -307,7 +307,7 @@ impl GpuDisplay {
             key_cooldown: 0,
             blades,
             gamepad_mgr,
-            mode: if std::env::var("XENON_SKIP_BOOTANIM").is_ok() {
+            mode: if crate::diag::config().skip_bootanim {
                 println!("[*] XENON_SKIP_BOOTANIM ativo: exibindo Dashboard imediatamente.");
                 DisplayMode::Dashboard
             } else {
@@ -318,7 +318,7 @@ impl GpuDisplay {
             untile_mode: UntileMode::XenosVariant0,
             color_swizzle: ColorSwizzle::Bgra,
             // Start on what the guest actually rendered. XENON_FB_SOURCE=reference starts on the real-hardware dump instead.
-            buffer_source: if std::env::var("XENON_FB_SOURCE").map(|v| v.eq_ignore_ascii_case("reference")).unwrap_or(false) {
+            buffer_source: if crate::diag::config().fb_source_reference {
                 println!("[*] XENON_FB_SOURCE=reference: iniciando no dump de referencia do hardware real.");
                 BufferSource::HardwareCalibrated
             } else {

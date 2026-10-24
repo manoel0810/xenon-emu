@@ -248,7 +248,7 @@ impl KernelDispatcher {
             self.resolve_xam(ordinal).unwrap_or("UnknownExport")
         };
 
-        if std::env::var("XENON_LOG_SYSCALLS").is_ok() {
+        if crate::diag::config().log_syscalls {
             println!(
                 "  [HLE SYSCALL] {}!{} (#0x{:04X} / {}) with args: {:016X?}",
                 library, func_name, ordinal, ordinal, args

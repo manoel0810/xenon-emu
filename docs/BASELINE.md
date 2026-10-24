@@ -87,6 +87,10 @@ Syscalls mais chamadas: thread 0x3 `xboxkrnl #0x0125` e `#0x0130` (121712 cada),
 
 **Observação:** no frame 400 o laço quente da principal está em `0x92198xxx`/`0x921967xx`, e não no laço de fence `0x921AFFF8..0x921B0020` citado no `HANDOFF.md`. Investigar na Fase 2 antes de assumir que o bloqueio é o fence.
 
+## Não determinismo conhecido
+
+Tabelas montadas a partir de `HashMap` mudam de ordem entre execuções: o dump de campos opcionais do cabeçalho XEX no boot e, nas tabelas top-N (`[PROFILE]`, `[SYSCALL SUMMARY]`), a ordem e o último item entre entradas empatadas. Comparar essas seções como conjunto, ignorando empates no corte.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

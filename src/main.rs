@@ -1,5 +1,6 @@
 pub mod cpu;
 pub mod crypto;
+pub mod diag;
 pub mod gpu;
 pub mod kernel;
 pub mod loader;
@@ -1031,21 +1032,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    - Pressione ESC ou clique no [X] para fechar a janela");
     println!("    ========================================================\n");
 
+    let diag = diag::config();
     let initial_fb = kernel.active_frontbuffer();
     println!("[*] Guest VRAM Framebuffer Ativo inicial: 0x{:08X}", initial_fb);
-    println!("[*] Fonte de Vídeo inicial: {} (tecla [B] alterna; XENON_FB_SOURCE=reference inicia no dump)", if std::env::var("XENON_FB_SOURCE").map(|v| v.eq_ignore_ascii_case("reference")).unwrap_or(false) { "DUMP DE REFERÊNCIA" } else { "VRAM Guest Ao Vivo" });
+    println!("[*] Fonte de Vídeo inicial: {} (tecla [B] alterna; XENON_FB_SOURCE=reference inicia no dump)", if diag.fb_source_reference { "DUMP DE REFERÊNCIA" } else { "VRAM Guest Ao Vivo" });
 
-    let max_frames: Option<u64> = std::env::var("XENON_MAX_FRAMES")
-        .ok()
-        .and_then(|s| s.parse().ok());
+    let max_frames: Option<u64> = diag.max_frames;
     // Trap diagnostics: XENON_TRAP_TRACE keeps a ring of the last executed instructions of the
     // Metro primary thread and dumps it on trap; XENON_NO_RESTART stops the thread instead of restarting it.
-    let trap_trace = std::env::var("XENON_TRAP_TRACE").is_ok();
-    let no_restart = std::env::var("XENON_NO_RESTART").is_ok();
-    let trap_full = std::env::var("XENON_TRAP_FULL").is_ok();
+    let trap_trace = diag.trap_trace;
+    let no_restart = diag.no_restart;
+    let trap_full = diag.trap_full;
     // Restart policy: the Metro primary thread runs the CRT startup once; restarting it re-runs startup
     // over already-initialised globals (double InsertTailList -> self-linked node). Only restart it when asked.
-    let restart_main = std::env::var("XENON_RESTART_MAIN").is_ok();
+    let restart_main = diag.restart_main;
     // First-run register snapshot per thread: (SP, r3, r4, r5, r13), used to give restarts a clean stack/arguments
     let mut thread_init: std::collections::HashMap<String, (u64, u64, u64, u64, u64)> = std::collections::HashMap::new();
     fn restart_thread(cpu: &mut Cpu, entry: u64, init: Option<&(u64, u64, u64, u64, u64)>) {
@@ -1062,16 +1062,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // XENON_PC_HOOK=0xADDR,0xADDR: dump registers whenever the Metro primary thread reaches these PCs
     // XENON_WATCH_DUMP_HIT=<n>: dump the instruction ring right after the n-th watchpoint hit (needs XENON_TRAP_TRACE=1)
-    let watch_dump_hit: Option<u64> = std::env::var("XENON_WATCH_DUMP_HIT").ok().and_then(|s| s.parse().ok());
+    let watch_dump_hit: Option<u64> = diag.watch_dump_hit;
     let mut watch_dump_done = false;
-    let dump_ring_frame: Option<u64> = std::env::var("XENON_DUMP_RING_FRAME").ok().and_then(|s| s.parse().ok());
-    let heartbeat = std::env::var("XENON_HEARTBEAT").is_ok();
-    let gpu_mmio_log = std::env::var("XENON_GPU_MMIO_LOG").is_ok();
-    let syscall_log = std::env::var("XENON_SYSCALL_LOG").is_ok();
-    let syscall_summary = std::env::var("XENON_SYSCALL_SUMMARY").is_ok();
+    let dump_ring_frame: Option<u64> = diag.dump_ring_frame;
+    let heartbeat = diag.heartbeat;
+    let gpu_mmio_log = diag.gpu_mmio_log;
+    let syscall_log = diag.syscall_log;
+    let syscall_summary = diag.syscall_summary;
     // (thread, lib, ordinal, lr) -> (count, first_frame, last_frame, last args)
     let mut sys_agg: std::collections::HashMap<(String, String, u16, u64), (u64, u64, u64, [u64; 4])> = std::collections::HashMap::new();
-    let watchdog = std::env::var("XENON_WATCHDOG").is_ok();
+    let watchdog = diag.watchdog;
     if watchdog {
         std::thread::spawn(|| {
             let mut last = WD_STEPS.load(Relaxed);
@@ -1090,15 +1090,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
-    let hook_all_threads = std::env::var("XENON_PC_HOOK_ALL").is_ok();
+    let hook_all_threads = diag.pc_hook_all;
     let mut pc_hook_hits: u64 = 0;
-    let pc_hook_min_frame: u64 = std::env::var("XENON_PC_HOOK_MIN_FRAME").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let pc_hook_limit: u64 = std::env::var("XENON_PC_HOOK_LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(40);
-    let pc_hooks: Vec<u64> = std::env::var("XENON_PC_HOOK").ok().map(|s| s.split(',').filter_map(|p| u64::from_str_radix(p.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).ok()).collect()).unwrap_or_default();
+    let pc_hook_min_frame: u64 = diag.pc_hook_min_frame;
+    let pc_hook_limit: u64 = diag.pc_hook_limit;
+    let pc_hooks: Vec<u64> = diag.pc_hooks.clone();
     // (pc, opcode, lr, ctr, r1, r3, r11, r12)
     let mut trap_ring: std::collections::VecDeque<(u64, u32, u64, u64, u64, u64, u64, u64, u64, u64)> =
         std::collections::VecDeque::with_capacity(64);
-    let pc_profile = std::env::var("XENON_PC_PROFILE").is_ok();
+    let pc_profile = diag.pc_profile;
     let mut pc_hist: std::collections::HashMap<(String, u64), u64> = std::collections::HashMap::new();
     let mut sys_hist: std::collections::HashMap<(String, u16), u64> = std::collections::HashMap::new();
 
@@ -1183,7 +1183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let r = &thread.cpu.regs;
                             pc_hook_hits += 1;
                             if pc_hook_hits <= pc_hook_limit {
-                                if let Ok(spec) = std::env::var("XENON_PC_HOOK_MEM") {
+                                if let Some(spec) = &diag.pc_hook_mem {
                                     // "<reg>:<hex offset>:<word count>" e.g. "31:360:40" dumps 40 words at r31+0x360
                                     let p: Vec<&str> = spec.split(':').collect();
                                     if p.len() == 3 {
@@ -1198,7 +1198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
-                                if let Ok(spec) = std::env::var("XENON_PC_HOOK_LIST") {
+                                if let Some(spec) = &diag.pc_hook_list {
                                     // "<reg>": walk a circular doubly linked list (flink at +0) starting at the address held in GPR <reg>
                                     if let Ok(rn) = spec.trim().parse::<usize>() {
                                         let head = r.gpr[rn] & 0xFFFF_FFFF;
@@ -1214,7 +1214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         println!("    [LIST] {}", out);
                                     }
                                 }
-                                if let Ok(regs) = std::env::var("XENON_PC_HOOK_STRREGS") {
+                                if let Some(regs) = &diag.pc_hook_strregs {
                                     // e.g. "4,3": print the big-endian UTF-16 string each listed GPR points at
                                     for rn in regs.split(',').filter_map(|x| x.trim().parse::<usize>().ok()) {
                                         let mut s = String::new();
@@ -1226,7 +1226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         println!("    [STRREG] r{}=0x{:08X} -> \"{}\"", rn, r.gpr[rn] & 0xFFFF_FFFF, s);
                                     }
                                 }
-                                if std::env::var("XENON_PC_HOOK_R3STR").is_ok() {
+                                if diag.pc_hook_r3str {
                                     // r3 points at a struct whose +4 / +8 members are pointers to big-endian UTF-16 strings
                                     let rd16 = |bus: &MemoryBus, p: u64| -> String {
                                         let mut s = String::new();
@@ -1258,7 +1258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Some(h) = watch_dump_hit {
                                     if !watch_dump_done && bus.watch_hits >= h {
                                         watch_dump_done = true;
-                                        let dump_n: usize = std::env::var("XENON_DUMP_RING_N").ok().and_then(|s| s.parse().ok()).unwrap_or(400);
+                                        let dump_n: usize = diag.dump_ring_n;
                                         let n = trap_ring.len();
                                         println!("  [WATCH DUMP] hit #{} by pc=0x{:08X}; last {} instructions:", bus.watch_hits, current_pc & 0xFFFF_FFFF, dump_n.min(n));
                                         for e in trap_ring.iter().skip(n.saturating_sub(dump_n)) {
@@ -1325,7 +1325,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             break;
                                         }
                                         if thread.continuous {
-                                            if std::env::var("XENON_WATCH").is_ok() {
+                                            if diag.watch_set {
                                                 println!("  [RESTART:TERM] thread '{}' frame {} called ExTerminateThread (pc=0x{:08X}, SP=0x{:08X}) -> restarting at entry 0x{:08X}",
                                                     thread.name, frame, current_pc, thread.cpu.regs.gpr[1], thread.entry_pc);
                                             }
@@ -1380,7 +1380,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         thread.active = false;
                                         break;
                                     }
-                                    if std::env::var("XENON_WATCH").is_ok() {
+                                    if diag.watch_set {
                                         println!("  [RESTART:ERR] thread '{}' frame {} trapped at pc=0x{:08X} SP=0x{:08X}: {} -> restarting at entry 0x{:08X}",
                                             thread.name, frame, current_pc, thread.cpu.regs.gpr[1], e, thread.entry_pc);
                                     }
@@ -1408,7 +1408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     v.sort_by(|a, b| b.1.cmp(&a.1));
                     for (pc, c) in v.iter().take(60) { println!("    hot pc=0x{:08X} x{}", pc, c); }
                     let n = trap_ring.len();
-                    let dump_n: usize = std::env::var("XENON_DUMP_RING_N").ok().and_then(|s| s.parse().ok()).unwrap_or(400);
+                    let dump_n: usize = diag.dump_ring_n;
                     for e in trap_ring.iter().skip(n.saturating_sub(dump_n)) {
                         println!("    seq pc=0x{:08X} op=0x{:08X} lr=0x{:08X} r3=0x{:X} r11=0x{:X} r30=0x{:X} r31=0x{:X}", e.0 & 0xFFFF_FFFF, e.1, e.2 & 0xFFFF_FFFF, e.5, e.6, e.9, e.8);
                     }
