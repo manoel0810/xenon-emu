@@ -146,6 +146,11 @@ O `main` não retorna mais. Em 1500 frames a thread principal para no frame 1100
 
 4000 frames (~34 s headless): **sem trap**. Thread principal ativa no fim (`PC 0x921A413C`, 98 895 764 passos), girando em `0x921A40B0` (espera de fence chamada do laço principal da aplicação). PM4: frame 1176 com 568 pacotes, total 746; histograma até o frame 1400 em `HANDOFF.md`.
 
+## Depois do DPC (Fase 2, 2026-10-24): GPU destravada
+
+3000 frames (~28 s headless): 415 escritas de `CP_RB_WPTR` (último `7775`), fence até `0x62D`, 75 660 pacotes PM4, sem trap; thread principal em `0x921C69B4`.
+5000 frames (~43 s): o ring dá a volta (WPTR `4731`), 177 711 pacotes, `XE_SWAP` ×1044, `DRAW_INDX_2` ×2112; thread principal em `0x921AEE20`, 121 322 324 passos.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

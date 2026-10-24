@@ -191,6 +191,10 @@ pub fn boot() -> Result<Boot, Box<dyn std::error::Error>> {
     bus.write_u32(0x80001000, 0x44000042)?;
     bus.write_u32(0x80001004, 0x4E800020)?;
     thunk_map.insert(0x80001000, ("xboxkrnl.exe".to_string(), 0x0019));
+    // DPC return trampoline (sc; blr): a DPC routine run inline by KeInsertQueueDpc returns here (app/threads.rs)
+    bus.write_u32(super::threads::DPC_RETURN_TRAMPOLINE, 0x44000042)?;
+    bus.write_u32(super::threads::DPC_RETURN_TRAMPOLINE + 4, 0x4E800020)?;
+    thunk_map.insert(super::threads::DPC_RETURN_TRAMPOLINE, ("xboxkrnl.exe".to_string(), super::threads::DPC_RETURN_ORDINAL));
 
     let mut kernel = KernelDispatcher::new();
     // Loader data entries for XexGetModuleHandle / XexGetModuleSection: the title executable and the HLE kernel modules.

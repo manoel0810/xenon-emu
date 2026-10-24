@@ -155,6 +155,12 @@ Situação: já corrigidos e verificados, sem efeito no travamento: argumentos/c
 
 Ainda não verificado: que a thread 0x2, ao processar o item, submeta a cabeça da cadeia ao ring e que o modo `[dev+0x2B90]` volte a 0 (o decremento pode estar no processamento do item ou num callback de conclusão). Próximo passo proposto: `KeInitializeDpc` com o layout do Xenia e `KeInsertQueueDpc` executando a rotina na thread chamadora (com KPCR `dpc_active` como no Xenia), e então medir WPTR/fence.
 
+**Atualização 10 (2026-10-24): travamento da GPU resolvido (critério do M1 atingido).** Implementados segundo o Xenia: `KeInitializeDpc` (layout `XDPC`), `KeInsertQueueDpc` (grava `arg1`/`arg2`, devolve 1 e a rotina roda **inline na thread chamadora**, com impersonação de DPC: `KPCR+0x18` IRQL 2 e `KPCR+0x150` `dpc_active = 1`, restaurados na volta; DPC aninhado não reimpersona) e `KeRemoveQueueDpc`. Mecanismo: depois do syscall, o frame loop chama `routine(dpc, context, arg1, arg2)` com LR num trampolim (`0x80001010`, `sc; blr`, pseudo-ordinal `0xFFFE`); ao chegar nele, restaura o estado e devolve 1 ao chamador.
+
+Resultado (3000 frames): **415 escritas de `CP_RB_WPTR`** (antes 3), fence de `0xB` até **`0x62D`**, 75 660 pacotes no CP; a thread principal sai do laço de fence. Em 5000 frames (~43 s headless) o ring dá a volta (WPTR 7775 → 4731) e a dash fica em regime: 177 711 pacotes; `XE_SWAP` ×1044 (um por present), `INTERRUPT` ×1044, `DRAW_INDX_2` ×2112, `EVENT_WRITE_SHD` ×6342, `WAIT_REG_MEM` ×6301, `COND_WRITE` ×8704, `INDIRECT_BUFFER` ×4251, Type-0 ×73 677. Nenhum trap.
+
+Pendências que agora ficam visíveis: os draws não são rasterizados (Fase 4; o contador `Draw Calls` do log é o antigo, das opcodes inventadas); `mftb` por thread; `VdQueryVideoFlags`; esperas do kernel não bloqueiam (Fase 3; a thread 0x3 continua girando em critical sections).
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.

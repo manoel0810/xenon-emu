@@ -69,16 +69,23 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x006F: KeInitializeDpc (pDpc, pRoutine, pContext)
+            // 0x006F: KeInitializeDpc(dpc, routine, context) - XDPC layout as Xenia (kernel/dpc.rs)
             0x006F => {
-                if let (Some(&p_dpc), Some(&p_routine), Some(&p_context)) = (args.first(), args.get(1), args.get(2)) {
-                    if p_dpc != 0 {
-                        let _ = bus.write_u32(p_dpc + 8, p_routine as u32);
-                        let _ = bus.write_u32(p_dpc + 12, p_context as u32);
-                    }
-                }
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                super::super::dpc::initialize_dpc(bus, arg(0), arg(1), arg(2));
                 0
             }
+
+            // 0x007B: KeInsertQueueDpc(dpc, arg1, arg2) - the routine runs inline on the calling thread (frame loop)
+            0x007B => {
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                let (ret, call) = super::super::dpc::insert_queue_dpc(bus, &mut self.queued_dpcs, arg(0), arg(1), arg(2));
+                self.pending_dpc_call = call;
+                ret
+            }
+
+            // 0x008E: KeRemoveQueueDpc(dpc)
+            0x008E => super::super::dpc::remove_queue_dpc(&mut self.queued_dpcs, args.first().copied().unwrap_or(0)),
 
             // 0x0074: KeInitializeSemaphore (pSemaphore, count, limit)
             0x0074 => {

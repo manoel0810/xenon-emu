@@ -73,6 +73,10 @@ pub struct KernelDispatcher {
     pub vfs_files: HashMap<String, Vec<u8>>,
     /// Loaded modules and their loader data entries (XexGetModuleHandle / XexGetModuleSection).
     pub modules: super::modules::ModuleTable,
+    /// DPCs inserted with KeInsertQueueDpc and not removed (KeRemoveQueueDpc).
+    pub queued_dpcs: std::collections::HashSet<u32>,
+    /// DPC routine the calling thread must run before returning from KeInsertQueueDpc (taken by the frame loop).
+    pub pending_dpc_call: Option<super::dpc::DpcCall>,
     /// Video mode reported by VdQueryVideoMode.
     pub video: super::video::VideoConfig,
     pub vfs_handles: HashMap<u32, VfsFileHandle>,
@@ -110,6 +114,8 @@ impl KernelDispatcher {
             event_by_ptr: HashMap::new(),
             vfs_files: HashMap::new(),
             modules: super::modules::ModuleTable::default(),
+            queued_dpcs: std::collections::HashSet::new(),
+            pending_dpc_call: None,
             video: super::video::VideoConfig::default(),
             vfs_handles: HashMap::new(),
         }

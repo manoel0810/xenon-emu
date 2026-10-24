@@ -1,7 +1,47 @@
 //! Guest threads run by the frame loop: per-thread KPCR, initial thread set and restart helper.
 
 use xenon_emu::cpu::Cpu;
+use xenon_emu::kernel::dpc::{self, DpcCall};
 use xenon_emu::memory::MemoryBus;
+
+/// Guest address of the DPC return trampoline (`sc; blr`), registered in the thunk map as a pseudo export.
+pub const DPC_RETURN_TRAMPOLINE: u64 = 0x80001010;
+/// Pseudo ordinal of the DPC return trampoline (not a real xboxkrnl export; never reaches the kernel).
+pub const DPC_RETURN_ORDINAL: u16 = 0xFFFE;
+
+/// A DPC routine running on a guest thread: where to resume and the IRQL to restore (None = nested DPC).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DpcFrame {
+    pub return_pc: u64,
+    pub previous_irql: Option<u8>,
+}
+
+/// Runs a DPC inline on the thread that called KeInsertQueueDpc (Xenia KeInsertQueueDpc_entry): the thread's
+/// `pc` is already the return address; it now calls routine(dpc, context, arg1, arg2) at DISPATCH_LEVEL and comes
+/// back through DPC_RETURN_TRAMPOLINE.
+pub fn begin_dpc_call(cpu: &mut Cpu, bus: &mut MemoryBus, frames: &mut Vec<DpcFrame>, call: DpcCall) {
+    let previous_irql = dpc::begin_impersonation(bus, cpu.regs.gpr[13]);
+    frames.push(DpcFrame { return_pc: cpu.regs.pc, previous_irql });
+    cpu.regs.gpr[3] = call.dpc as u64;
+    cpu.regs.gpr[4] = call.context as u64;
+    cpu.regs.gpr[5] = call.arg1 as u64;
+    cpu.regs.gpr[6] = call.arg2 as u64;
+    cpu.regs.lr = DPC_RETURN_TRAMPOLINE;
+    cpu.regs.pc = call.routine as u64;
+}
+
+/// The DPC routine returned to the trampoline: restore IRQL/dpc_active and return 1 from KeInsertQueueDpc.
+/// Returns false if the thread had no DPC in progress.
+pub fn end_dpc_call(cpu: &mut Cpu, bus: &mut MemoryBus, frames: &mut Vec<DpcFrame>) -> bool {
+    let Some(frame) = frames.pop() else { return false };
+    if let Some(irql) = frame.previous_irql {
+        dpc::end_impersonation(bus, cpu.regs.gpr[13], irql);
+    }
+    cpu.regs.gpr[3] = 1;
+    cpu.regs.pc = frame.return_pc;
+    cpu.regs.lr = frame.return_pc;
+    true
+}
 
 pub struct GuestThread {
     pub name: String,
@@ -235,6 +275,47 @@ pub fn register_initial(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dpc_runs_inline_and_returns_to_the_caller() {
+        let mut bus = MemoryBus::new();
+        let kpcr = setup_kpcr(&mut bus, 5, 0x92E0_0000, 0x92DE_0000);
+        let mut cpu = Cpu::new(0);
+        cpu.regs.gpr[13] = kpcr;
+        cpu.regs.gpr[1] = 0x92DF_F000;
+        // state right after the KeInsertQueueDpc syscall: pc = caller's return address
+        cpu.regs.pc = 0x921B_13E0;
+        cpu.regs.lr = 0x921B_13E0;
+        let mut frames = Vec::new();
+        let call = DpcCall { dpc: 0x4000_51C4, routine: 0x921C_89B0, context: 0x4000_51A4, arg1: 0xD011_C280, arg2: 0 };
+        begin_dpc_call(&mut cpu, &mut bus, &mut frames, call);
+        assert_eq!((cpu.regs.pc, cpu.regs.lr), (0x921C_89B0, DPC_RETURN_TRAMPOLINE));
+        assert_eq!((cpu.regs.gpr[3], cpu.regs.gpr[4], cpu.regs.gpr[5], cpu.regs.gpr[6]), (0x4000_51C4, 0x4000_51A4, 0xD011_C280, 0));
+        assert_eq!(cpu.regs.gpr[1], 0x92DF_F000, "the routine runs on the caller's stack");
+        assert_eq!((bus.read_u8(kpcr + 0x18).unwrap(), bus.read_u32(kpcr + 0x150).unwrap()), (2, 1));
+        // the routine returns through the trampoline
+        assert!(end_dpc_call(&mut cpu, &mut bus, &mut frames));
+        assert_eq!((cpu.regs.pc, cpu.regs.lr, cpu.regs.gpr[3]), (0x921B_13E0, 0x921B_13E0, 1));
+        assert_eq!((bus.read_u8(kpcr + 0x18).unwrap(), bus.read_u32(kpcr + 0x150).unwrap()), (0, 0));
+        assert!(!end_dpc_call(&mut cpu, &mut bus, &mut frames));
+    }
+
+    #[test]
+    fn nested_dpc_keeps_the_outer_impersonation() {
+        let mut bus = MemoryBus::new();
+        let kpcr = setup_kpcr(&mut bus, 6, 0x92E0_0000, 0x92DE_0000);
+        let mut cpu = Cpu::new(0x1000);
+        cpu.regs.gpr[13] = kpcr;
+        let mut frames = Vec::new();
+        let call = DpcCall { dpc: 1, routine: 0x2000, context: 0, arg1: 0, arg2: 0 };
+        begin_dpc_call(&mut cpu, &mut bus, &mut frames, call);
+        cpu.regs.pc = 0x2040; // the routine inserts another DPC
+        begin_dpc_call(&mut cpu, &mut bus, &mut frames, DpcCall { routine: 0x3000, ..call });
+        assert!(end_dpc_call(&mut cpu, &mut bus, &mut frames));
+        assert_eq!((cpu.regs.pc, bus.read_u32(kpcr + 0x150).unwrap()), (0x2040, 1), "still inside the outer DPC");
+        assert!(end_dpc_call(&mut cpu, &mut bus, &mut frames));
+        assert_eq!((cpu.regs.pc, bus.read_u32(kpcr + 0x150).unwrap()), (0x1000, 0));
+    }
 
     #[test]
     fn interrupt_callback_gets_source_then_context_and_active_cpu() {

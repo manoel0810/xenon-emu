@@ -9,7 +9,7 @@ use xenon_emu::gpu::{GpuDisplay, RingBuffer, XenosGpu};
 use xenon_emu::memory;
 
 use super::boot::Boot;
-use super::threads::{interrupt_callback_thread, restart_thread, setup_kpcr, GuestThread};
+use super::threads::{begin_dpc_call, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL};
 
 pub fn run(
     boot: Boot,
@@ -59,6 +59,8 @@ pub fn run(
     let mut profiler = Profiler::new();
 
     let mut next_callback_slot: u64 = 0;
+    // DPC routines running inline on a guest thread (KeInsertQueueDpc), by thread name
+    let mut dpc_frames: HashMap<String, Vec<DpcFrame>> = HashMap::new();
     let mut frame = 0u64;
     while display.is_open() {
         frame += 1;
@@ -163,6 +165,13 @@ pub fn run(
                                         profiler.record_syscall(&thread.name, l, *o);
                                     }
                                 }
+                                if let Some((_, ordinal)) = thunk {
+                                    if *ordinal == DPC_RETURN_ORDINAL {
+                                        // a DPC routine returned: resume the KeInsertQueueDpc caller
+                                        end_dpc_call(&mut thread.cpu, &mut bus, dpc_frames.entry(thread.name.clone()).or_default());
+                                        continue;
+                                    }
+                                }
                                 if let Some((lib, ordinal)) = thunk {
                                     let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
                                     let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
@@ -193,6 +202,10 @@ pub fn run(
                                     if watchdog { diag::watchdog::leave_syscall(); }
                                     thread.cpu.regs.gpr[3] = ret;
                                     thread.cpu.regs.pc = thread.cpu.regs.lr;
+                                    if let Some(call) = kernel.pending_dpc_call.take() {
+                                        // KeInsertQueueDpc: run the DPC routine inline on this thread before returning
+                                        begin_dpc_call(&mut thread.cpu, &mut bus, dpc_frames.entry(thread.name.clone()).or_default(), call);
+                                    }
 
                                     if is_term {
                                         if thread.continuous && no_restart {
