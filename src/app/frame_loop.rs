@@ -59,6 +59,7 @@ pub fn run(
 
     let mut next_callback_slot: u64 = 0;
     let mut dynamic_threads_created: u64 = 0;
+    let mut deadlock_reported = false;
     // DPC routines running inline on a guest thread (KeInsertQueueDpc), by thread name
     let mut dpc_frames: HashMap<String, Vec<DpcFrame>> = HashMap::new();
     let mut frame = 0u64;
@@ -100,6 +101,7 @@ pub fn run(
             let is_worker_or_render = true; // Dashboard dynamic worker/UI threads should run continuously
             guest_threads.push(GuestThread {
                 handle: pending.handle,
+                wait: None,
                 name: format!("Dynamic Thread 0x{:X}", pending.tid),
                 cpu: thread_cpu,
                 entry_pc: routine,
@@ -114,11 +116,28 @@ pub fn run(
         kernel.update_gamepad(gp_state);
 
         // 3. Interleave continuous guest execution of genuine dashboard threads
-        let active_threads = guest_threads.iter().filter(|t| t.active).count() as u64;
-        bus.timebase.begin_frame(frame, active_threads * 25000);
+        // threads parked in a kernel wait run no instructions, so they do not count toward the frame's time slices
+        let runnable_threads = guest_threads.iter().filter(|t| t.active && t.wait.is_none()).count().max(1) as u64;
+        bus.timebase.begin_frame(frame, runnable_threads * 25000);
+        let parked_without_timeout = guest_threads.iter().filter(|t| t.active && t.wait.as_ref().is_some_and(|w| w.deadline.is_none())).count();
+        if parked_without_timeout > 0 && parked_without_timeout == guest_threads.iter().filter(|t| t.active).count() && !deadlock_reported {
+            println!("  [SCHED] frame {}: every thread waits without a timeout (deadlock)", frame);
+            deadlock_reported = true;
+        }
         for thread in &mut guest_threads {
             if !thread.active || kernel.title_terminated {
                 continue;
+            }
+            // a parked thread resumes only when its wait completes (kernel/scheduler.rs)
+            if let Some(wait) = &thread.wait {
+                let now = bus.timebase.now();
+                match xenon_emu::kernel::scheduler::evaluate(&mut bus, wait, now) {
+                    xenon_emu::kernel::scheduler::WaitOutcome::Pending => continue,
+                    xenon_emu::kernel::scheduler::WaitOutcome::Done(status) => {
+                        thread.cpu.regs.gpr[3] = status;
+                        thread.wait = None;
+                    }
+                }
             }
             if heartbeat {
                 use std::io::Write;
@@ -211,6 +230,7 @@ pub fn run(
                                         diag::watchdog::enter_syscall(lib, *ordinal, &args);
                                     }
                                     kernel.current_thread = thread.handle;
+                                    kernel.pending_wait = None;
                                     let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
                                     if watchdog { diag::watchdog::leave_syscall(); }
                                     thread.cpu.regs.gpr[3] = ret;
@@ -221,6 +241,11 @@ pub fn run(
                                     }
                                     if kernel.title_terminated {
                                         // XamLoaderTerminateTitle does not return
+                                        break;
+                                    }
+                                    if let Some(wait) = kernel.pending_wait.take() {
+                                        // the call blocks: park the thread (r3 is set when the wait completes)
+                                        thread.wait = Some(wait);
                                         break;
                                     }
 

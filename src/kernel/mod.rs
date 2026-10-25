@@ -1,6 +1,7 @@
 pub mod dispatcher;
 pub mod dpc;
 pub mod objects;
+pub mod scheduler;
 pub mod exports;
 pub mod guest_mem;
 pub mod input;

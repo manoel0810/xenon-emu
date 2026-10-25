@@ -36,6 +36,8 @@ pub struct KernelDispatcher {
     pub objects: super::objects::ObjectTable,
     /// Handle of the thread making the current call (NtCurrentThread); 0 when not running on a kernel thread.
     pub current_thread: u32,
+    /// Wait the calling thread must be parked with (taken by the frame loop after the call), see kernel/scheduler.rs.
+    pub pending_wait: Option<super::scheduler::WaitRequest>,
     /// Thread handles by thread id (ObLookupThreadByThreadId).
     pub thread_by_id: HashMap<u32, u32>,
     pub tls_slots: HashMap<u32, u64>,
@@ -87,6 +89,7 @@ impl KernelDispatcher {
             next_thread_id: 1,
             objects: Default::default(),
             current_thread: 0,
+            pending_wait: None,
             thread_by_id: HashMap::new(),
             tls_slots: HashMap::new(),
             next_tls_index: 1,

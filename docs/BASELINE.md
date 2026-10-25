@@ -193,6 +193,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: igual à Fase 3.5 (614 / `4263` / fence `0x9D5` / 111 462 pacotes / 611 swaps); thread principal com 59 939 774 passos. TIDs dinâmicos agora começam em 2 (a principal é o TID 1).
 
+## Depois do escalonador (Fase 3.2)
+
+3000 frames: igual à Fase 3.1 (614 / `4263` / fence `0x9D5` / 611 swaps); passos por thread iguais (a dash só chama `KeDelayExecutionThread` com intervalo 0).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

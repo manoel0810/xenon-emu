@@ -1,7 +1,7 @@
 //! xboxkrnl.exe HLE: Ke*/Kf*/Ki*: kernel scheduling primitives (events, waits, IRQL, DPC, timers, spinlocks).
 
 use super::super::dispatcher::KernelDispatcher;
-use crate::kernel::objects;
+use crate::kernel::{objects, scheduler};
 use crate::memory::MemoryBus;
 
 /// Guest timebase frequency (mftb ticks per second), as reported by KeQueryPerformanceFrequency.
@@ -20,9 +20,20 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x005A: KeDelayExecutionThread(processor_mode, alertable, interval_ptr) -> X_STATUS_SUCCESS; the frame
-            // loop ends the thread's timeslice (the delay itself needs the scheduler, Phase 3)
-            0x005A => 0,
+            // 0x005A: KeDelayExecutionThread(processor_mode, alertable, interval_ptr) -> X_STATUS_SUCCESS after the
+            // interval (XThread::Delay): the thread is parked until then (kernel/scheduler.rs); 0 only yields.
+            // User APCs are not emulated, so alertable delays are not cut short.
+            0x005A => {
+                let interval_ptr = args.get(2).copied().unwrap_or(0);
+                let interval = if interval_ptr != 0 { bus.read_u64(interval_ptr).unwrap_or(0) as i64 } else { 0 };
+                if crate::diag::config().log_syscalls {
+                    println!("    -> KeDelayExecutionThread: interval {} (100 ns units, negative = relative)", interval);
+                }
+                if let Some(deadline) = scheduler::deadline(bus.timebase.now(), interval) {
+                    self.pending_wait = Some(scheduler::WaitRequest::delay(deadline));
+                }
+                0
+            }
 
             // 0x005F: KeEnterCriticalRegion
             0x005F => 0,
@@ -107,7 +118,7 @@ impl KernelDispatcher {
                 if let Some(&p_time) = args.first() {
                     if p_time != 0 {
                         // guest time base (50 MHz) as 100 ns units after a fixed boot date
-                        let ft = 133_000_000_000_000_000u64 + bus.timebase.now() / 5;
+                        let ft = scheduler::system_time(bus.timebase.now());
                         let _ = bus.write_u64(p_time, ft);
                     }
                 }
