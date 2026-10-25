@@ -7,8 +7,24 @@ impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xboxkrnl_vd(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
-            // 0x01B1..0x01B9: Video Display (Vd*) Handlers
-            0x01B1 | 0x01B3 | 0x01B4 | 0x01B5 | 0x01B7 | 0x01B8 | 0x01B9 => 0,
+            // Vd* exports 0x01B1..0x01B8
+            0x01B1 | 0x01B3 | 0x01B4 | 0x01B5 | 0x01B7 | 0x01B8 => 0,
+
+            // 0x01B9: VdGetCurrentDisplayGamma(type_ptr, power_ptr) -> void: Xenia's defaults, type 2 (BT.709) and
+            // power 2.22222233 (cvars kernel_display_gamma_type / _power, xboxkrnl_video.cc)
+            0x01B9 => {
+                if let Some(&type_ptr) = args.first() {
+                    if type_ptr != 0 {
+                        let _ = bus.write_u32(type_ptr, 2);
+                    }
+                }
+                if let Some(&power_ptr) = args.get(1) {
+                    if power_ptr != 0 {
+                        let _ = bus.write_u32(power_ptr, (2.22222233f64 as f32).to_bits());
+                    }
+                }
+                0
+            }
 
             // 0x01B6: VdEnableRingBufferRPtrWriteBack (pWriteBackAddress, frequency)
             0x01B6 => {
@@ -90,7 +106,7 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x01CF..0x01DC: Vd display controls
+            // Vd display controls 0x01CF..0x01DC
             0x01CF | 0x01D0 | 0x01D3 | 0x01D4 | 0x01DC => 0,
 
             // 0x01D5: VdSetGraphicsInterruptCallback (pfnCallback, pContext)

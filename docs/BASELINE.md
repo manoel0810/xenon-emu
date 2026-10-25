@@ -181,6 +181,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico ao item 6 (411 / `7715` / fence `0x621`); log com 13 990 linhas (antes 15 557: saíram as 1577 mensagens `Decoded dynamic texture` da decodificação inventada em 0x0A00..0x0A5F). Último `[GPU CP]`: 75 201 pacotes, `Draws: 772`, `Swaps: 374`.
 
+## Depois da auditoria de ordinais (Fase 3.0, 2026-10-25)
+
+3000 frames: 614 escritas de `CP_RB_WPTR` (último `4263`, o ring deu a volta), fence até `0x9D5`, 111 462 pacotes, `Draws: 1246`, `Swaps: 611`, sem trap; primeira submissão ainda no frame 1158; thread principal com 59 941 500 passos.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

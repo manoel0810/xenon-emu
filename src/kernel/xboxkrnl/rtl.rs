@@ -132,8 +132,9 @@ impl KernelDispatcher {
             // 0x0151: vswprintf(buffer, format, va_list)
             0x0151 => strings::sprintf(bus, arg(0), arg(1), &mut ArrayArgs::new(arg(2)), true),
 
-            // 0x0140: RtlFreeAnsiString | 0x0141: RtlFreeUnicodeString
-            0x0140 | 0x0141 => {
+            // 0x0127: RtlFreeAnsiString | 0x0128: RtlFreeUnicodeString (string): the string is reset (length,
+            // maximum length, pointer = 0); the buffer itself is not returned to a heap here
+            0x0127 | 0x0128 => {
                 let str_ptr = args.first().copied().unwrap_or(0);
                 if str_ptr != 0 {
                     let _ = bus.write_u16(str_ptr, 0);
@@ -142,6 +143,22 @@ impl KernelDispatcher {
                 }
                 0
             }
+
+            // 0x0140: RtlTimeToTimeFields(time_ptr, time_fields_ptr) -> void (X_TIME_FIELDS, Xenia xboxkrnl_rtl.cc)
+            0x0140 => {
+                let (time_ptr, fields_ptr) = (arg(0), arg(1));
+                if time_ptr != 0 && fields_ptr != 0 {
+                    let fields = time_to_time_fields(bus.read_u64(time_ptr).unwrap_or(0));
+                    for (i, v) in fields.iter().enumerate() {
+                        let _ = bus.write_u16(fields_ptr + 2 * i as u64, *v);
+                    }
+                }
+                0
+            }
+
+            // 0x0141: RtlTryEnterCriticalSection(cs) -> TRUE. RtlEnterCriticalSection does not track ownership yet
+            // (Phase 3), so trying always succeeds, like entering.
+            0x0141 => 1,
 
             // 0x0142: RtlUnicodeStringToAnsiString (DestinationString, SourceString, AllocateDestinationString)
             0x0142 => {
@@ -194,5 +211,73 @@ impl KernelDispatcher {
 
             _ => return None,
         })
+    }
+}
+
+/// RtlTimeToTimeFields: a FILETIME (100 ns units since 1601-01-01) as X_TIME_FIELDS
+/// [year, month, day, hour, minute, second, milliseconds, weekday (0 = Sunday)].
+fn time_to_time_fields(filetime: u64) -> [u16; 8] {
+    let ms_total = filetime / 10_000;
+    let days = (ms_total / 86_400_000) as i64;
+    let ms_of_day = ms_total % 86_400_000;
+    // civil date from days since 1601-01-01 (shifted to days since 1970-01-01; Howard Hinnant's algorithm)
+    let z = days - 134_774 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 };
+    // 1601-01-01 was a Monday
+    let weekday = (days + 1).rem_euclid(7);
+    [
+        year as u16,
+        month as u16,
+        day as u16,
+        (ms_of_day / 3_600_000) as u16,
+        (ms_of_day / 60_000 % 60) as u16,
+        (ms_of_day / 1000 % 60) as u16,
+        (ms_of_day % 1000) as u16,
+        weekday as u16,
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::time_to_time_fields;
+    use crate::kernel::KernelDispatcher;
+    use crate::memory::MemoryBus;
+
+    #[test]
+    fn time_fields_from_filetime() {
+        // 1601-01-01 00:00:00.000 was a Monday
+        assert_eq!(time_to_time_fields(0), [1601, 1, 1, 0, 0, 0, 0, 1]);
+        // 2000-01-01 00:00:00 (Unix 946684800), a Saturday
+        assert_eq!(time_to_time_fields(116_444_736_000_000_000 + 946_684_800 * 10_000_000), [2000, 1, 1, 0, 0, 0, 0, 6]);
+        // 2024-02-29 13:45:30.250 (Unix 1709214330.25), a Thursday
+        assert_eq!(time_to_time_fields(116_444_736_000_000_000 + 1_709_214_330_250 * 10_000), [2024, 2, 29, 13, 45, 30, 250, 4]);
+    }
+
+    #[test]
+    fn rtl_ordinals_do_what_their_names_say() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        // RtlTryEnterCriticalSection must not touch the critical section (it used to be "RtlFreeUnicodeString")
+        for off in (0..0x1C).step_by(4) {
+            bus.write_u32(0x4000_0000 + off, 0xEEEE_EEEE).unwrap();
+        }
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0141, &[0x4000_0000], &mut bus), 1);
+        assert_eq!(bus.read_u32(0x4000_0004).unwrap(), 0xEEEE_EEEE);
+        // RtlTimeToTimeFields
+        bus.write_u64(0x4000_0100, 116_444_736_000_000_000 + 946_684_800 * 10_000_000).unwrap();
+        k.dispatch("xboxkrnl.exe", 0x0140, &[0x4000_0100, 0x4000_0200], &mut bus);
+        assert_eq!((bus.read_u16(0x4000_0200).unwrap(), bus.read_u16(0x4000_020E).unwrap()), (2000, 6));
+        // RtlFreeAnsiString resets the string
+        bus.write_u32(0x4000_0300, 0x0005_0010).unwrap();
+        bus.write_u32(0x4000_0304, 0x4000_0400).unwrap();
+        k.dispatch("xboxkrnl.exe", 0x0127, &[0x4000_0300], &mut bus);
+        assert_eq!((bus.read_u32(0x4000_0300).unwrap(), bus.read_u32(0x4000_0304).unwrap()), (0, 0));
     }
 }

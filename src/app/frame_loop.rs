@@ -182,8 +182,7 @@ pub fn run(
                                 if let Some((lib, ordinal)) = thunk {
                                     let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
                                     let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
-                                        || (*ordinal == 0x002B && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
-                                        || (*ordinal == 0x0057 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
+                                        || (*ordinal == 0x005A && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x00B0 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x00AF && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
                                         || (*ordinal == 0x00FD && lib.eq_ignore_ascii_case("xboxkrnl.exe"))

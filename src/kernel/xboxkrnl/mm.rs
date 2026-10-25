@@ -39,11 +39,8 @@ impl KernelDispatcher {
             // 0x00C4: MmQueryAddressProtect
             0x00C4 => 0x04, // PAGE_READWRITE
 
-            // 0x00C5: MmQueryAllocationSize | 0x00C7: MmQueryAllocationSize
-            0x00C5 | 0x00C7 => 0x1000,
-
-            // 0x00C8: MmQueryStatistics
-            0x00C8 => 0,
+            // 0x00C5: MmQueryAllocationSize
+            0x00C5 => 0x1000,
 
             _ => return None,
         })

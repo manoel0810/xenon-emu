@@ -86,8 +86,13 @@ impl KernelDispatcher {
             // 0x0016: ExReleaseReadWriteLock
             0x0016 => 0,
 
-            // 0x0017: ExRegisterTitleTerminateNotification | 0x0018: ExUnregisterTitleTerminateNotification
-            0x0017 | 0x0018 => 0,
+            // 0x0015: ExRegisterTitleTerminateNotification(registration, create) -> void. Xenia keeps the routine to
+            // call when the title exits; titles never exit here, so nothing is kept.
+            0x0015 => 0,
+
+            // 0x0018: ExSetXConfigSetting(category, setting, buffer, size) -> X_STATUS_SUCCESS (Xenia
+            // xboxkrnl_xconfig.cc; there is no XConfig store here, the value is dropped)
+            0x0018 => 0,
 
             // 0x0019: ExTerminateThread
             0x0019 => 0,

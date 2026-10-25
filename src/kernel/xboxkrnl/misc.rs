@@ -31,8 +31,11 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x0021: FscSetCacheElementCount | 0x0022: FscSetMaxCacheElements
-            0x0021 | 0x0022 => 0,
+            // 0x0021: FscSetCacheElementCount
+            0x0021 => 0,
+
+            // 0x0022: HalGetCurrentAVPack() -> AV pack (Xenia cvar avpack, default 8)
+            0x0022 => 8,
 
             // 0x0024: HalOpenCloseODDTray
             0x0024 => 0,
@@ -40,8 +43,13 @@ impl KernelDispatcher {
             // 0x0029: HalSendSMCMessage
             0x0029 => 0,
 
-            // 0x002C: HalReturnToFirmware
-            0x002C => 0,
+            // 0x0028: HalReturnToFirmware(routine) - does not return: Xenia exits the emulator; here emulation stops
+            // like XamLoaderTerminateTitle
+            0x0028 => {
+                println!("    -> HalReturnToFirmware({}): title requested a firmware reentry; stopping emulation", args.first().copied().unwrap_or(0));
+                self.title_terminated = true;
+                0
+            }
 
             // 0x0158: XboxKrnlVersion
             0x0158 => 0x2011_B400, // 2.0.4532.0 (Genuine Dashboard Kernel)
@@ -73,7 +81,7 @@ impl KernelDispatcher {
             // 0x01E7: XInputdWriteState | 0x01E8: XInputdNotify
             0x01E7 | 0x01E8 => 0,
 
-            // 0x01F3..0x0200: XAudio Handlers
+            // XAudio exports 0x01F3..0x0200
             0x01F3 | 0x01F4 | 0x01F5 | 0x01F7 | 0x01F8 | 0x01FA | 0x01FB | 0x01FC | 0x0200 => 0,
 
             // 0x021C: XUsbcamSetConfig | 0x021D: XUsbcamGetState | 0x0221: XUsbcamGetView

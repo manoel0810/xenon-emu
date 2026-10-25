@@ -10,7 +10,7 @@ impl KernelDispatcher {
             // 0x0166: XeCryptBnQwBeSigVerify
             0x0166 => 1, // Signature Valid (TRUE)
 
-            // 0x0174..0x017A: XeCryptDes*
+            // XeCryptDes* exports 0x0174..0x017A
             0x0174 | 0x0175 | 0x0176 | 0x0178 | 0x017A => 0,
 
             // 0x0182: XeCryptHmacSha | 0x0183: XeCryptHmacShaVerify

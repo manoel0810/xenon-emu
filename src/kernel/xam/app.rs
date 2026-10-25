@@ -71,24 +71,6 @@ impl KernelDispatcher {
             // 0x01F4: XMsgInProcessCall
             0x01F4 => 0,
 
-            // 0x01F5: XamGetExecutionId / XMsgCompleteIORequest
-            // Writes genuine Dashboard XEX_EXECUTION_ID (24 bytes)
-            0x01F5 => {
-                if let Some(&p_exec) = args.first() {
-                    if p_exec != 0 {
-                        let _ = bus.write_u32(p_exec + 0, 0x0000_0000); // media_id
-                        let _ = bus.write_u32(p_exec + 4, 0x2044_9700); // version (2.0.17559.0)
-                        let _ = bus.write_u32(p_exec + 8, 0x2044_9700); // base_version
-                        let _ = bus.write_u32(p_exec + 12, 0xFFFE_07D1); // title_id
-                        let _ = bus.write_u8(p_exec + 16, 1);           // platform (Xbox 360)
-                        let _ = bus.write_u8(p_exec + 17, 0);           // executable_table
-                        let _ = bus.write_u8(p_exec + 18, 1);           // disc_number
-                        let _ = bus.write_u8(p_exec + 19, 1);           // disc_count
-                    }
-                }
-                0
-            }
-
             // 0x01A3: XamLoaderGetMediaInfo (pMediaInfo*, pFlags*) - no disc inserted
             0x01A3 => {
                 for k in 0..=1usize {

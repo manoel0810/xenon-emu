@@ -173,6 +173,15 @@ pub fn boot() -> Result<Boot, Box<dyn std::error::Error>> {
 
     println!("\n[*] Setting up Import Thunks and HLE Syscall Traps...");
     let mut thunk_map = dash_xex.setup_import_thunks(&mut bus)?;
+    if xenon_emu::diag::config().list_imports {
+        let mut imports: Vec<(&str, u16)> = thunk_map.values().map(|(lib, ord)| (lib.as_str(), *ord)).collect();
+        imports.sort();
+        imports.dedup();
+        for (lib, ord) in imports {
+            let name = if lib.eq_ignore_ascii_case("xboxkrnl.exe") { xenon_emu::kernel::exports::get_xboxkrnl_name(ord) } else { xenon_emu::kernel::exports::get_xam_name(ord) };
+            println!("[IMPORT] {} 0x{:04X} {}", lib, ord, name.unwrap_or("?"));
+        }
+    }
 
     println!("\n[*] Enumerating Imported Symbols for Dashboard:");
     for lib in &dash_xex.import_libraries {

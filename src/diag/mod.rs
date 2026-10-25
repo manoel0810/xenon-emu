@@ -83,6 +83,8 @@ pub struct DiagConfig {
     pub draw_log: bool,
     /// XENON_MMIO_WRITE_LOG: print every CPU store into the GPU register window (register, value, pc, thread).
     pub mmio_write_log: bool,
+    /// XENON_LIST_IMPORTS: print the dash's imported functions (library, ordinal, export name) at boot.
+    pub list_imports: bool,
 }
 
 fn flag(name: &str) -> bool {
@@ -140,6 +142,7 @@ impl DiagConfig {
             pm4_log: flag("XENON_PM4_LOG"),
             draw_log: flag("XENON_DRAW_LOG"),
             mmio_write_log: flag("XENON_MMIO_WRITE_LOG"),
+            list_imports: flag("XENON_LIST_IMPORTS"),
         }
     }
 }

@@ -8,14 +8,6 @@ impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xam_misc(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
-            // 0x005F: XamAppRegister (appId, pAppObj)
-            0x005F => {
-                self.xam_app_registered = true;
-                self.xam_app_id = args.first().copied().unwrap_or(0) as u32;
-                println!("    -> XamAppRegister: Registered Dashboard XAM App ID=0x{:X}", self.xam_app_id);
-                1 // Registered successfully
-            }
-
             // 0x01C5: XamGetDefaultSystemImage (phImage)
             0x01C5 => {
                 if let Some(&p_img) = args.first() {
@@ -28,9 +20,6 @@ impl KernelDispatcher {
 
             // 0x070D: XamQueryLiveHiveW (name, output, size, type) - the Live registry hive has no entries offline
             0x070D => 0x0000_0490, // ERROR_NOT_FOUND
-
-            // 0x0223: XamUserAreUsersFriends | 0x0225: XamUserReadProfileSettings | 0x0226: XamUserWriteProfileSettings | 0x0228: XamUserReadStats
-            0x0223 | 0x0225 | 0x0226 | 0x0228 => 0,
 
             // 0x02B4: XamCacheOpenFile
             0x02B4 => {
@@ -73,9 +62,6 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x0324: XamVoiceCreate | 0x0325: XamVoiceHeadsetPresent | 0x0330: XamContentGetMarketplaceCounts
-            0x0324 | 0x0325 | 0x0330 => 0,
-
             // 0x03CB: XGetAVPack
             0x03CB => 6, // XAVPACK_HDMI
 
@@ -92,9 +78,6 @@ impl KernelDispatcher {
                 }
                 0
             }
-
-            // 0x03D2: XVideoSetMode
-            0x03D2 => 0,
 
             // 0x0417: SetFilePointer (hFile, lDistanceToMove, lpDistanceToMoveHigh, dwMoveMethod)
             0x0417 => {
@@ -219,29 +202,8 @@ impl KernelDispatcher {
             // 0x050C: XamSetConsoleFriendlyName
             0x050C => 0,
 
-            // 0x058B: XamGetSystemVersion
-            0x058B => 0x2044_9700, // Version 2.0.17559.0
-
-            // 0x0646: XamContentCreateEnumerator
-            0x0646 => {
-                let h = self.next_handle;
-                self.next_handle += 4;
-                if let Some(&p_handle) = args.get(6) {
-                    if p_handle != 0 {
-                        let _ = bus.write_u32(p_handle, h);
-                    }
-                }
-                if let Some(&p_cb) = args.get(5) {
-                    if p_cb != 0 {
-                        let _ = bus.write_u32(p_cb, 0x1000);
-                    }
-                }
-                println!("    -> XamContentCreateEnumerator: Allocated enumerator handle 0x{:X}", h);
-                0 // ERROR_SUCCESS
-            }
-
-            // 0x0647: XamContentGetEnumeratorAttributes | 0x0648: XamContentCloseEnumerator | 0x0649: XamContentFlush
-            0x0647 | 0x0648 | 0x0649 => 0,
+            // 0x0282: XamGetSystemVersion() -> 0 (Xenia xam_info.cc stub)
+            0x0282 => 0,
 
             // 0x0650: XdfInitialize
             0x0650 => 0,

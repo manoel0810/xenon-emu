@@ -19,8 +19,9 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x0057: KeDelayExecutionThread (waitMode, alertable, pInterval)
-            0x0057 => 0,
+            // 0x005A: KeDelayExecutionThread(processor_mode, alertable, interval_ptr) -> X_STATUS_SUCCESS; the frame
+            // loop ends the thread's timeslice (the delay itself needs the scheduler, Phase 3)
+            0x005A => 0,
 
             // 0x005F: KeEnterCriticalRegion
             0x005F => 0,
@@ -123,9 +124,6 @@ impl KernelDispatcher {
                 prev
             }
 
-            // 0x0080: KeQueryActiveProcessors
-            0x0080 => 0x3F, // 6 hardware threads (3 cores x 2 SMT)
-
             // 0x0081: KeQueryBasePriorityThread
             0x0081 => 8, // Normal thread priority
 
@@ -153,8 +151,8 @@ impl KernelDispatcher {
             // 0x0089: KeReleaseSpinLockFromRaisedIrql
             0x0089 => 0,
 
-            // 0x008D: KeRemoveQueue | 0x0090: KeRundownQueue | 0x0095: KeInsertQueue | 0x0096: KeInsertHeadQueue | 0x0098: KeSetCurrentStackPointers
-            0x008D | 0x0090 | 0x0095 | 0x0096 | 0x0098 => 0,
+            // 0x008D: KeRemoveQueue
+            0x008D => 0,
 
             // 0x008F: KeResetEvent
             0x008F => {

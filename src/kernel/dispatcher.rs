@@ -47,13 +47,13 @@ pub struct KernelDispatcher {
     /// Bump pointer for physical allocations (MmAllocatePhysicalMemoryEx: ring buffer, framebuffers, GPU data).
     /// These keep `addr & 0x1FFFFFFF` as their physical address, so they must not overlap the dash image (phys 0x12000000).
     pub phys_bump: u64,
-    pub xam_app_registered: bool,
     /// Guest address of the cached `{ data*, size }` struct returned by XamGetOnlineSchema (0 = not built yet)
     pub online_schema_ptr: u64,
     /// xorshift64 state for XeCryptRandom
     pub rng_state: u64,
-    pub xam_app_id: u32,
     pub signin_state: u32,
+    /// XamSetDashContext value.
+    pub dash_context: u32,
     pub perf_counter: u64,
     pub ring_buffer_ptr: u64,
     pub ring_buffer_size: u32,
@@ -93,11 +93,10 @@ impl KernelDispatcher {
             next_tls_index: 1,
             valloc_bump: 0x4000_0000,
             phys_bump: 0x9010_0000,
-            xam_app_registered: false,
             online_schema_ptr: 0,
             rng_state: 0x9E37_79B9_7F4A_7C15,
-            xam_app_id: 0,
             signin_state: 1,
+            dash_context: 0,
             perf_counter: 10_000_000,
             ring_buffer_ptr: 0x1000_0000,
             ring_buffer_size: 64 * 1024,
