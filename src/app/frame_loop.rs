@@ -331,8 +331,8 @@ pub fn run(
 
         if executed_pkts > 0 {
             println!(
-                "  [GPU CP] Frame {:05} | Processed {} PM4 packets (Total: {}, Draws: {}, Swaps: {}) | WPTR: {}, RPTR: {}",
-                frame, executed_pkts, xenos_gpu.packets_executed, xenos_gpu.real_draws, xenos_gpu.swaps, ring_buffer.wptr, ring_buffer.rptr
+                "  [GPU CP] Frame {:05} | Processed {} PM4 packets (Total: {}, Draws: {}, Swaps: {}, IB decode errors: {}) | WPTR: {}, RPTR: {}",
+                frame, executed_pkts, xenos_gpu.packets_executed, xenos_gpu.real_draws, xenos_gpu.swaps, xenos_gpu.ib_decode_errors, ring_buffer.wptr, ring_buffer.rptr
             );
         }
 

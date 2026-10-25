@@ -1,3 +1,4 @@
+use crate::gpu::draw_log::DrawLog;
 use crate::gpu::pm4::*;
 use crate::gpu::ring_buffer::RingBuffer;
 use crate::memory::MemoryBus;
@@ -30,6 +31,13 @@ pub struct XenosGpu {
     /// 0xFFFFFFFF).
     pub bin_mask: u64,
     pub bin_select: u64,
+    /// Active vertex / pixel shader microcode, as loaded by IM_LOAD / IM_LOAD_IMMEDIATE (Xenia active_*_shader_).
+    pub vertex_shader: Vec<u32>,
+    pub pixel_shader: Vec<u32>,
+    /// Indirect-buffer words skipped because the packet starting there did not fit in the buffer.
+    pub ib_decode_errors: u64,
+    /// XENON_DRAW_LOG state (None when off).
+    pub draw_log: Option<DrawLog>,
 }
 
 impl XenosGpu {
@@ -45,6 +53,10 @@ impl XenosGpu {
             last_swap: None,
             bin_mask: 0xFFFF_FFFF,
             bin_select: 0xFFFF_FFFF,
+            vertex_shader: Vec::new(),
+            pixel_shader: Vec::new(),
+            ib_decode_errors: 0,
+            draw_log: crate::diag::config().draw_log.then(DrawLog::new),
         }
     }
 
@@ -106,6 +118,15 @@ impl XenosGpu {
         bus.gpu_regs.set(reg, val);
     }
 
+    /// IM_LOAD / IM_LOAD_IMMEDIATE: makes `code` the active shader of `shader_type` (0 vertex, 1 pixel).
+    fn set_shader(&mut self, shader_type: u32, code: Vec<u32>) {
+        match shader_type {
+            0 => self.vertex_shader = code,
+            1 => self.pixel_shader = code,
+            _ => {}
+        }
+    }
+
     /// One vertical blank (Xenia GraphicsSystem::MarkVblank): advances the GPU counter. The frame loop then calls
     /// the guest's interrupt callback with source 0.
     pub fn mark_vblank(&mut self) {
@@ -165,7 +186,14 @@ impl XenosGpu {
                                         self.packets_executed += 1;
                                         cur += consumed;
                                     }
-                                    Err(_) => cur += 1,
+                                    Err(e) => {
+                                        // a packet running past the end of the IB: counted and reported, then skipped
+                                        self.ib_decode_errors += 1;
+                                        if pm4_log_enabled() || self.draw_log.is_some() {
+                                            println!("  [XENOS CP] IB 0x{:08X}+{}: {}", ib_addr, cur, e);
+                                        }
+                                        cur += 1;
+                                    }
                                 }
                             }
                         }
@@ -290,6 +318,22 @@ impl XenosGpu {
                     PM4_DRAW_INDX | PM4_DRAW_INDX_2 | PM4_DRAW_INDX_BIN | PM4_DRAW_INDX_2_BIN => {
                         // Counted; Xenos microcode shaders are not rasterised yet (Phase 4).
                         self.real_draws += 1;
+                        if let Some(log) = self.draw_log.as_mut() {
+                            log.log(bus, *opcode, *predicated, data, &self.vertex_shader, &self.pixel_shader);
+                        }
+                    }
+                    PM4_IM_LOAD_IMMEDIATE => {
+                        // [shader type (0 vertex, 1 pixel), start << 16 | size in dwords, microcode...]
+                        let size = (word(1) & 0xFFFF) as usize;
+                        let code = data.iter().skip(2).take(size).copied().collect();
+                        self.set_shader(word(0), code);
+                    }
+                    PM4_IM_LOAD => {
+                        // [physical address | shader type, start << 16 | size in dwords]
+                        let address = (word(0) & 0x1FFF_FFFC) as u64;
+                        let size = word(1) & 0xFFFF;
+                        let code = (0..size).map(|i| bus.read_u32(address + 4 * i as u64).unwrap_or(0)).collect();
+                        self.set_shader(word(0) & 3, code);
                     }
                     PM4_SET_CONSTANT => {
                         // [offset_type, values...]: index = bits 0..10, type = bits 16..23
@@ -327,10 +371,10 @@ impl XenosGpu {
                     PM4_SET_BIN_SELECT_HI => self.bin_select = (self.bin_select & 0xFFFF_FFFF) | (word(0) as u64) << 32,
                     PM4_SET_BIN_MASK => self.bin_mask = (word(0) as u64) << 32 | word(1) as u64,
                     PM4_SET_BIN_SELECT => self.bin_select = (word(0) as u64) << 32 | word(1) as u64,
-                    PM4_IM_LOAD | PM4_IM_LOAD_IMMEDIATE | PM4_INVALIDATE_STATE | PM4_VIZ_QUERY | PM4_EVENT_WRITE_EXT
+                    PM4_INVALIDATE_STATE | PM4_VIZ_QUERY | PM4_EVENT_WRITE_EXT
                     | PM4_EVENT_WRITE_ZPD => {
-                        // Implemented by Xenia but with no effect yet on this software GPU (shader upload, viz queries,
-                        // extents, z-pass counts: Phase 4).
+                        // Implemented by Xenia but with no effect yet on this software GPU (state invalidation, viz
+                        // queries, extents, z-pass counts: Phase 4).
                     }
                     _ => {
                         // Unimplemented in Xenia too (HitUnimplementedOpcode); counted in real_opcode_counts.
@@ -523,6 +567,21 @@ mod cp_tests {
         assert_eq!(bus.gpu_regs.non_zero().collect::<Vec<_>>(), vec![(0x0A04, 0xC000_0000), (0x0A05, 0x1000)]);
         gpu.execute_packet(&mut bus, &t3(PM4_EVENT_WRITE_SHD, &[0, 0xC000_0012, 7])).unwrap();
         assert_eq!(bus.read_u32(0x7F00_0010).unwrap(), 7);
+    }
+
+    #[test]
+    fn shader_loads_set_the_active_shaders() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        // IM_LOAD_IMMEDIATE, pixel shader of 2 dwords (the payload may be padded past the size)
+        gpu.execute_packet(&mut bus, &t3(PM4_IM_LOAD_IMMEDIATE, &[1, 2, 0xAAAA_0001, 0xAAAA_0002, 0])).unwrap();
+        assert_eq!(gpu.pixel_shader, vec![0xAAAA_0001, 0xAAAA_0002]);
+        // IM_LOAD of a vertex shader from memory
+        bus.write_u32(0x0100_0000, 0xBBBB_0001).unwrap();
+        bus.write_u32(0x0100_0004, 0xBBBB_0002).unwrap();
+        bus.write_u32(0x0100_0008, 0xBBBB_0003).unwrap();
+        gpu.execute_packet(&mut bus, &t3(PM4_IM_LOAD, &[0x0100_0000, 3])).unwrap();
+        assert_eq!(gpu.vertex_shader, vec![0xBBBB_0001, 0xBBBB_0002, 0xBBBB_0003]);
     }
 
     #[test]

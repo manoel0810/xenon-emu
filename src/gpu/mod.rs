@@ -1,4 +1,5 @@
 pub mod display;
+pub mod draw_log;
 pub mod font;
 pub mod pm4;
 pub mod register_file;

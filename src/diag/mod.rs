@@ -79,6 +79,10 @@ pub struct DiagConfig {
     pub gpu_mmio_log: bool,
     /// XENON_PM4_LOG: print every PM4 packet the Command Processor executes.
     pub pm4_log: bool,
+    /// XENON_DRAW_LOG: print every draw packet with its render-target/viewport/shader/resolve state (gpu/draw_log.rs).
+    pub draw_log: bool,
+    /// XENON_MMIO_WRITE_LOG: print every CPU store into the GPU register window (register, value, pc, thread).
+    pub mmio_write_log: bool,
 }
 
 fn flag(name: &str) -> bool {
@@ -134,6 +138,8 @@ impl DiagConfig {
             log_syscalls: flag("XENON_LOG_SYSCALLS"),
             gpu_mmio_log: flag("XENON_GPU_MMIO_LOG"),
             pm4_log: flag("XENON_PM4_LOG"),
+            draw_log: flag("XENON_DRAW_LOG"),
+            mmio_write_log: flag("XENON_MMIO_WRITE_LOG"),
         }
     }
 }

@@ -258,6 +258,10 @@ impl MemoryBus {
     pub fn write_u32(&mut self, addr: u64, val: u32) -> Result<(), String> {
         if let Some(off) = mmio_offset(addr) {
             let reg = off / 4;
+            if crate::diag::config().mmio_write_log {
+                println!("  [MMIO W] reg=0x{:04X} val=0x{:08X} pc=0x{:08X} lr=0x{:08X} thread='{}'", reg, val,
+                    self.current_pc & 0xFFFF_FFFF, self.current_lr & 0xFFFF_FFFF, self.current_thread);
+            }
             self.gpu_regs.set(reg, val);
             if reg == crate::gpu::register_file::CP_RB_WPTR {
                 self.cp_rb_wptr = Some(val);
