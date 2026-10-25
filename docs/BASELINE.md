@@ -185,6 +185,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: 614 escritas de `CP_RB_WPTR` (último `4263`, o ring deu a volta), fence até `0x9D5`, 111 462 pacotes, `Draws: 1246`, `Swaps: 611`, sem trap; primeira submissão ainda no frame 1158; thread principal com 59 941 500 passos.
 
+## Depois do CP bloqueante (Fase 3.5)
+
+3000 frames: idêntico à Fase 3.0 (614 / `4263` / fence `0x9D5` / 111 462 pacotes / 611 swaps); `wait blocks: 611` (um por frame, a espera do ack de interrupção), CP não termina bloqueado.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

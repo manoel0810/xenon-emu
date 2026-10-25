@@ -7,6 +7,23 @@ use std::collections::HashMap;
 pub const XENOS_WIDTH: usize = 1280;
 pub const XENOS_HEIGHT: usize = 720;
 
+/// Whether the command processor can go on after a packet (Xenia's CP thread instead sleeps inside WAIT_REG_MEM).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpFlow {
+    Continue,
+    /// A WAIT_REG_MEM condition is not met: the packet is executed again the next time the CP runs.
+    Blocked,
+}
+
+/// An indirect buffer being executed: guest address, length and position in dwords. The words are read from memory
+/// as they are executed (like Xenia's ring reader), so a CP suspended inside an IB sees later CPU writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IbFrame {
+    pub addr: u64,
+    pub len: usize,
+    pub pos: usize,
+}
+
 /// ATI Xenos (Xbox 360) Command Processor and Graphics Engine
 pub struct XenosGpu {
     /// EDRAM resolve target shown by the display (stays empty until draws are rasterized, Phase 4)
@@ -34,6 +51,12 @@ pub struct XenosGpu {
     /// Active vertex / pixel shader microcode, as loaded by IM_LOAD / IM_LOAD_IMMEDIATE (Xenia active_*_shader_).
     pub vertex_shader: Vec<u32>,
     pub pixel_shader: Vec<u32>,
+    /// Times the CP suspended on an unmet WAIT_REG_MEM condition.
+    pub wait_blocks: u64,
+    /// Indirect buffers in execution, innermost last; kept across calls while the CP is blocked inside one.
+    pub ib_stack: Vec<IbFrame>,
+    /// The last `execute_ring` stopped at an unmet WAIT_REG_MEM.
+    pub waiting: bool,
     /// Indirect-buffer words skipped because the packet starting there did not fit in the buffer.
     pub ib_decode_errors: u64,
     /// XENON_DRAW_LOG state (None when off).
@@ -56,13 +79,22 @@ impl XenosGpu {
             vertex_shader: Vec::new(),
             pixel_shader: Vec::new(),
             ib_decode_errors: 0,
+            wait_blocks: 0,
+            ib_stack: Vec::new(),
+            waiting: false,
             draw_log: crate::diag::config().draw_log.then(DrawLog::new),
         }
     }
 
     /// Executes all pending PM4 packets in the Primary Ring Buffer
+    /// Executes all pending PM4 packets in the Primary Ring Buffer, first resuming an indirect buffer the CP was
+    /// blocked in. Stops at a WAIT_REG_MEM whose condition is not met; the next call starts again from it.
     pub fn execute_ring(&mut self, bus: &mut MemoryBus, ring: &mut RingBuffer) -> Result<usize, String> {
         let mut count = 0;
+        self.waiting = true;
+        if self.run_ib_stack(bus, &mut count)? == CpFlow::Blocked {
+            return Ok(count);
+        }
 
         while ring.has_pending() {
             let pending = ring.pending_dwords();
@@ -82,10 +114,16 @@ impl XenosGpu {
             let words = ring.peek_words(bus, packet_dwords)?;
             match Pm4Packet::decode(&words) {
                 Ok((pkt, consumed)) => {
-                    self.execute_packet(bus, &pkt)?;
+                    if self.execute_packet(bus, &pkt)? == CpFlow::Blocked {
+                        return Ok(count);
+                    }
                     ring.advance_rptr(consumed);
                     self.packets_executed += 1;
                     count += 1;
+                    // an INDIRECT_BUFFER packet pushed a frame: run it (it may block)
+                    if self.run_ib_stack(bus, &mut count)? == CpFlow::Blocked {
+                        return Ok(count);
+                    }
                 }
                 Err(e) => {
                     println!("  [XENOS CP ERROR] Error decoding PM4 packet: {}", e);
@@ -95,7 +133,42 @@ impl XenosGpu {
             }
         }
 
+        self.waiting = false;
         Ok(count)
+    }
+
+    /// Executes the indirect buffers on `ib_stack` until they are done or a packet blocks.
+    fn run_ib_stack(&mut self, bus: &mut MemoryBus, count: &mut usize) -> Result<CpFlow, String> {
+        while let Some(&frame) = self.ib_stack.last() {
+            let depth = self.ib_stack.len() - 1;
+            if frame.pos >= frame.len {
+                self.ib_stack.pop();
+                continue;
+            }
+            let at = frame.addr + 4 * frame.pos as u64;
+            let header = bus.read_u32(at).unwrap_or(0);
+            let size = Pm4Packet::size_dwords(header);
+            if frame.pos + size > frame.len {
+                // a packet running past the end of the IB: counted and reported, then skipped
+                self.ib_decode_errors += 1;
+                if pm4_log_enabled() || self.draw_log.is_some() {
+                    println!("  [XENOS CP] IB 0x{:08X}+{}: packet {:08X} needs {} dwords, {} left", frame.addr, frame.pos, header, size, frame.len - frame.pos);
+                }
+                self.ib_stack[depth].pos += 1;
+                continue;
+            }
+            let words: Vec<u32> = (0..size).map(|i| bus.read_u32(at + 4 * i as u64).unwrap_or(0)).collect();
+            let (pkt, _) = Pm4Packet::decode(&words)?;
+            // advance first: a nested INDIRECT_BUFFER pushes its frame on top of this one
+            self.ib_stack[depth].pos += size;
+            if self.execute_packet(bus, &pkt)? == CpFlow::Blocked {
+                self.ib_stack[depth].pos -= size;
+                return Ok(CpFlow::Blocked);
+            }
+            self.packets_executed += 1;
+            *count += 1;
+        }
+        Ok(CpFlow::Continue)
     }
 
     /// Executes pending PM4 packets and writes back the current RPTR to guest memory
@@ -116,6 +189,25 @@ impl XenosGpu {
     /// shared register file, bus.gpu_regs.
     pub fn write_register(&mut self, reg: u32, val: u32, bus: &mut MemoryBus) {
         bus.gpu_regs.set(reg, val);
+        // HandleSpecialRegisterWrite
+        if (SCRATCH_REG0..SCRATCH_REG0 + 8).contains(&reg) {
+            // scratch register writeback: enabled registers are also stored at SCRATCH_ADDR + 4 * n
+            let n = reg - SCRATCH_REG0;
+            if bus.gpu_regs.get(SCRATCH_UMSK) & (1 << n) != 0 {
+                let address = bus.gpu_regs.get(SCRATCH_ADDR).wrapping_add(4 * n);
+                let _ = bus.write_u32((address & 0x1FFF_FFFC) as u64, val);
+            }
+        } else if reg == COHER_STATUS_HOST {
+            // marks the range dirty; the next WAIT_REG_MEM on it makes it coherent
+            bus.gpu_regs.set(reg, val | 0x8000_0000);
+        }
+    }
+
+    /// MakeCoherent: a pending COHER_STATUS_HOST request (status, bit 31) completes at once, as nothing is cached.
+    fn make_coherent(bus: &mut MemoryBus) {
+        if bus.gpu_regs.get(COHER_STATUS_HOST) & 0x8000_0000 != 0 {
+            bus.gpu_regs.set(COHER_STATUS_HOST, 0);
+        }
     }
 
     /// IM_LOAD / IM_LOAD_IMMEDIATE: makes `code` the active shader of `shader_type` (0 vertex, 1 pixel).
@@ -134,7 +226,9 @@ impl XenosGpu {
     }
 
     /// Executes one decoded PM4 packet (Xenia ExecutePacketType0..3; opcodes from xenos.h).
-    pub fn execute_packet(&mut self, bus: &mut MemoryBus, packet: &Pm4Packet) -> Result<(), String> {
+    /// INDIRECT_BUFFER only pushes its frame on `ib_stack`; `execute_ring` runs it.
+    pub fn execute_packet(&mut self, bus: &mut MemoryBus, packet: &Pm4Packet) -> Result<CpFlow, String> {
+        let mut flow = CpFlow::Continue;
         if pm4_log_enabled() {
             match packet {
                 Pm4Packet::Type0 { base_reg, one_reg, values } => println!("  [PM4] T0 base=0x{:04X}{} n={} v0=0x{:08X}", base_reg, if *one_reg { " one-reg" } else { "" }, values.len(), values.first().copied().unwrap_or(0)),
@@ -162,7 +256,7 @@ impl XenosGpu {
                 *self.real_opcode_counts.entry(*opcode).or_insert(0) += 1;
                 // Predicated packets run only if a selected bin is enabled; predicated swaps never run.
                 if *predicated && ((self.bin_select & self.bin_mask) == 0 || *opcode == PM4_XE_SWAP) {
-                    return Ok(());
+                    return Ok(CpFlow::Continue);
                 }
                 let word = |i: usize| data.get(i).copied().unwrap_or(0);
                 match *opcode {
@@ -172,30 +266,7 @@ impl XenosGpu {
                         let ib_addr = word(0) as u64;
                         let ib_count = (word(1) & 0xF_FFFF) as usize;
                         if ib_addr != 0 && ib_count > 0 {
-                            let mut words = Vec::with_capacity(ib_count);
-                            for i in 0..ib_count {
-                                if let Ok(w) = bus.read_u32(ib_addr + (i * 4) as u64) {
-                                    words.push(w);
-                                }
-                            }
-                            let mut cur = 0;
-                            while cur < words.len() {
-                                match Pm4Packet::decode(&words[cur..]) {
-                                    Ok((sub_pkt, consumed)) => {
-                                        self.execute_packet(bus, &sub_pkt)?;
-                                        self.packets_executed += 1;
-                                        cur += consumed;
-                                    }
-                                    Err(e) => {
-                                        // a packet running past the end of the IB: counted and reported, then skipped
-                                        self.ib_decode_errors += 1;
-                                        if pm4_log_enabled() || self.draw_log.is_some() {
-                                            println!("  [XENOS CP] IB 0x{:08X}+{}: {}", ib_addr, cur, e);
-                                        }
-                                        cur += 1;
-                                    }
-                                }
-                            }
+                            self.ib_stack.push(IbFrame { addr: ib_addr, len: ib_count, pos: 0 });
                         }
                     }
                     PM4_REG_RMW => {
@@ -226,6 +297,9 @@ impl XenosGpu {
                             let current_val = if is_mem {
                                 gpu_load(bus, poll_addr)
                             } else {
+                                if poll_addr == COHER_STATUS_HOST {
+                                    Self::make_coherent(bus);
+                                }
                                 bus.gpu_regs.get(poll_addr)
                             };
 
@@ -241,15 +315,15 @@ impl XenosGpu {
                                 _ => true,         // always
                             };
 
-                            // The emulated GPU has no asynchronous hardware to make the condition true later, so a wait that
-                            // is not yet satisfied is forced to completion instead of blocking the Command Processor.
+                            // Not met: the CP stops here and executes this packet again on its next run (Xenia's CP
+                            // thread polls/sleeps in place); the CPU threads in between can make it true.
                             if !satisfied {
-                                let forced = (current_val & !mask) | (reference & mask);
-                                if is_mem {
-                                    gpu_store(bus, poll_addr, forced);
-                                } else {
-                                    bus.gpu_regs.set(poll_addr, forced);
+                                self.wait_blocks += 1;
+                                if pm4_log_enabled() || self.draw_log.is_some() {
+                                    println!("  [XENOS CP] WAIT_REG_MEM blocks: {} 0x{:08X} = 0x{:08X}, wants (& 0x{:08X}) fn {} 0x{:08X}",
+                                        if is_mem { "mem" } else { "reg" }, poll_addr, current_val, mask, function, reference);
                                 }
+                                flow = CpFlow::Blocked;
                             }
                         }
                     }
@@ -382,13 +456,17 @@ impl XenosGpu {
                 }
             }
         }
-        Ok(())
+        Ok(flow)
     }
 
 }
 
 
 const VGT_EVENT_INITIATOR: u32 = 0x21F9;
+const SCRATCH_UMSK: u32 = 0x01DC;
+const SCRATCH_ADDR: u32 = 0x01DD;
+const SCRATCH_REG0: u32 = 0x0578;
+const COHER_STATUS_HOST: u32 = 0x0A31;
 const WRITEBACK_START: u32 = 0x0A04;
 const WRITEBACK_SIZE: u32 = 0x0A05;
 
@@ -582,6 +660,100 @@ mod cp_tests {
         bus.write_u32(0x0100_0008, 0xBBBB_0003).unwrap();
         gpu.execute_packet(&mut bus, &t3(PM4_IM_LOAD, &[0x0100_0000, 3])).unwrap();
         assert_eq!(gpu.vertex_shader, vec![0xBBBB_0001, 0xBBBB_0002, 0xBBBB_0003]);
+    }
+
+    #[test]
+    fn scratch_registers_write_back_and_coherency_waits_complete() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        // the dash's setup: SCRATCH_ADDR 0x10103000, SCRATCH_UMSK 0x37 (registers 0-2, 4, 5)
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x01DD, one_reg: false, values: vec![0x1010_3000] }).unwrap();
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x01DC, one_reg: false, values: vec![0x0002_0037] }).unwrap();
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x057C, one_reg: false, values: vec![0x921A_4D20, 0x100] }).unwrap();
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x0578, one_reg: false, values: vec![4] }).unwrap();
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x057B, one_reg: false, values: vec![0xDEAD] }).unwrap();
+        assert_eq!(bus.read_u32(0x1010_3000).unwrap(), 4, "SCRATCH_REG0");
+        assert_eq!((bus.read_u32(0x1010_3010).unwrap(), bus.read_u32(0x1010_3014).unwrap()), (0x921A_4D20, 0x100), "REG4/REG5");
+        assert_eq!(bus.read_u32(0x1010_300C).unwrap(), 0, "REG3 is masked off");
+        // the dash's waits on them (endian 2) are met without forcing
+        for (addr, value) in [(0x1010_3002u32, 4u32), (0x1010_3016, 0x100), (0x1010_3012, 0x921A_4D20)] {
+            gpu.execute_packet(&mut bus, &t3(PM4_WAIT_REG_MEM, &[0x13, addr, value, 0xFFFF_FFFF, 0x100])).unwrap();
+        }
+        // COHER_STATUS_HOST write marks it pending; WAIT_REG_MEM (status bit == 0) makes it coherent
+        gpu.execute_packet(&mut bus, &Pm4Packet::Type0 { base_reg: 0x0A31, one_reg: false, values: vec![0x0100_0000] }).unwrap();
+        assert_eq!(bus.gpu_regs.get(0x0A31), 0x8100_0000);
+        gpu.execute_packet(&mut bus, &t3(PM4_WAIT_REG_MEM, &[3, 0x0A31, 0, 0x8000_0000, 8])).unwrap();
+        assert_eq!((bus.gpu_regs.get(0x0A31), gpu.wait_blocks), (0, 0));
+    }
+
+    #[test]
+    fn unmet_wait_blocks_the_ring_and_resumes() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        let mut ring = RingBuffer::new(0x0100_0000, 0x1000);
+        const FLAG: u32 = 0x0200_0000;
+        // WAIT_REG_MEM memory FLAG (endian 2) == 5, then MEM_WRITE 0x0200_0010 = 7
+        ring.write_packet(&mut bus, &build_type3(PM4_WAIT_REG_MEM, &[0x13, FLAG | 2, 5, 0xFFFF_FFFF, 0x100])).unwrap();
+        ring.write_packet(&mut bus, &build_type3(PM4_MEM_WRITE, &[0x0200_0010 | 2, 7])).unwrap();
+        assert_eq!(gpu.execute_ring(&mut bus, &mut ring).unwrap(), 0);
+        assert_eq!((ring.rptr, gpu.waiting, gpu.wait_blocks, bus.read_u32(0x0200_0010).unwrap()), (0, true, 1, 0));
+        // still not met: stays blocked, the flag is not forced
+        gpu.execute_ring(&mut bus, &mut ring).unwrap();
+        assert_eq!((ring.rptr, bus.read_u32(FLAG as u64).unwrap()), (0, 0));
+        // the CPU sets it: the CP goes on
+        bus.write_u32(FLAG as u64, 5).unwrap();
+        assert_eq!(gpu.execute_ring(&mut bus, &mut ring).unwrap(), 2);
+        assert_eq!((ring.rptr, ring.wptr, gpu.waiting, bus.read_u32(0x0200_0010).unwrap()), (9, 9, false, 7));
+    }
+
+    #[test]
+    fn a_wait_inside_nested_indirect_buffers_resumes_in_place() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        let mut ring = RingBuffer::new(0x0100_0000, 0x1000);
+        const FLAG: u32 = 0x0200_0000;
+        // inner IB: MEM_WRITE A = 1; WAIT FLAG == 1; MEM_WRITE B = 2
+        let inner = [build_type3(PM4_MEM_WRITE, &[0x0200_0100 | 2, 1]), build_type3(PM4_WAIT_REG_MEM, &[0x13, FLAG | 2, 1, 0xFFFF_FFFF, 0x100]),
+            build_type3(PM4_MEM_WRITE, &[0x0200_0104 | 2, 2])].concat();
+        for (i, w) in inner.iter().enumerate() {
+            bus.write_u32(0x0300_0000 + 4 * i as u64, *w).unwrap();
+        }
+        // outer IB: IB(inner); MEM_WRITE C = 3
+        let outer = [build_type3(PM4_INDIRECT_BUFFER, &[0x0300_0000, inner.len() as u32]), build_type3(PM4_MEM_WRITE, &[0x0200_0108 | 2, 3])].concat();
+        for (i, w) in outer.iter().enumerate() {
+            bus.write_u32(0x0300_1000 + 4 * i as u64, *w).unwrap();
+        }
+        ring.write_packet(&mut bus, &build_type3(PM4_INDIRECT_BUFFER, &[0x0300_1000, outer.len() as u32])).unwrap();
+        ring.write_packet(&mut bus, &build_type3(PM4_MEM_WRITE, &[0x0200_010C | 2, 4])).unwrap();
+        gpu.execute_ring(&mut bus, &mut ring).unwrap();
+        let read = |bus: &MemoryBus, a: u64| bus.read_u32(a).unwrap();
+        assert_eq!((read(&bus, 0x0200_0100), read(&bus, 0x0200_0104), read(&bus, 0x0200_0108), read(&bus, 0x0200_010C)), (1, 0, 0, 0));
+        assert_eq!((gpu.ib_stack.len(), gpu.ib_stack[1].pos, ring.rptr), (2, 3, 3), "blocked at the WAIT of the inner IB");
+        bus.write_u32(FLAG as u64, 1).unwrap();
+        gpu.execute_ring(&mut bus, &mut ring).unwrap();
+        assert_eq!((read(&bus, 0x0200_0100), read(&bus, 0x0200_0104), read(&bus, 0x0200_0108), read(&bus, 0x0200_010C)), (1, 2, 3, 4));
+        assert_eq!((gpu.ib_stack.len(), gpu.waiting, ring.rptr), (0, false, 6));
+    }
+
+    #[test]
+    fn the_cp_interrupt_handler_sees_its_scratch_value() {
+        // the dash's sequence: SCRATCH_REG4 = handler, SCRATCH_REG0 = 4, INTERRUPT, wait for the CPU to clear
+        // scratch 0, then SCRATCH_REG4 = 0x0BADF00D
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        let mut ring = RingBuffer::new(0x0100_0000, 0x1000);
+        for p in [build_type0(0x01DD, &[0x1010_3000]), build_type0(0x01DC, &[0x37]), build_type0(0x057C, &[0x921A_4D20]),
+            build_type0(0x0578, &[4]), build_type3(PM4_INTERRUPT, &[4]),
+            build_type3(PM4_WAIT_REG_MEM, &[0x13, 0x1010_3002, 0, 0xFFFF_FFFF, 0x100]), build_type0(0x057C, &[0x0BAD_F00D])] {
+            ring.write_packet(&mut bus, &p).unwrap();
+        }
+        gpu.execute_ring(&mut bus, &mut ring).unwrap();
+        assert_eq!(gpu.pending_cp_interrupts, vec![2]);
+        assert_eq!(bus.read_u32(0x1010_3010).unwrap(), 0x921A_4D20, "the callback reads the handler, not 0x0BADF00D");
+        // the CPU's handler acknowledges by clearing scratch 0
+        bus.write_u32(0x1010_3000, 0).unwrap();
+        gpu.execute_ring(&mut bus, &mut ring).unwrap();
+        assert_eq!((bus.read_u32(0x1010_3010).unwrap(), gpu.waiting), (0x0BAD_F00D, false));
     }
 
     #[test]

@@ -171,6 +171,8 @@ Pendências que agora ficam visíveis: os draws não são rasterizados (Fase 4; 
 
 Resultado (3000 frames): 614 escritas de `CP_RB_WPTR` (antes 411), fence até `0x9D5` (antes `0x621`), 611 `XE_SWAP` (antes 374); a thread principal gira menos (59,9 M de passos, antes 71,9 M). Os draws continuam só limpeza de profundidade + cópia (611 de cada); nenhum draw de UI. Não isolei qual correção dá o ganho (candidatas: `KeDelayExecutionThread` cedendo a fatia, `VdGetCurrentDisplayGamma`, `HalGetCurrentAVPack`).
 
+**Atualização 13 (2026-10-25, Fase 3.5, CP bloqueante):** `WAIT_REG_MEM` não satisfeito deixa de forçar a condição: o CP para no pacote e o executa de novo na próxima vez que roda (uma vez por frame, depois das threads da CPU), como o laço de espera da thread do CP no Xenia. Os indirect buffers viraram uma pilha retomável (`ib_stack`, endereço/tamanho/posição; as palavras são lidas da memória à medida que executam). Junto, o writeback de scratch e o `COHER_STATUS_HOST` do Xenia (`HandleSpecialRegisterWrite`, `MakeCoherent`), que antes regrediam sem o bloqueio: a dash grava o endereço do handler (`0x921A4D20`) no scratch 4, emite `INTERRUPT` e espera a CPU zerar o scratch 0; agora o callback lê o handler, não o `0x0BADF00D` seguinte. Resultado (3000 frames): idêntico à Fase 3.0 (614 / `0x9D5` / 611 swaps / 111 462 pacotes), com 611 bloqueios, todos nessa espera (`mem 0x10103002 == 0`), e nenhum `WAIT_REG_MEM` forçado.
+
 Dados do PM4 abaixo continuam válidos como observação.
 
 Stream PM4 observado: `0x48, 0x3F×7, 0x3C, 0x21×2, 0x3B×3, 0x2B×2, 0x36×24, 0x10, 0x58×2, 0x60-0x63`.

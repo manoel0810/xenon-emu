@@ -261,7 +261,7 @@ Aceite: baseline da Fase 0 idêntica (mesmos passos, PCs e contadores) após cad
 
 ### Fase 2: Command Processor fiel (M1)
 
-**Feito** (2026-10-24): critério atingido (Atualização 10 do HANDOFF) e fechamento em 7 itens, um commit cada (pilhas fora da imagem, `mftb` global, banco de registradores único, tabela PM4 real, endianness/writeback, `VdQueryVideoFlags`/`XamLoaderTerminateTitle`, remoção do caminho falso do CP). Pendente para a Fase 3: `WAIT_REG_MEM` ainda força a condição em vez de esperar.
+**Feito** (2026-10-24): critério atingido (Atualização 10 do HANDOFF) e fechamento em 7 itens, um commit cada (pilhas fora da imagem, `mftb` global, banco de registradores único, tabela PM4 real, endianness/writeback, `VdQueryVideoFlags`/`XamLoaderTerminateTitle`, remoção do caminho falso do CP). `WAIT_REG_MEM` passou a bloquear na Fase 3.5.
 
 Objetivo: o guest consegue sincronizar com a GPU.
 
