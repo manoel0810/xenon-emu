@@ -8,7 +8,7 @@ use xenon_emu::gpu::display::resolve_path;
 use xenon_emu::gpu::{GpuDisplay, RingBuffer, XenosGpu};
 
 use super::boot::Boot;
-use super::threads::{begin_dpc_call, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
+use super::threads::{begin_dpc_call, bind_kthread, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
 
 pub fn run(
     boot: Boot,
@@ -87,13 +87,19 @@ pub fn run(
             let mut thread_cpu = Cpu::new(routine);
             thread_cpu.regs.gpr[1] = thread_stack;
             thread_cpu.regs.gpr[3] = pending.start_context;
-            thread_cpu.regs.gpr[13] = { let s = 8 + (next_kpcr_slot % 40); next_kpcr_slot += 1; setup_kpcr(&mut bus, s, thread_stack, thread_stack - (DYNAMIC_STACK_SIZE - 0x1000)) };
+            let stack_limit = thread_stack - (DYNAMIC_STACK_SIZE - 0x1000);
+            let kpcr = { let s = 8 + (next_kpcr_slot % 40); next_kpcr_slot += 1; setup_kpcr(&mut bus, s, thread_stack, stack_limit) };
+            thread_cpu.regs.gpr[13] = kpcr;
+            // the thread's X_KTHREAD (created by ExCreateThread) becomes the KPCR's current thread
+            bind_kthread(&mut bus, kpcr, pending.kthread as u64);
+            xenon_emu::kernel::objects::set_kthread_stack(&mut bus, pending.kthread as u64, thread_stack as u32, stack_limit as u32);
             thread_cpu.regs.lr = 0x80001000;
             println!("  [SCHEDULER] Spawning dynamic guest thread TID=0x{:X} (@0x{:08X})",
                 pending.tid, routine
             );
             let is_worker_or_render = true; // Dashboard dynamic worker/UI threads should run continuously
             guest_threads.push(GuestThread {
+                handle: pending.handle,
                 name: format!("Dynamic Thread 0x{:X}", pending.tid),
                 cpu: thread_cpu,
                 entry_pc: routine,
@@ -204,6 +210,7 @@ pub fn run(
                                     if watchdog {
                                         diag::watchdog::enter_syscall(lib, *ordinal, &args);
                                     }
+                                    kernel.current_thread = thread.handle;
                                     let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
                                     if watchdog { diag::watchdog::leave_syscall(); }
                                     thread.cpu.regs.gpr[3] = ret;

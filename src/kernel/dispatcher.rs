@@ -13,18 +13,12 @@ pub struct KernelFunction {
 pub struct PendingThread {
     pub tid: u32,
     pub handle: u32,
+    /// The thread's X_KTHREAD in guest memory.
+    pub kthread: u32,
     pub start_routine: u64,
     pub start_context: u64,
     pub stack_size: u32,
     pub creation_flags: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct KernelEvent {
-    pub handle: u32,
-    pub event_type: u32, // Notification (0) or Synchronization (1)
-    pub signaled: bool,
-    pub guest_ptr: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +32,12 @@ pub struct VfsFileHandle {
 
 pub struct KernelDispatcher {
     pub next_thread_id: u32,
-    pub next_handle: u32,
+    /// Handle table and kernel objects (kernel/objects.rs).
+    pub objects: super::objects::ObjectTable,
+    /// Handle of the thread making the current call (NtCurrentThread); 0 when not running on a kernel thread.
+    pub current_thread: u32,
+    /// Thread handles by thread id (ObLookupThreadByThreadId).
+    pub thread_by_id: HashMap<u32, u32>,
     pub tls_slots: HashMap<u32, u64>,
     pub next_tls_index: u32,
     /// Bump pointer for guest virtual allocations (NtAllocateVirtualMemory + HLE helper buffers).
@@ -68,8 +67,6 @@ pub struct KernelDispatcher {
     pub gamepad_state: crate::kernel::input::XInputGamepad,
     pub gamepad_packet_number: u32,
     pub pending_threads: Vec<PendingThread>,
-    pub events: HashMap<u32, KernelEvent>,
-    pub event_by_ptr: HashMap<u64, u32>,
     pub vfs_files: HashMap<String, Vec<u8>>,
     /// Loaded modules and their loader data entries (XexGetModuleHandle / XexGetModuleSection).
     pub modules: super::modules::ModuleTable,
@@ -88,7 +85,9 @@ impl KernelDispatcher {
     pub fn new() -> Self {
         Self {
             next_thread_id: 1,
-            next_handle: 0x0000_1000,
+            objects: Default::default(),
+            current_thread: 0,
+            thread_by_id: HashMap::new(),
             tls_slots: HashMap::new(),
             next_tls_index: 1,
             valloc_bump: 0x4000_0000,
@@ -111,8 +110,6 @@ impl KernelDispatcher {
             gamepad_state: crate::kernel::input::XInputGamepad::default(),
             gamepad_packet_number: 1,
             pending_threads: Vec::new(),
-            events: HashMap::new(),
-            event_by_ptr: HashMap::new(),
             vfs_files: HashMap::new(),
             modules: super::modules::ModuleTable::default(),
             queued_dpcs: std::collections::HashSet::new(),
@@ -120,6 +117,44 @@ impl KernelDispatcher {
             title_terminated: false,
             video: super::video::VideoConfig::default(),
             vfs_handles: HashMap::new(),
+        }
+    }
+
+    /// A handle to a new object without a guest object (files, sockets, listeners, enumerators, ...).
+    pub fn new_handle(&mut self, kind: super::objects::ObjectKind) -> u32 {
+        self.objects.create(super::objects::KernelObject { kind, guest_ptr: 0 })
+    }
+
+    /// SystemHeapAlloc: zeroed guest memory for kernel objects, 16-byte aligned, from the virtual-alloc window.
+    pub fn alloc_system(&mut self, bus: &mut MemoryBus, size: u32) -> u64 {
+        let ptr = (self.valloc_bump + 15) & !15;
+        self.valloc_bump = ptr + size as u64;
+        for off in (0..size as u64).step_by(4) {
+            let _ = bus.write_u32(ptr + off, 0);
+        }
+        ptr
+    }
+
+    /// XObject::CreateNative: X_OBJECT_HEADER + a dispatcher object body; returns the body's address.
+    pub fn create_native(&mut self, bus: &mut MemoryBus, body_size: u32) -> u64 {
+        self.alloc_system(bus, super::objects::OBJECT_HEADER_SIZE + body_size) + super::objects::OBJECT_HEADER_SIZE as u64
+    }
+
+    /// A thread object: X_KTHREAD in guest memory (XThread::InitializeGuestObject) and its handle.
+    pub fn create_thread_object(&mut self, bus: &mut MemoryBus, init: &super::objects::KThreadInit) -> (u32, u32) {
+        let kthread = self.alloc_system(bus, super::objects::KTHREAD_SIZE);
+        super::objects::init_kthread(bus, kthread, init);
+        let handle = self.objects.create(super::objects::KernelObject { kind: super::objects::ObjectKind::Thread, guest_ptr: kthread as u32 });
+        self.thread_by_id.insert(init.thread_id, handle);
+        (handle, kthread as u32)
+    }
+
+    /// The guest dispatcher object behind a handle, if the handle is valid and of `kind`.
+    pub fn handle_object(&self, handle: u64, kind: super::objects::ObjectKind) -> Result<u64, u64> {
+        match self.objects.lookup(handle as u32, self.current_thread) {
+            Some(o) if o.kind == kind => Ok(o.guest_ptr as u64),
+            Some(_) => Err(super::objects::STATUS_OBJECT_TYPE_MISMATCH),
+            None => Err(super::objects::STATUS_INVALID_HANDLE),
         }
     }
 

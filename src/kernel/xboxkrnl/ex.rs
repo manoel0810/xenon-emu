@@ -1,6 +1,7 @@
 //! xboxkrnl.exe HLE: Ex*: executive (threads, pools, XConfig, read/write locks).
 
 use super::super::dispatcher::{KernelDispatcher, PendingThread};
+use super::super::objects::KThreadInit;
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
@@ -10,10 +11,14 @@ impl KernelDispatcher {
             // 0x000D: ExCreateThread
             // (pHandle, stackSize, pThreadId, apiStartup, startRoutine, startContext, creationFlags)
             0x000D => {
-                let h_thread = self.next_handle;
-                self.next_handle += 4;
                 let tid = self.next_thread_id;
                 self.next_thread_id += 1;
+                let start_routine = args.get(4).copied().unwrap_or(0);
+                let stack_size = args.get(1).copied().unwrap_or(0x10000).max(0x10000) as u32;
+                let creation_flags = args.get(6).copied().unwrap_or(0) as u32;
+                // the stack itself is placed by the frame loop when the thread starts (app/threads.rs)
+                let init = KThreadInit { thread_id: tid, start_address: start_routine as u32, stack_base: 0, stack_limit: 0, creation_flags };
+                let (h_thread, kthread) = self.create_thread_object(bus, &init);
 
                 if let Some(&p_handle) = args.first() {
                     if p_handle != 0 {
@@ -26,10 +31,7 @@ impl KernelDispatcher {
                     }
                 }
 
-                let start_routine = args.get(4).copied().unwrap_or(0);
                 let start_context = args.get(5).copied().unwrap_or(0);
-                let stack_size = args.get(1).copied().unwrap_or(0x10000).max(0x10000) as u32;
-                let creation_flags = args.get(6).copied().unwrap_or(0) as u32;
 
                 println!("    -> ExCreateThread: Created thread TID=0x{:X}, Handle=0x{:X}, Entry=0x{:08X}, Param=0x{:08X}, Stack=0x{:X}",
                     tid, h_thread, start_routine, start_context, stack_size
@@ -39,6 +41,7 @@ impl KernelDispatcher {
                     self.pending_threads.push(PendingThread {
                         tid,
                         handle: h_thread,
+                        kthread,
                         start_routine,
                         start_context,
                         stack_size,

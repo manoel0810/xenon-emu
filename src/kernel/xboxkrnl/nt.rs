@@ -1,12 +1,14 @@
 //! xboxkrnl.exe HLE: Nt*/Ob*/Io*: system services, object manager and I/O.
 
-use super::super::dispatcher::{KernelDispatcher, KernelEvent, VfsFileHandle};
+use super::super::dispatcher::{KernelDispatcher, VfsFileHandle};
 use super::super::util::read_vfs_path;
+use crate::kernel::objects::{self, KernelObject, ObjectKind};
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xboxkrnl_nt(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
+        let arg = |i: usize| args.get(i).copied().unwrap_or(0);
         Some(match ordinal {
             // 0x00CC: NtAllocateVirtualMemory
             // (IN OUT PVOID *BaseAddress, IN OUT PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect, ULONG ZeroBits)
@@ -52,47 +54,70 @@ impl KernelDispatcher {
                 0 // STATUS_SUCCESS
             }
 
-            // 0x00CE: NtClearEvent
-            0x00CE => {
-                if let Some(&h) = args.first() {
-                    let h32 = h as u32;
-                    if let Some(ev) = self.events.get_mut(&h32) {
-                        ev.signaled = false;
-                        if ev.guest_ptr != 0 {
-                            let _ = bus.write_u32(ev.guest_ptr + 4, 0);
-                        }
-                    }
+            // 0x00CE: NtClearEvent(handle) (xeNtClearEvent)
+            0x00CE => match self.handle_object(arg(0), ObjectKind::Event) {
+                Ok(ev) => {
+                    objects::reset_event(bus, ev);
+                    0
                 }
-                0 // STATUS_SUCCESS
-            }
+                Err(status) => status,
+            },
 
-            // 0x00CF: NtClose (Handle)
+            // 0x00CF: NtClose(handle): releases one handle reference (ObjectTable::ReleaseHandle)
             0x00CF => {
-                let h = args.first().copied().unwrap_or(0) as u32;
-                self.vfs_handles.remove(&h);
-                self.events.remove(&h);
-                0 // STATUS_SUCCESS
+                let h = arg(0) as u32;
+                let (status, gone) = self.objects.release(h, self.current_thread);
+                if gone.is_some() {
+                    self.vfs_handles.remove(&h);
+                }
+                status
             }
 
-            // 0x00D1: NtCreateEvent (pHandle, desiredAccess, pObjAttr, eventType, initialState)
+            // 0x00D1: NtCreateEvent(handle_ptr, obj_attributes, event_type, initial_state): a native KEVENT
+            // (XEvent::Initialize); event_type 0 = notification (manual reset), 1 = synchronization. Object names
+            // are not looked up yet.
             0x00D1 => {
-                let h = self.next_handle;
-                self.next_handle += 4;
-                let event_type = args.get(3).copied().unwrap_or(0) as u32;
-                let initial = args.get(4).copied().unwrap_or(0) as u32;
-
-                if let Some(&p_handle) = args.first() {
-                    if p_handle != 0 {
-                        let _ = bus.write_u32(p_handle, h);
-                    }
+                let ev = self.create_native(bus, objects::KEVENT_SIZE);
+                objects::init_header(bus, ev, (arg(2) != 0) as u8, objects::KEVENT_SIZE, (arg(3) != 0) as u32);
+                let h = self.objects.create(KernelObject { kind: ObjectKind::Event, guest_ptr: ev as u32 });
+                objects::stash_handle(bus, ev, h);
+                if arg(0) != 0 {
+                    let _ = bus.write_u32(arg(0), h);
                 }
-                self.events.insert(h, KernelEvent {
-                    handle: h,
-                    event_type,
-                    signaled: initial != 0,
-                    guest_ptr: 0,
-                });
-                0 // STATUS_SUCCESS
+                0
+            }
+
+            // 0x00D4: NtCreateMutant(handle_ptr, obj_attributes, initial_owner): no native object (XMutant)
+            0x00D4 => {
+                let h = self.new_handle(ObjectKind::Mutant);
+                if arg(0) != 0 {
+                    let _ = bus.write_u32(arg(0), h);
+                }
+                0
+            }
+
+            // 0x00D7: NtCreateTimer(handle_ptr, obj_attributes, timer_type): no native object (XTimer)
+            0x00D7 => {
+                let h = self.new_handle(ObjectKind::Timer);
+                if arg(0) != 0 {
+                    let _ = bus.write_u32(arg(0), h);
+                }
+                0
+            }
+
+            // 0x00DA: NtDuplicateObject(handle, new_handle_ptr, options); options 1 = DUPLICATE_CLOSE_SOURCE
+            0x00DA => {
+                let (status, new_handle) = match self.objects.duplicate(arg(0) as u32, self.current_thread) {
+                    Ok(h) => (0, h),
+                    Err(status) => (status, 0xFFFF_FFFF),
+                };
+                if arg(1) != 0 {
+                    let _ = bus.write_u32(arg(1), new_handle);
+                }
+                if arg(2) == 1 {
+                    self.objects.release(arg(0) as u32, self.current_thread);
+                }
+                status
             }
 
             // 0x0038: IoCreateFile | 0x00D2: NtCreateFile | 0x00DF: NtOpenFile
@@ -105,8 +130,7 @@ impl KernelDispatcher {
                 if let Some(path) = path_opt {
                     println!("    [VFS] NtCreateFile / NtOpenFile: '{}'", path);
                     if let Some(data) = self.find_vfs_file(&path) {
-                        let h = self.next_handle;
-                        self.next_handle += 4;
+                        let h = self.new_handle(ObjectKind::File);
                         let is_dir = path.ends_with('\\') || path.ends_with('/');
                         self.vfs_handles.insert(h, VfsFileHandle {
                             handle: h,
@@ -133,8 +157,7 @@ impl KernelDispatcher {
                         0xC000_0034 // STATUS_OBJECT_NAME_NOT_FOUND
                     }
                 } else {
-                    let h = self.next_handle;
-                    self.next_handle += 4;
+                    let h = self.new_handle(ObjectKind::File);
                     self.vfs_handles.insert(h, VfsFileHandle {
                         handle: h,
                         name: "<unnamed>".to_string(),
@@ -153,28 +176,27 @@ impl KernelDispatcher {
                 }
             }
 
-            // 0x00D3: NtCreateIoCompletion
+            // 0x00D3: NtCreateIoCompletion(out_handle, desired_access, obj_attributes, concurrent_threads)
             0x00D3 => {
-                let handle = self.next_handle;
-                self.next_handle += 4;
-                if let Some(&p_h) = args.first() {
-                    if p_h != 0 {
-                        let _ = bus.write_u32(p_h, handle);
-                    }
+                let h = self.new_handle(ObjectKind::IoCompletion);
+                if arg(0) != 0 {
+                    let _ = bus.write_u32(arg(0), h);
                 }
                 0
             }
 
-            // 0x00D5: NtCreateSemaphore
+            // 0x00D5: NtCreateSemaphore(handle_ptr, obj_attributes, count, limit): a native KSEMAPHORE
+            // (XSemaphore::Initialize)
             0x00D5 => {
-                let handle = self.next_handle;
-                self.next_handle += 4;
-                if let Some(&p_h) = args.first() {
-                    if p_h != 0 {
-                        let _ = bus.write_u32(p_h, handle);
-                    }
+                let sem = self.create_native(bus, objects::KSEMAPHORE_SIZE);
+                objects::init_header(bus, sem, objects::SEMAPHORE_OBJECT, objects::KSEMAPHORE_SIZE, arg(2) as u32);
+                let _ = bus.write_u32(sem + objects::KSEMAPHORE_LIMIT, arg(3) as u32);
+                let h = self.objects.create(KernelObject { kind: ObjectKind::Semaphore, guest_ptr: sem as u32 });
+                objects::stash_handle(bus, sem, h);
+                if arg(0) != 0 {
+                    let _ = bus.write_u32(arg(0), h);
                 }
-                0 // STATUS_SUCCESS
+                0
             }
 
             // 0x00D8: NtDeleteFile
@@ -197,19 +219,17 @@ impl KernelDispatcher {
             // 0x00DC: NtFreeVirtualMemory
             0x00DC => 0,
 
-            // 0x00E2: NtPulseEvent
-            0x00E2 => {
-                if let Some(&h) = args.first() {
-                    let h32 = h as u32;
-                    if let Some(ev) = self.events.get_mut(&h32) {
-                        ev.signaled = false;
-                        if ev.guest_ptr != 0 {
-                            let _ = bus.write_u32(ev.guest_ptr + 4, 0);
-                        }
+            // 0x00E2: NtPulseEvent(handle, previous_state_ptr)
+            0x00E2 => match self.handle_object(arg(0), ObjectKind::Event) {
+                Ok(ev) => {
+                    let previous = objects::pulse_event(bus, ev);
+                    if arg(1) != 0 {
+                        let _ = bus.write_u32(arg(1), previous as u32);
                     }
+                    0
                 }
-                0
-            }
+                Err(status) => status,
+            },
 
             // 0x00E7: NtQueryFullAttributesFile (pObjAttr, pNetworkOpenInfo)
             0x00E7 => {
@@ -344,56 +364,47 @@ impl KernelDispatcher {
                         let _ = bus.write_u32(p_ios, 0);
                         let _ = bus.write_u32(p_ios + 4, to_read as u32);
                     }
+                    println!("    [VFS] NtReadFile: read {} bytes from '{}' (pos: {}/{})", to_read, file.name, file.position, file.data.len());
                     if event_h != 0 {
-                        if let Some(ev) = self.events.get_mut(&event_h) {
-                            ev.signaled = true;
-                            if ev.guest_ptr != 0 {
-                                let _ = bus.write_u32(ev.guest_ptr + 4, 1);
-                            }
+                        if let Ok(ev) = self.handle_object(event_h as u64, ObjectKind::Event) {
+                            objects::set_event(bus, ev);
                         }
                     }
-                    println!("    [VFS] NtReadFile: read {} bytes from '{}' (pos: {}/{})", to_read, file.name, file.position, file.data.len());
                     0 // STATUS_SUCCESS
                 } else {
                     0xC000_0008 // STATUS_INVALID_HANDLE
                 }
             }
 
-            // 0x00F3: NtReleaseSemaphore (hSemaphore, releaseCount, pPreviousCount)
+            // 0x00F3: NtReleaseSemaphore(handle, release_count, previous_count_ptr)
             0x00F3 => {
-                if let Some(&p_prev) = args.get(2) {
-                    if p_prev != 0 {
-                        let _ = bus.write_u32(p_prev, 1);
-                    }
+                let (status, previous) = match self.handle_object(arg(0), ObjectKind::Semaphore) {
+                    Ok(sem) => match objects::release_semaphore(bus, sem, arg(1) as u32) {
+                        (true, previous) => (0, previous),
+                        (false, previous) => (objects::STATUS_SEMAPHORE_LIMIT_EXCEEDED, previous),
+                    },
+                    Err(status) => (status, 0),
+                };
+                if arg(2) != 0 {
+                    let _ = bus.write_u32(arg(2), previous);
                 }
-                0 // STATUS_SUCCESS
+                status
             }
 
             // 0x00F4: NtRemoveIoCompletion
             0x00F4 => 0x0000_0102, // STATUS_TIMEOUT
 
-            // 0x00F6: NtSetEvent (hEvent, pPrevState)
-            0x00F6 => {
-                if let Some(&h) = args.first() {
-                    let h32 = h as u32;
-                    let prev = if let Some(ev) = self.events.get_mut(&h32) {
-                        let p = ev.signaled;
-                        ev.signaled = true;
-                        if ev.guest_ptr != 0 {
-                            let _ = bus.write_u32(ev.guest_ptr + 4, 1);
-                        }
-                        if p { 1 } else { 0 }
-                    } else {
-                        0
-                    };
-                    if let Some(&p_prev) = args.get(1) {
-                        if p_prev != 0 {
-                            let _ = bus.write_u32(p_prev, prev);
-                        }
+            // 0x00F6: NtSetEvent(handle, previous_state_ptr) (xeNtSetEvent)
+            0x00F6 => match self.handle_object(arg(0), ObjectKind::Event) {
+                Ok(ev) => {
+                    let previous = objects::set_event(bus, ev);
+                    if arg(1) != 0 {
+                        let _ = bus.write_u32(arg(1), previous as u32);
                     }
+                    0
                 }
-                0 // STATUS_SUCCESS
-            }
+                Err(status) => status,
+            },
 
             // 0x00F7: NtSetInformationFile (FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass)
             0x00F7 => {
@@ -420,37 +431,27 @@ impl KernelDispatcher {
             // 0x00F8: NtSetIoCompletion
             0x00F8 => 0,
 
-            // 0x00FB: NtSignalAndWaitForSingleObjectEx
+            // 0x00FB: NtSignalAndWaitForSingleObjectEx(signal_handle, wait_handle, ...): signals an event (the wait
+            // does not block yet, Phase 3)
             0x00FB => {
-                if let Some(&h1) = args.first() {
-                    let h32 = h1 as u32;
-                    if let Some(ev) = self.events.get_mut(&h32) {
-                        ev.signaled = true;
-                        if ev.guest_ptr != 0 {
-                            let _ = bus.write_u32(ev.guest_ptr + 4, 1);
-                        }
-                    }
+                if let Ok(ev) = self.handle_object(arg(0), ObjectKind::Event) {
+                    objects::set_event(bus, ev);
                 }
-                0 // STATUS_SUCCESS
+                0
             }
 
             // 0x00FC: NtSuspendThread
             0x00FC => 0,
 
-            // 0x00FD: NtWaitForSingleObjectEx
+            // 0x00FD: NtWaitForSingleObjectEx(handle, ...): does not block yet (Phase 3); a synchronization event is
+            // consumed
             0x00FD => {
-                if let Some(&h) = args.first() {
-                    let h32 = h as u32;
-                    if let Some(ev) = self.events.get_mut(&h32) {
-                        if ev.event_type == 1 {
-                            ev.signaled = false;
-                            if ev.guest_ptr != 0 {
-                                let _ = bus.write_u32(ev.guest_ptr + 4, 0);
-                            }
-                        }
+                if let Ok(ev) = self.handle_object(arg(0), ObjectKind::Event) {
+                    if bus.read_u8(ev).unwrap_or(0) == objects::EVENT_SYNCHRONIZATION_OBJECT {
+                        objects::reset_event(bus, ev);
                     }
                 }
-                0 // STATUS_SUCCESS
+                0
             }
 
             // 0x00FE: NtWaitForMultipleObjectsEx
@@ -462,39 +463,76 @@ impl KernelDispatcher {
             // 0x0101: NtYieldExecution
             0x0101 => 0,
 
-            // 0x0103: ObCreateSymbolicLink | 0x0104: ObDeleteSymbolicLink | 0x0105: ObDereferenceObject
-            0x0103 | 0x0104 | 0x0105 => 0,
+            // 0x0103: ObCreateSymbolicLink | 0x0104: ObDeleteSymbolicLink
+            0x0103 | 0x0104 => 0,
 
-            // 0x010B: ObLookupThreadByThreadId
+            // 0x0105: ObDereferenceObject(native_ptr): releases a reference taken by ObReferenceObject*
+            0x0105 => {
+                if let Some(h) = self.objects.handle_of_guest_ptr(arg(0) as u32) {
+                    self.objects.release(h, 0);
+                }
+                0
+            }
+
+            // 0x010B: ObLookupThreadByThreadId(thread_id, out_object_ptr) -> the X_KTHREAD (handle retained)
             0x010B => {
-                if let Some(&p_obj) = args.get(1) {
-                    if p_obj != 0 {
-                        let _ = bus.write_u32(p_obj, 0x8001_0000);
-                    }
+                let thread = self.thread_by_id.get(&(arg(0) as u32)).copied();
+                let kthread = thread.and_then(|h| self.objects.lookup(h, 0)).map(|o| o.guest_ptr).unwrap_or(0);
+                if arg(1) != 0 {
+                    let _ = bus.write_u32(arg(1), kthread);
                 }
-                0
+                match thread {
+                    Some(h) if kthread != 0 => {
+                        self.objects.retain(h, 0);
+                        0
+                    }
+                    _ => objects::STATUS_INVALID_PARAMETER,
+                }
             }
 
-            // 0x010E: ObOpenObjectByPointer
+            // 0x010E: ObOpenObjectByPointer(object_ptr, out_handle_ptr): the handle of a known object, retained
             0x010E => {
-                let handle = self.next_handle;
-                self.next_handle += 4;
-                if let Some(&p_h) = args.get(3) {
-                    if p_h != 0 {
-                        let _ = bus.write_u32(p_h, handle);
+                if arg(1) != 0 {
+                    let _ = bus.write_u32(arg(1), 0);
+                }
+                match self.objects.handle_of_guest_ptr(arg(0) as u32) {
+                    Some(h) => {
+                        self.objects.retain(h, 0);
+                        if arg(1) != 0 {
+                            let _ = bus.write_u32(arg(1), h);
+                        }
+                        0
                     }
+                    None => objects::STATUS_UNSUCCESSFUL,
+                }
+            }
+
+            // 0x010F: ObReferenceObject(native_ptr): one more reference to a known object
+            0x010F => {
+                if let Some(h) = self.objects.handle_of_guest_ptr(arg(0) as u32) {
+                    self.objects.retain(h, 0);
                 }
                 0
             }
 
-            // 0x0110: ObReferenceObjectByHandle
+            // 0x0110: ObReferenceObjectByHandle(handle, object_type_ptr, out_object_ptr) -> the guest object, with
+            // the handle retained until ObDereferenceObject. The type check is skipped: the Ex*ObjectType kernel
+            // variables are not exported to the guest yet, so the dash passes the raw import record.
             0x0110 => {
-                if let Some(&p_obj) = args.get(3) {
-                    if p_obj != 0 {
-                        let _ = bus.write_u32(p_obj, 0x8001_0000);
-                    }
+                if arg(2) != 0 {
+                    let _ = bus.write_u32(arg(2), 0);
                 }
-                0
+                let handle = arg(0) as u32;
+                match self.objects.lookup(handle, self.current_thread).map(|o| o.guest_ptr) {
+                    Some(native) => {
+                        self.objects.retain(handle, self.current_thread);
+                        if arg(2) != 0 {
+                            let _ = bus.write_u32(arg(2), native);
+                        }
+                        0
+                    }
+                    None => objects::STATUS_INVALID_HANDLE,
+                }
             }
 
             _ => return None,

@@ -189,6 +189,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico à Fase 3.0 (614 / `4263` / fence `0x9D5` / 111 462 pacotes / 611 swaps); `wait blocks: 611` (um por frame, a espera do ack de interrupção), CP não termina bloqueado.
 
+## Depois dos objetos e handles (Fase 3.1)
+
+3000 frames: igual à Fase 3.5 (614 / `4263` / fence `0x9D5` / 111 462 pacotes / 611 swaps); thread principal com 59 939 774 passos. TIDs dinâmicos agora começam em 2 (a principal é o TID 1).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

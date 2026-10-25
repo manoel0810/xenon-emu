@@ -74,6 +74,8 @@ pub fn end_dpc_call(cpu: &mut Cpu, bus: &mut MemoryBus, frames: &mut Vec<DpcFram
 }
 
 pub struct GuestThread {
+    /// Kernel handle of the thread object (0 for interrupt callbacks and the pre-Metro scripted threads).
+    pub handle: u32,
     pub name: String,
     pub cpu: Cpu,
     pub entry_pc: u64,
@@ -88,6 +90,13 @@ pub struct GuestThread {
 /// service initialisation fail. The blocks live in RAM above the dash image (outside the virtual-alloc window).
 const KPCR_AREA: u64 = 0x9310_0000;
 const KPCR_STRIDE: u64 = 0x2000; // 0x1000 KPCR + 0x1000 TLS
+
+/// Points the KPCR's current thread (KPRCB.current_thread at +0x100) at the thread's X_KTHREAD, and the KTHREAD's KPRCB
+/// pointers back at the KPRCB.
+pub fn bind_kthread(bus: &mut MemoryBus, kpcr: u64, kthread: u64) {
+    let _ = bus.write_u32(kpcr + 0x100, kthread as u32);
+    xenon_emu::kernel::objects::set_kthread_prcb(bus, kthread, (kpcr + 0x100) as u32);
+}
 
 pub fn setup_kpcr(bus: &mut MemoryBus, slot: u64, stack_base: u64, stack_limit: u64) -> u64 {
     let kpcr = KPCR_AREA + slot * KPCR_STRIDE;
@@ -145,7 +154,7 @@ pub fn interrupt_callback_thread(
     let _ = bus.write_u8(kpcr + 0x10C, cpu); // current_cpu: the dash clears this CPU's bit for CP interrupts
     cb_cpu.regs.gpr[13] = kpcr;
     cb_cpu.regs.lr = 0x80001000;
-    GuestThread { name, cpu: cb_cpu, entry_pc: routine, active: true, total_steps: 0, continuous: false }
+    GuestThread { handle: 0, name, cpu: cb_cpu, entry_pc: routine, active: true, total_steps: 0, continuous: false }
 }
 
 /// Registers the threads that exist before the first frame (Metro: only the primary thread).
@@ -171,7 +180,7 @@ pub fn register_initial(
         metro_cpu.regs.lr = 0x80001000;     // LR: ExTerminateThread stub
         bus.write_u32(stack_top - 8, 0x80001000)?;
         bus.write_u32(stack_top + 0x90 - 8, 0x80001000)?;
-        guest_threads.push(GuestThread {
+        guest_threads.push(GuestThread { handle: 0,
             name: "Metro 17559 Primary Thread".to_string(),
             cpu: metro_cpu,
             entry_pc: real_entry_vaddr,
@@ -190,7 +199,7 @@ pub fn register_initial(
         ctrl_cpu.regs.gpr[4] = 0;
         ctrl_cpu.regs.gpr[13] = { let s = *next_kpcr_slot; *next_kpcr_slot += 1; setup_kpcr(bus, s, stack_top_ctrl, stack_top_ctrl - 0x20000) };
         ctrl_cpu.regs.lr = 0x80001000;
-        guest_threads.push(GuestThread {
+        guest_threads.push(GuestThread { handle: 0,
             name: "Main Controller & Event Pump".to_string(),
             cpu: ctrl_cpu,
             entry_pc: 0x921C9830,
@@ -209,7 +218,7 @@ pub fn register_initial(
         xui_cpu.regs.gpr[4] = 0;
         xui_cpu.regs.gpr[13] = { let s = *next_kpcr_slot; *next_kpcr_slot += 1; setup_kpcr(bus, s, stack_top_xui, stack_top_xui - 0x20000) };
         xui_cpu.regs.lr = 0x80001000;
-        guest_threads.push(GuestThread {
+        guest_threads.push(GuestThread { handle: 0,
             name: "XUI Presentation Engine".to_string(),
             cpu: xui_cpu,
             entry_pc: 0x9281FBC0,
@@ -228,7 +237,7 @@ pub fn register_initial(
         gpu_cpu.regs.gpr[4] = 0;
         gpu_cpu.regs.gpr[13] = { let s = *next_kpcr_slot; *next_kpcr_slot += 1; setup_kpcr(bus, s, stack_top_gpu, stack_top_gpu - 0x20000) };
         gpu_cpu.regs.lr = 0x80001000;
-        guest_threads.push(GuestThread {
+        guest_threads.push(GuestThread { handle: 0,
             name: "Direct3D 9 GPU Driver".to_string(),
             cpu: gpu_cpu,
             entry_pc: 0x92185BC0,
@@ -247,7 +256,7 @@ pub fn register_initial(
         sm_cpu.regs.gpr[4] = 0;
         sm_cpu.regs.gpr[13] = { let s = *next_kpcr_slot; *next_kpcr_slot += 1; setup_kpcr(bus, s, stack_top_sm, stack_top_sm - 0x20000) };
         sm_cpu.regs.lr = 0x80001000;
-        guest_threads.push(GuestThread {
+        guest_threads.push(GuestThread { handle: 0,
             name: "Dashboard State Machine".to_string(),
             cpu: sm_cpu,
             entry_pc: 0x92261CE8,
@@ -266,7 +275,7 @@ pub fn register_initial(
         res_cpu.regs.gpr[4] = 0;
         res_cpu.regs.gpr[13] = { let s = *next_kpcr_slot; *next_kpcr_slot += 1; setup_kpcr(bus, s, stack_top_res, stack_top_res - 0x20000) };
         res_cpu.regs.lr = 0x80001000;
-        guest_threads.push(GuestThread {
+        guest_threads.push(GuestThread { handle: 0,
             name: "Resource & Stream Worker".to_string(),
             cpu: res_cpu,
             entry_pc: 0x92267C58,
@@ -285,7 +294,7 @@ pub fn register_initial(
         worker_cpu.regs.gpr[4] = 0;
         worker_cpu.regs.gpr[13] = { let s = *next_kpcr_slot; *next_kpcr_slot += 1; setup_kpcr(bus, s, stack_top_worker, stack_top_worker - 0x20000) };
         worker_cpu.regs.lr = 0x80001000;
-        guest_threads.push(GuestThread {
+        guest_threads.push(GuestThread { handle: 0,
             name: "Content & Tile Initializer".to_string(),
             cpu: worker_cpu,
             entry_pc: 0x92107280,

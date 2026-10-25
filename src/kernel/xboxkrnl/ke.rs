@@ -1,6 +1,7 @@
 //! xboxkrnl.exe HLE: Ke*/Kf*/Ki*: kernel scheduling primitives (events, waits, IRQL, DPC, timers, spinlocks).
 
-use super::super::dispatcher::{KernelDispatcher, KernelEvent};
+use super::super::dispatcher::KernelDispatcher;
+use crate::kernel::objects;
 use crate::memory::MemoryBus;
 
 /// Guest timebase frequency (mftb ticks per second), as reported by KeQueryPerformanceFrequency.
@@ -33,39 +34,16 @@ impl KernelDispatcher {
             // 0x006B: KeLockL2 | 0x006C: KeUnlockL2
             0x006B | 0x006C => 0,
 
-            // 0x0070: KeInitializeEvent (pEvent, eventType, initialState)
+            // 0x0070: KeInitializeEvent(event, event_type, initial_state): a KEVENT the guest owns; operated on in place
             0x0070 => {
-                if let Some(&p_event) = args.first() {
-                    if p_event != 0 {
-                        let event_type = args.get(1).copied().unwrap_or(0) as u32;
-                        let initial = args.get(2).copied().unwrap_or(0) as u32;
-
-                        // KEVENT memory layout:
-                        // 0x00: Header.Type (0 = Notification, 1 = Synchronization)
-                        // 0x01: Header.Absolute
-                        // 0x02: Header.Size (4 dwords = 16 bytes)
-                        // 0x03: Header.Inserted
-                        // 0x04: Header.SignalState
-                        // 0x08: WaitListHead.Flink
-                        // 0x0C: WaitListHead.Blink
-                        let _ = bus.write_u8(p_event, event_type as u8);
-                        let _ = bus.write_u8(p_event + 1, 0);
-                        let _ = bus.write_u8(p_event + 2, 4);
-                        let _ = bus.write_u8(p_event + 3, 0);
-                        let _ = bus.write_u32(p_event + 4, initial);
-                        let _ = bus.write_u32(p_event + 8, (p_event + 8) as u32);
-                        let _ = bus.write_u32(p_event + 12, (p_event + 8) as u32);
-
-                        let h = self.next_handle;
-                        self.next_handle += 4;
-                        self.events.insert(h, KernelEvent {
-                            handle: h,
-                            event_type,
-                            signaled: initial != 0,
-                            guest_ptr: p_event,
-                        });
-                        self.event_by_ptr.insert(p_event, h);
-                    }
+                let p_event = args.first().copied().unwrap_or(0);
+                if p_event != 0 {
+                    let event_type = args.get(1).copied().unwrap_or(0) as u8;
+                    let initial = (args.get(2).copied().unwrap_or(0) != 0) as u32;
+                    objects::init_header(bus, p_event, event_type, objects::KEVENT_SIZE, initial);
+                    // empty wait list
+                    let _ = bus.write_u32(p_event + 8, (p_event + 8) as u32);
+                    let _ = bus.write_u32(p_event + 12, (p_event + 8) as u32);
                 }
                 0
             }
@@ -88,16 +66,13 @@ impl KernelDispatcher {
             // 0x008E: KeRemoveQueueDpc(dpc)
             0x008E => super::super::dpc::remove_queue_dpc(&mut self.queued_dpcs, args.first().copied().unwrap_or(0)),
 
-            // 0x0074: KeInitializeSemaphore (pSemaphore, count, limit)
+            // 0x0074: KeInitializeSemaphore(semaphore, count, limit) (Xenia xboxkrnl_threading.cc)
             0x0074 => {
-                if let Some(&p_sem) = args.first() {
-                    if p_sem != 0 {
-                        for off in (0..20).step_by(4) {
-                            let _ = bus.write_u32(p_sem + off, 0);
-                        }
-                        let count = args.get(1).copied().unwrap_or(1) as u32;
-                        let _ = bus.write_u32(p_sem + 4, count);
-                    }
+                let p_sem = args.first().copied().unwrap_or(0);
+                if p_sem != 0 {
+                    let count = args.get(1).copied().unwrap_or(0) as u32;
+                    objects::init_header(bus, p_sem, objects::SEMAPHORE_OBJECT, objects::KSEMAPHORE_SIZE, count);
+                    let _ = bus.write_u32(p_sem + objects::KSEMAPHORE_LIMIT, args.get(2).copied().unwrap_or(0) as u32);
                 }
                 0
             }
@@ -105,24 +80,11 @@ impl KernelDispatcher {
             // 0x007D: KeLeaveCriticalRegion
             0x007D => 0,
 
-            // 0x007F: KePulseEvent (pEvent, increment, wait)
-            0x007F => {
-                let mut prev = 0u64;
-                if let Some(&p_event) = args.first() {
-                    if p_event != 0 {
-                        if let Ok(st) = bus.read_u32(p_event + 4) {
-                            prev = st as u64;
-                        }
-                        let _ = bus.write_u32(p_event + 4, 0);
-                        if let Some(&h) = self.event_by_ptr.get(&p_event) {
-                            if let Some(ev) = self.events.get_mut(&h) {
-                                ev.signaled = false;
-                            }
-                        }
-                    }
-                }
-                prev
-            }
+            // 0x007F: KePulseEvent(event, increment, wait) -> previous signal state (XEvent::Pulse)
+            0x007F => match args.first().copied().unwrap_or(0) {
+                0 => 0,
+                p_event => objects::pulse_event(bus, p_event),
+            },
 
             // 0x0081: KeQueryBasePriorityThread
             0x0081 => 8, // Normal thread priority
@@ -130,8 +92,11 @@ impl KernelDispatcher {
             // 0x0085: KeRaiseIrqlToDpcLevel
             0x0085 => 2, // Previous IRQL (DISPATCH_LEVEL)
 
-            // 0x0088: KeReleaseSemaphore
-            0x0088 => 1,
+            // 0x0088: KeReleaseSemaphore(semaphore, increment, adjustment, wait) -> previous count
+            0x0088 => match args.first().copied().unwrap_or(0) {
+                0 => 0,
+                p_sem => objects::release_semaphore(bus, p_sem, args.get(2).copied().unwrap_or(0) as u32).1 as u64,
+            },
 
             // 0x0083: KeQueryPerformanceFrequency() -> frequency. No arguments: it returns the guest timebase
             // frequency, 50 MHz (Xenia Canary 451f9155, xboxkrnl_threading.cc: Clock::guest_tick_frequency()).
@@ -141,7 +106,8 @@ impl KernelDispatcher {
             0x0084 => {
                 if let Some(&p_time) = args.first() {
                     if p_time != 0 {
-                        let ft = 133_000_000_000_000_000u64 + (self.next_handle as u64 * 10_000_000);
+                        // guest time base (50 MHz) as 100 ns units after a fixed boot date
+                        let ft = 133_000_000_000_000_000u64 + bus.timebase.now() / 5;
                         let _ = bus.write_u64(p_time, ft);
                     }
                 }
@@ -154,24 +120,11 @@ impl KernelDispatcher {
             // 0x008D: KeRemoveQueue
             0x008D => 0,
 
-            // 0x008F: KeResetEvent
-            0x008F => {
-                let mut prev = 0u64;
-                if let Some(&p_event) = args.first() {
-                    if p_event != 0 {
-                        if let Ok(st) = bus.read_u32(p_event + 4) {
-                            prev = st as u64;
-                        }
-                        let _ = bus.write_u32(p_event + 4, 0);
-                        if let Some(&h) = self.event_by_ptr.get(&p_event) {
-                            if let Some(ev) = self.events.get_mut(&h) {
-                                ev.signaled = false;
-                            }
-                        }
-                    }
-                }
-                prev
-            }
+            // 0x008F: KeResetEvent(event) -> 1 (XEvent::Reset)
+            0x008F => match args.first().copied().unwrap_or(0) {
+                0 => 0,
+                p_event => objects::reset_event(bus, p_event),
+            },
 
             // 0x0092: KeResumeThread
             0x0092 => 1, // Previous suspend count
@@ -182,24 +135,11 @@ impl KernelDispatcher {
             // 0x0099: KeSetBasePriorityThread
             0x0099 => 0,
 
-            // 0x009D: KeSetEvent
-            0x009D => {
-                let mut prev = 0u64;
-                if let Some(&p_event) = args.first() {
-                    if p_event != 0 {
-                        if let Ok(st) = bus.read_u32(p_event + 4) {
-                            prev = st as u64;
-                        }
-                        let _ = bus.write_u32(p_event + 4, 1);
-                        if let Some(&h) = self.event_by_ptr.get(&p_event) {
-                            if let Some(ev) = self.events.get_mut(&h) {
-                                ev.signaled = true;
-                            }
-                        }
-                    }
-                }
-                prev
-            }
+            // 0x009D: KeSetEvent(event, increment, wait) -> 1 (XEvent::Set)
+            0x009D => match args.first().copied().unwrap_or(0) {
+                0 => 0,
+                p_event => objects::set_event(bus, p_event),
+            },
 
             // 0x00AF: KeWaitForMultipleObjects
             0x00AF => {

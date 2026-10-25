@@ -1,6 +1,7 @@
 //! xam.xex HLE: XamNotify*/XNotify*: system notifications.
 
 use super::super::dispatcher::KernelDispatcher;
+use crate::kernel::objects::ObjectKind;
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
@@ -9,8 +10,7 @@ impl KernelDispatcher {
         Some(match ordinal {
             // 0x028A: XamNotifyCreateListener
             0x028A => {
-                let h = self.next_handle;
-                self.next_handle += 4;
+                let h = self.new_handle(ObjectKind::NotifyListener);
                 h as u64
             }
 

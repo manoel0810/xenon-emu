@@ -2,6 +2,7 @@
 
 use super::super::dispatcher::{KernelDispatcher, VfsFileHandle};
 use super::super::util::read_c_string;
+use crate::kernel::objects::ObjectKind;
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
@@ -23,8 +24,7 @@ impl KernelDispatcher {
 
             // 0x02B4: XamCacheOpenFile
             0x02B4 => {
-                let h = self.next_handle;
-                self.next_handle += 4;
+                let h = self.new_handle(ObjectKind::File);
                 if let Some(&p_h) = args.get(3) {
                     if p_h != 0 {
                         let _ = bus.write_u32(p_h, h);
@@ -141,8 +141,7 @@ impl KernelDispatcher {
                 if let Some(path) = read_c_string(p_name, bus) {
                     println!("    [VFS] CreateFileA: '{}'", path);
                     if let Some(data) = self.find_vfs_file(&path) {
-                        let h = self.next_handle;
-                        self.next_handle += 4;
+                        let h = self.new_handle(ObjectKind::File);
                         self.vfs_handles.insert(h, VfsFileHandle {
                             handle: h,
                             name: path.clone(),

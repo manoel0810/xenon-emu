@@ -25,7 +25,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // ETAPA 3: Multi-Thread Guest Dispatcher & Live Input Loop
     // ==========================================================
     println!("\n>>> [ETAPA 3] Genuine Dashboard Multi-Thread Interleaved Dispatcher <<<");
-    let guest_threads = threads::register_initial(&mut b.bus, b.is_metro, b.real_entry_vaddr, b.vaddr_base, b.stack_top, b.kpcr_base, &mut b.next_kpcr_slot)?;
+    let mut guest_threads = threads::register_initial(&mut b.bus, b.is_metro, b.real_entry_vaddr, b.vaddr_base, b.stack_top, b.kpcr_base, &mut b.next_kpcr_slot)?;
+    if b.is_metro {
+        // the primary thread is the first thread object (Xenia creates the title's main XThread before it runs)
+        let tid = b.kernel.next_thread_id;
+        b.kernel.next_thread_id += 1;
+        let init = xenon_emu::kernel::objects::KThreadInit {
+            thread_id: tid,
+            start_address: b.real_entry_vaddr as u32,
+            stack_base: b.stack_top as u32,
+            stack_limit: (b.stack_top - threads::PRIMARY_STACK_SIZE) as u32,
+            creation_flags: 0,
+        };
+        let (handle, kthread) = b.kernel.create_thread_object(&mut b.bus, &init);
+        threads::bind_kthread(&mut b.bus, b.kpcr_base, kthread as u64);
+        guest_threads[0].handle = handle;
+        println!("[*] Primary thread object: TID=0x{:X}, handle 0x{:08X}, KTHREAD 0x{:08X}", tid, handle, kthread);
+    }
 
     let display = crate::ui::window::open(b.is_metro, &assets.xus_table, &assets.loaded_scenes)?;
 

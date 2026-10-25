@@ -1,6 +1,7 @@
 //! xam.xex HLE: NetDll_*/XNet*/XHttp*: networking (offline answers today).
 
 use super::super::dispatcher::KernelDispatcher;
+use crate::kernel::objects::ObjectKind;
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
@@ -23,8 +24,7 @@ impl KernelDispatcher {
 
             // 0x0003: NetDll_socket
             0x0003 => {
-                let s = self.next_handle;
-                self.next_handle += 4;
+                let s = self.new_handle(ObjectKind::Socket);
                 s as u64
             }
 
