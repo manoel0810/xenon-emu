@@ -51,10 +51,11 @@ fn mmio_offset(addr: u64) -> Option<u32> {
     if a >= GPU_MMIO_BASE && a < GPU_MMIO_BASE + GPU_MMIO_SIZE { Some((a - GPU_MMIO_BASE) as u32) } else { None }
 }
 
+/// Guest effective addresses are 32-bit: the upper 32 bits of a 64-bit EA are ignored, as in Xenia's
+/// ComputeMemoryAddress (x64_seq_memory.cc, "Clear the top 32 bits, as they are likely garbage"). Code relies on it,
+/// e.g. Lua's index2adr in the 17559 dash adds a zero-extended negative offset and gets 0x1_xxxxxxxx.
 #[inline(always)]
 fn window_addr(addr: u64) -> Option<u64> {
-    let hi = addr >> 32;
-    if hi != 0 && hi != 0xFFFF_FFFF { return None; }
     let a = addr & 0xFFFF_FFFF;
     if a >= WINDOW_START && a < WINDOW_END { Some(a) } else { None }
 }
@@ -333,5 +334,18 @@ mod tests {
         assert_eq!((bus.gpu_regs.get(0x1C5), bus.cp_rb_wptr), (49, Some(49)));
         bus.gpu_regs.set(0x2000, 0xABCD);
         assert_eq!(bus.read_u32(0x7FC8_0000 + 0x2000 * 4).unwrap(), 0xABCD, "CP register writes are visible over MMIO");
+    }
+
+    #[test]
+    fn effective_addresses_ignore_the_upper_32_bits() {
+        let mut bus = MemoryBus::new();
+        // virtual-alloc window: 0x42DFB660 reached as top + zero-extended (-4 << 4) = 0x1_42DFB660
+        bus.write_u32(0x42DF_B668, 5).unwrap();
+        assert_eq!(bus.read_u32(0x1_42DF_B668).unwrap(), 5);
+        bus.write_u32(0x1_42DF_B66C, 7).unwrap();
+        assert_eq!(bus.read_u32(0xFFFF_FFFF_42DF_B66C).unwrap(), 7);
+        // image / physical range
+        bus.write_u32(0x92A7_809C, 0x1234).unwrap();
+        assert_eq!(bus.read_u32(0x1_92A7_809C).unwrap(), 0x1234);
     }
 }

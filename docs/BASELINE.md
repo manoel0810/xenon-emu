@@ -209,6 +209,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: primeira submissão no frame 1164, 612 linhas de `CP_RB_WPTR` (último `4243`), fence `0x9CF`, 111 297 pacotes, 610 swaps; nenhuma thread terminada nem com trap; principal 59 967 741 passos, 0x3 1 063 429, demais < 11 mil.
 
+## Depois da truncagem de endereço efetivo (2026-10-26)
+
+3000 frames: primeira submissão no frame 1237 (antes 1164), 2997 escritas de `CP_RB_WPTR` medidas com `XENON_MMIO_WRITE_LOG` (HEAD anterior, mesmo método: 3122; o "612" das seções acima contava outra coisa), último `0xE9F`, 107 484 pacotes, `Draws: 1194`, `Swaps: 585` (antes 111 297 / 1244 / 610), CP não termina bloqueado; sem trap nem `KeBugCheck`; principal 60 490 733 passos. O `lua_State` "Dash" da dash passa a ser criado (handle em `0x92A7809C`, frame 275), antes falhava com `E_FAIL`.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

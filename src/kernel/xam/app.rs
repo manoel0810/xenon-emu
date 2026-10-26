@@ -74,8 +74,13 @@ impl KernelDispatcher {
             // 0x01ED: XamAllocSize
             0x01ED => 64,
 
-            // 0x01F4: XMsgInProcessCall
-            0x01F4 => 0,
+            // 0x01F4: XMsgInProcessCall(app, message, buffer, buffer_length): dispatched synchronously to the app.
+            // XLiveBase (0xFC) follows Xenia's XLiveBaseApp::DispatchMessageSync (apps/xlivebase_app.cc); the
+            // other apps are not emulated yet and still succeed without doing anything.
+            0x01F4 => {
+                let (app, message, buffer) = (args.first().copied().unwrap_or(0) as u32, args.get(1).copied().unwrap_or(0) as u32, args.get(2).copied().unwrap_or(0));
+                if app == 0xFC { Self::xlivebase_message(bus, message, buffer) } else { 0 }
+            }
 
             // 0x01A3: XamLoaderGetMediaInfo (pMediaInfo*, pFlags*) - no disc inserted
             0x01A3 => {
@@ -96,6 +101,37 @@ impl KernelDispatcher {
     }
 }
 
+impl KernelDispatcher {
+    /// XLiveBaseApp::DispatchMessageSync (Xenia apps/xlivebase_app.cc): the console is offline.
+    fn xlivebase_message(bus: &mut MemoryBus, message: u32, buffer: u64) -> u64 {
+        const X_E_FAIL: u64 = 0x8000_4005;
+        const X_ONLINE_E_LOGON_NOT_LOGGED_ON: u64 = 0x8015_1802;
+        match message {
+            // XLiveBaseLogonGetHR: X_ONLINE_S_LOGON_DISCONNECTED (the dash compares against it, 0x92918A74)
+            0x0005_8003 => 0x0015_10F1,
+            // XLiveBaseGetLogonId: a bool in the buffer
+            0x0005_8004 => {
+                if buffer != 0 {
+                    let _ = bus.write_u32(buffer, 1);
+                }
+                0
+            }
+            // XLiveBaseGetNatType, XLiveBaseOnlineGetServiceInfo: only answered online
+            0x0005_8006 | 0x0005_8007 => X_ONLINE_E_LOGON_NOT_LOGGED_ON,
+            // XPresenceInitialize, XLiveBaseUnk58046
+            0x0005_8037 | 0x0005_8046 => 0,
+            // XLiveBaseUnk5008C/50094 (blades dashboards), CXLiveFriends::Enumerate,
+            // XMessageGameInviteGetAcceptedInfo and unknown messages
+            _ => {
+                if crate::diag::config().log_syscalls {
+                    println!("    -> XLiveBase message 0x{:08X}: X_E_FAIL", message);
+                }
+                X_E_FAIL
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::kernel::KernelDispatcher;
@@ -109,5 +145,17 @@ mod tests {
         assert!(!k.title_terminated);
         k.dispatch("xam.xex", 0x01A9, &[], &mut bus);
         assert!(k.title_terminated);
+    }
+
+    #[test]
+    fn xlivebase_messages_follow_xenia() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        assert_eq!(k.dispatch("xam.xex", 0x01F4, &[0xFC, 0x5_8003, 0, 0], &mut bus), 0x0015_10F1);
+        assert_eq!(k.dispatch("xam.xex", 0x01F4, &[0xFC, 0x5_8004, 0x4100_0000, 4], &mut bus), 0);
+        assert_eq!(bus.read_u32(0x4100_0000).unwrap(), 1);
+        assert_eq!(k.dispatch("xam.xex", 0x01F4, &[0xFC, 0x5_8006, 0, 0], &mut bus), 0x8015_1802);
+        assert_eq!(k.dispatch("xam.xex", 0x01F4, &[0xFC, 0x5_8037, 0, 0], &mut bus), 0);
+        assert_eq!(k.dispatch("xam.xex", 0x01F4, &[0xFC, 0x5_8020, 0, 0], &mut bus), 0x8000_4005);
     }
 }

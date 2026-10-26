@@ -183,6 +183,19 @@ impl KernelDispatcher {
                 kthread => objects::adjust_suspend_count(bus, kthread, -1) as u64,
             },
 
+            // 0x02A4: KeGetImagePageTableEntry(address) (Xenia xboxkrnl_memory.cc): for the XEX heaps (0x80000000,
+            // 64 KB pages; 0x90000000, 4 KB pages) the page index, with 0x40000001 for 4 KB pages (the 17559 dash
+            // calls KeBugCheck(0xF7) when bit 0 is clear), masked with 0x400FFFFF; 0 elsewhere
+            0x02A4 => {
+                let address = args.first().copied().unwrap_or(0) as u32;
+                let value = match address {
+                    0x8000_0000..=0x8FFF_FFFF => (address - 0x8000_0000) / 0x1_0000,
+                    0x9000_0000..=0x9FFF_FFFF => (address - 0x9000_0000) / 0x1000 | 0x4000_0001,
+                    _ => 0,
+                };
+                (value & 0x400F_FFFF) as u64
+            }
+
             // 0x0082: KeQueryInterruptTime() -> time since boot in 100 ns units (NT semantics; not in Xenia)
             0x0082 => bus.timebase.now() / 5,
 
@@ -285,5 +298,17 @@ mod tests {
         assert_eq!(bus.read_u64(0x100).unwrap(), 0x1122_3344_5566_7788);
         // the handler divides freq by the refresh rate before a divide-by-zero guard
         assert_ne!(50_000_000u64 / 60, 0);
+    }
+
+    #[test]
+    fn image_page_table_entry_follows_xenia() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        let mut pte = |a: u64| k.dispatch("xboxkrnl.exe", 0x02A4, &[a], &mut bus);
+        // dash code at 0x928EF464 (4 KB XEX heap): page 0x28EF, flags 0x40000001
+        assert_eq!(pte(0x928E_F464), 0x4000_28EF);
+        assert_eq!(pte(0x9000_0000), 0x4000_0001);
+        assert_eq!(pte(0x8001_0000), 1, "64 KB XEX heap: page index only");
+        assert_eq!(pte(0x4000_0000), 0, "not a XEX heap");
     }
 }
