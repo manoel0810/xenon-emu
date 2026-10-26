@@ -88,6 +88,8 @@ pub struct DiagConfig {
     pub shader_disasm: bool,
     /// XENON_SHADER_DUMP=<dir>: write every distinct shader as raw dwords to <dir> (outside the repository).
     pub shader_dump: Option<String>,
+    /// XENON_SHADER_EXEC=<n>: run the shaders of the first n draws on their first vertices (gpu/shader_exec.rs).
+    pub shader_exec: Option<u32>,
 }
 
 /// A boolean variable: unset -> `default`; "0", "false", "off" or "no" (any case) -> false; any other value -> true.
@@ -159,6 +161,7 @@ impl DiagConfig {
             startup_notifications: flag_or("XENON_STARTUP_NOTIFICATIONS", true),
             shader_disasm: flag("XENON_SHADER_DISASM"),
             shader_dump: string("XENON_SHADER_DUMP"),
+            shader_exec: parse("XENON_SHADER_EXEC"),
         }
     }
 }

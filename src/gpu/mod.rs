@@ -5,6 +5,8 @@ pub mod pm4;
 pub mod register_file;
 pub mod rasterizer;
 pub mod ring_buffer;
+pub mod shader_env;
+pub mod shader_exec;
 pub mod shader_interp;
 pub mod shader_log;
 pub mod texture;

@@ -63,6 +63,8 @@ pub struct XenosGpu {
     pub draw_log: Option<DrawLog>,
     /// XENON_SHADER_DISASM / XENON_SHADER_DUMP state (None when off).
     pub shader_log: Option<crate::gpu::shader_log::ShaderLog>,
+    /// XENON_SHADER_EXEC state (None when off).
+    pub shader_exec: Option<crate::gpu::shader_exec::ShaderExec>,
 }
 
 impl XenosGpu {
@@ -86,6 +88,7 @@ impl XenosGpu {
             waiting: false,
             draw_log: crate::diag::config().draw_log.then(DrawLog::new),
             shader_log: crate::gpu::shader_log::ShaderLog::from_config(),
+            shader_exec: crate::diag::config().shader_exec.map(crate::gpu::shader_exec::ShaderExec::new),
         }
     }
 
@@ -401,6 +404,9 @@ impl XenosGpu {
                         if let Some(log) = self.draw_log.as_mut() {
                             log.log(bus, *opcode, *predicated, data, &self.vertex_shader, &self.pixel_shader);
                         }
+                        if let Some(exec) = self.shader_exec.as_mut() {
+                            exec.draw(bus, *opcode, data, &self.vertex_shader, &self.pixel_shader);
+                        }
                     }
                     PM4_IM_LOAD_IMMEDIATE => {
                         // [shader type (0 vertex, 1 pixel), start << 16 | size in dwords, microcode...]
@@ -480,7 +486,7 @@ const WRITEBACK_SIZE: u32 = 0x0A05;
 /// address bits), as the big-endian guest sees it. Xenia stores GpuSwap(v, endian) with a little-endian host store
 /// (and loads the same way), so through lwz/stw: kNone = byte swap, k8in16 = half-words swapped, k8in32 = unchanged,
 /// k16in32 = bytes swapped inside each half-word. Each mode is its own inverse.
-fn guest_endian_swap(value: u32, endian: u32) -> u32 {
+pub(crate) fn guest_endian_swap(value: u32, endian: u32) -> u32 {
     match endian & 3 {
         0 => value.swap_bytes(),
         1 => value.rotate_left(16),

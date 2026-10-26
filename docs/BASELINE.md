@@ -229,6 +229,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico à Fase 4.2 (frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap); o interpretador ainda não é chamado pelo CP.
 
+## Depois do ambiente de shaders (Fase 4.3b, 2026-10-26)
+
+3000 frames: idêntico à 4.3a (frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap). Com `XENON_SHADER_EXEC=3000`: os 2125 draws rodam VS e PS sem erro; 7 pares de shaders (598 + 299 + 299 + 299 quads `63a48a83`, 303 + 4 + 299 retângulos, 24 pontos); posições de tela entre x -204,5..1523,5 e y -0,5..799,5 (camadas de UI maiores que a tela); 8500 componentes de cor, todas finitas e em [0,1]; 598 tfetch (formato 6, 1x1 tiled e 128x1 linear).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

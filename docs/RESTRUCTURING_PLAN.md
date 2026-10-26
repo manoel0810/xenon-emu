@@ -294,7 +294,7 @@ Aceite: threads 0x9, 0xA, 0x12 deixam de girar em polling (menos passos por fram
 Objetivo: os draws da dash produzem pixels.
 
 - ~~Decoder de microcódigo (CF, ALU, fetch) portado a partir de `ucode.h`.~~ **Feito (4.2):** `gpu/ucode.rs` + disassembler `gpu/ucode_disasm.rs` (texto do Xenia); os 9 shaders distintos da dash em 3000 frames decodificam sem problemas.
-- Primeiro, interpretador em CPU (correção antes de velocidade); depois tradução para SPIR-V/wgpu se necessário.
+- ~~Primeiro, interpretador em CPU (correção antes de velocidade); depois tradução para SPIR-V/wgpu se necessário.~~ **Feito (4.3):** `gpu/shader_interp.rs` (4.3a) e ambiente real `gpu/shader_env.rs` + `XENON_SHADER_EXEC` (4.3b); texturas por sampler de stub até a 4.4.
 - Texturas: fetch constants, formatos, tiling/untile (candidato a estratégia B).
 - EDRAM e resolve para a memória guest; `XE_SWAP` alimenta o frontbuffer.
 - Remover o caminho de dump como padrão; manter `XENON_FB_SOURCE=reference` apenas como comparação.
