@@ -652,64 +652,9 @@ fn alu(d: &mut Disassembly, op: &AluInstruction, shader_type: ShaderType) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// A control flow instruction as (dword_0, 16-bit dword_1).
-    type Cf = (u32, u32);
-
-    fn cf(opcode: u32, dw0: u32, dw1_low12: u32) -> Cf {
-        (dw0, (opcode << 12) | dw1_low12)
-    }
-    fn exec(opcode: u32, address: u32, count: u32, sequence: u32, dw1_low12: u32) -> Cf {
-        cf(opcode, address | (count << 12) | (sequence << 16), dw1_low12)
-    }
-    fn alloc(kind: u32, size: u32) -> Cf {
-        cf(12, size, kind << 9)
-    }
-    /// The inverse of unpack_cf_pair.
-    fn pack(a: Cf, b: Cf) -> [u32; 3] {
-        [a.0, (a.1 & 0xFFFF) | (b.0 << 16), (b.0 >> 16) | (b.1 << 16)]
-    }
-
-    #[derive(Default, Clone, Copy)]
-    struct Alu {
-        vdst: u32,
-        sdst: u32,
-        sdst_rel: bool,
-        export: bool,
-        vmask: u32,
-        smask: u32,
-        vclamp: bool,
-        sop: u32,
-        vop: u32,
-        swz: [u32; 3],
-        neg: [bool; 3],
-        reg: [u32; 3],
-        temp: [bool; 3],
-        const_0_rel: bool,
-        a0_relative: bool,
-        predicated: bool,
-        pred_condition: bool,
-    }
-
-    fn alu(a: Alu) -> [u32; 3] {
-        let b = |v: bool| v as u32;
-        [
-            a.vdst | a.sdst << 8 | b(a.sdst_rel) << 14 | b(a.export) << 15 | a.vmask << 16 | a.smask << 20 | b(a.vclamp) << 24 | a.sop << 26,
-            a.swz[2] | a.swz[1] << 8 | a.swz[0] << 16 | b(a.neg[2]) << 24 | b(a.neg[1]) << 25 | b(a.neg[0]) << 26
-                | b(a.pred_condition) << 27 | b(a.predicated) << 28 | b(a.a0_relative) << 29 | b(a.const_0_rel) << 31,
-            a.reg[2] | a.reg[1] << 8 | a.reg[0] << 16 | a.vop << 24 | b(a.temp[2]) << 29 | b(a.temp[1]) << 30 | b(a.temp[0]) << 31,
-        ]
-    }
-
-    /// Vector max r0._, r0, r0 with retain_prev: the default nop.
-    fn alu_nop() -> [u32; 3] {
-        alu(Alu { vop: VECTOR_MAX, sop: SCALAR_RETAIN_PREV, temp: [true; 3], ..Default::default() })
-    }
-
-    fn shader(parts: &[[u32; 3]]) -> Vec<u32> {
-        parts.iter().flatten().copied().collect()
-    }
+    use super::{disassemble, Disassembly};
+    use crate::gpu::ucode::*;
+    use crate::gpu::ucode_test::*;
 
     fn lines(d: &Disassembly) -> Vec<&str> {
         d.text.lines().collect()

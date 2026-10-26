@@ -225,6 +225,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico à seção anterior (frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap); o decoder só roda com `XENON_SHADER_DISASM`/`XENON_SHADER_DUMP`. Com eles: 9 shaders distintos (4 vertex, 5 pixel; 24 a 69 dwords; 1 a 19 instruções ALU, até 2 fetches), nenhum problema de decodificação.
 
+## Depois do interpretador de shaders (Fase 4.3a, 2026-10-26)
+
+3000 frames: idêntico à Fase 4.2 (frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap); o interpretador ainda não é chamado pelo CP.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

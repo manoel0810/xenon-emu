@@ -5,10 +5,13 @@ pub mod pm4;
 pub mod register_file;
 pub mod rasterizer;
 pub mod ring_buffer;
+pub mod shader_interp;
 pub mod shader_log;
 pub mod texture;
 pub mod ucode;
 pub mod ucode_disasm;
+#[cfg(test)]
+pub(crate) mod ucode_test;
 pub mod xenos;
 
 pub use display::{
