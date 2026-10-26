@@ -55,6 +55,78 @@ impl TextureFetchConstant {
     pub fn size_2d(&self) -> (u32, u32) {
         ((self.words[2] & 0x1FFF) + 1, ((self.words[2] >> 13) & 0x1FFF) + 1)
     }
+    pub fn clamp_x(&self) -> u32 {
+        (self.words[0] >> 10) & 7
+    }
+    pub fn clamp_y(&self) -> u32 {
+        (self.words[0] >> 13) & 7
+    }
+    pub fn clamp_z(&self) -> u32 {
+        (self.words[0] >> 16) & 7
+    }
+    pub fn sign_x(&self) -> u32 {
+        (self.words[0] >> 2) & 3
+    }
+    pub fn sign_y(&self) -> u32 {
+        (self.words[0] >> 4) & 3
+    }
+    pub fn sign_z(&self) -> u32 {
+        (self.words[0] >> 6) & 3
+    }
+    pub fn sign_w(&self) -> u32 {
+        (self.words[0] >> 8) & 3
+    }
+    pub fn num_format(&self) -> u32 {
+        (self.words[2] >> 26) & 1
+    }
+    pub fn swizzle_x(&self) -> u32 {
+        (self.words[2] >> 27) & 7
+    }
+    pub fn swizzle_y(&self) -> u32 {
+        self.words[3] & 7
+    }
+    pub fn swizzle_z(&self) -> u32 {
+        (self.words[3] >> 3) & 7
+    }
+    pub fn swizzle_w(&self) -> u32 {
+        (self.words[3] >> 6) & 7
+    }
+    pub fn swizzle(&self, component: usize) -> u32 {
+        match component {
+            0 => self.swizzle_x(),
+            1 => self.swizzle_y(),
+            2 => self.swizzle_z(),
+            3 => self.swizzle_w(),
+            _ => 4,
+        }
+    }
+    pub fn exp_adjust(&self) -> i32 {
+        let v = (self.words[3] >> 9) & 0x3F;
+        ((v << 26) as i32) >> 26
+    }
+    pub fn mag_filter(&self) -> u32 {
+        (self.words[3] >> 15) & 3
+    }
+    pub fn min_filter(&self) -> u32 {
+        (self.words[3] >> 17) & 3
+    }
+    pub fn mip_filter(&self) -> u32 {
+        (self.words[3] >> 19) & 3
+    }
+    pub fn aniso_filter(&self) -> u32 {
+        (self.words[3] >> 21) & 7
+    }
+    pub fn border_color(&self) -> u32 {
+        self.words[4] & 3
+    }
+    pub fn linear_pitch_bytes(&self, width: u32, bpp: usize) -> usize {
+        let p = self.pitch();
+        if p != 0 {
+            (p as usize) * 32
+        } else {
+            (width as usize * bpp + 31) & !31
+        }
+    }
 }
 
 /// Texture sampling for tfetch.

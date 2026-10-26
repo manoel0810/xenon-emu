@@ -11,9 +11,10 @@
 
 use super::draw_log::DrawInitiator;
 use super::pm4::{PM4_DRAW_INDX, PM4_DRAW_INDX_BIN};
-use super::shader_env::{GpuShaderEnv, StubSampler};
+use super::shader_env::GpuShaderEnv;
 use super::shader_interp::{run, ShaderState, Vec4};
 use super::shader_log::shader_hash;
+use super::texture::GpuTextureSampler;
 use super::ucode::ShaderType;
 use super::xenos::guest_endian_swap;
 use crate::memory::MemoryBus;
@@ -104,7 +105,7 @@ impl ShaderExec {
                 return;
             }
         };
-        let mut sampler = StubSampler::default();
+        let mut sampler = GpuTextureSampler::new(bus);
         let mut first: Option<ShaderState> = None;
         for &index in &indices {
             let mut state = ShaderState::default();
@@ -144,10 +145,10 @@ impl ShaderExec {
             }
             Err(e) => println!("    pixel: !! {}", e),
         }
-        for (c, coords) in &sampler.fetches {
+        for (c, coords, result) in &sampler.fetches {
             let (w, h) = c.size_2d();
-            println!("      tfetch type={} format={} {}x{} base={:08X} tiled={} pitch={} at ({:.4}, {:.4})", c.fetch_type(), c.format(), w, h,
-                c.base_address(), c.tiled(), c.pitch(), coords[0], coords[1]);
+            println!("      tfetch type={} format={} {}x{} base={:08X} tiled={} pitch={} at ({:.4}, {:.4}) -> {}", c.fetch_type(), c.format(), w, h,
+                c.base_address(), c.tiled(), c.pitch(), coords[0], coords[1], fmt4(result));
         }
     }
 }

@@ -1,5 +1,238 @@
+// Derived from Xenia (BSD-3-Clause), Copyright (c) 2013 Ben Vanik; file headers: Copyright 2026 Xenia Canary.
+// See docs/THIRD_PARTY.md. Xenia Canary commit 451f915566d57436555c6eb4ee77bb4717eb01de:
+//   src/xenia/gpu/texture_util.cc       TiledOffset2D (Xenos macro/micro tiling untile)
+//   src/xenia/gpu/xenos.h              TextureFormat, TextureClamp, TextureFilter, xe_gpu_texture_fetch_t
+//   src/xenia/gpu/spirv_shader_translator_fetch.cc texture fetch coordinate unnormalization, filtering, swizzle
+//
+//! Xenos texture untile, formats and sampling for tfetch instructions (Phase 4.4).
+//! Also includes legacy Texture/TextureAtlas for fallback visual presentation until Phase 4.5.
+
 use std::collections::HashMap;
 use std::path::Path;
+
+use super::shader_env::{TextureFetchConstant, TextureSampler};
+use super::shader_interp::Vec4;
+use super::ucode::FetchInstruction;
+use super::xenos::guest_endian_swap;
+use crate::memory::MemoryBus;
+
+/// Untile offset for 2D textures according to Xenos micro/macro tiling.
+/// Returns the element offset (in pixels for uncompressed formats, or in 4x4 blocks for compressed formats).
+/// Multiply by bytes_per_element (1 << log2_bpp) to get the byte offset.
+///
+/// Ported from Xenia Canary `src/xenia/gpu/texture_util.cc` (TiledOffset2D).
+#[inline(always)]
+pub fn tiled_offset_2d(x: u32, y: u32, width_aligned: u32, log2_bpp: u32) -> u32 {
+    let macro_val = ((x >> 5) + (y >> 5) * (width_aligned >> 5)) << (log2_bpp + 7);
+    let micro = ((x & 7) + ((y & 6) << 2)) << log2_bpp;
+    let offset = macro_val
+        + ((micro & !15) << 1)
+        + (micro & 15)
+        + ((y & 8) << (3 + log2_bpp))
+        + ((y & 1) << 4);
+    let bank = ((((y & 8) >> 2) + ((x >> 3) & 3)) & 3) << 6;
+    (((offset & !511) << 3)
+        + ((offset & 448) << 2)
+        + (offset & 63)
+        + ((y & 16) << 7)
+        + bank) >> log2_bpp
+}
+
+/// Clamps coordinate `t` into `[0..size]` according to `clamp_mode` (TextureClamp).
+/// Returns `None` if coordinate falls outside and clamp mode specifies border color.
+fn clamp_coord(t: i32, size: u32, clamp_mode: u32) -> Option<u32> {
+    let s = size as i32;
+    if s <= 0 {
+        return Some(0);
+    }
+    match clamp_mode {
+        // 0: Wrap
+        0 => Some(t.rem_euclid(s) as u32),
+        // 1: Mirror
+        1 => {
+            let m = t.div_euclid(s).abs() % 2;
+            let r = t.rem_euclid(s);
+            Some(if m == 0 { r as u32 } else { (s - 1 - r) as u32 })
+        }
+        // 2: ClampToEdge (or 6: MirrorOnceClampToEdge fallback)
+        2 | 6 => Some(t.clamp(0, s - 1) as u32),
+        // 3: BorderColor (or 4, 5: MirrorOnce border)
+        3 | 4 | 5 => {
+            if t < 0 || t >= s {
+                None
+            } else {
+                Some(t as u32)
+            }
+        }
+        _ => Some(t.clamp(0, s - 1) as u32),
+    }
+}
+
+/// Border color value from border_color_type.
+fn border_color_value(border_type: u32) -> Vec4 {
+    match border_type {
+        0 => [0.0, 0.0, 0.0, 0.0], // transparent black
+        1 => [0.0, 0.0, 0.0, 1.0], // opaque black
+        2 => [1.0, 1.0, 1.0, 1.0], // opaque white
+        _ => [0.0, 0.0, 0.0, 0.0],
+    }
+}
+
+/// Emulated Xenos Texture Sampler accessing guest physical memory through the MemoryBus.
+pub struct GpuTextureSampler<'a> {
+    pub bus: &'a MemoryBus,
+    pub fetches: Vec<(TextureFetchConstant, Vec4, Vec4)>,
+}
+
+impl<'a> GpuTextureSampler<'a> {
+    pub fn new(bus: &'a MemoryBus) -> Self {
+        Self { bus, fetches: Vec::new() }
+    }
+
+    /// Samples a single texel at integer pixel coordinates (x_coord, y_coord).
+    pub fn sample_texel(&self, constant: &TextureFetchConstant, x_coord: i32, y_coord: i32, width: u32, height: u32) -> Vec4 {
+        let Some(x) = clamp_coord(x_coord, width, constant.clamp_x()) else {
+            return border_color_value(constant.border_color());
+        };
+        let Some(y) = clamp_coord(y_coord, height, constant.clamp_y()) else {
+            return border_color_value(constant.border_color());
+        };
+
+        let base = constant.base_address() as u64;
+        let fmt = constant.format();
+        let raw_components = match fmt {
+            // Format 6: k_8_8_8_8 (32 bpp = 4 bytes)
+            6 => {
+                let byte_offset = if constant.tiled() {
+                    let width_aligned = (width + 31) & !31;
+                    (tiled_offset_2d(x, y, width_aligned, 2) as u64) * 4
+                } else {
+                    let row_pitch = constant.linear_pitch_bytes(width, 4) as u64;
+                    (y as u64) * row_pitch + (x as u64) * 4
+                };
+                let raw = self.bus.read_u32(base + byte_offset).unwrap_or(0);
+                let swapped = guest_endian_swap(raw, constant.endianness());
+                [
+                    (swapped & 0xFF) as f32 / 255.0,
+                    ((swapped >> 8) & 0xFF) as f32 / 255.0,
+                    ((swapped >> 16) & 0xFF) as f32 / 255.0,
+                    ((swapped >> 24) & 0xFF) as f32 / 255.0,
+                ]
+            }
+            // Format 2: k_8 (8 bpp = 1 byte)
+            2 => {
+                let byte_offset = if constant.tiled() {
+                    let width_aligned = (width + 31) & !31;
+                    tiled_offset_2d(x, y, width_aligned, 0) as u64
+                } else {
+                    let row_pitch = constant.linear_pitch_bytes(width, 1) as u64;
+                    (y as u64) * row_pitch + (x as u64)
+                };
+                let raw = self.bus.read_u8(base + byte_offset).unwrap_or(0);
+                let v = raw as f32 / 255.0;
+                [v, v, v, 1.0]
+            }
+            // Format 25: k_16_16 (32 bpp = 4 bytes: two 16-bit)
+            25 => {
+                let byte_offset = if constant.tiled() {
+                    let width_aligned = (width + 31) & !31;
+                    (tiled_offset_2d(x, y, width_aligned, 2) as u64) * 4
+                } else {
+                    let row_pitch = constant.linear_pitch_bytes(width, 4) as u64;
+                    (y as u64) * row_pitch + (x as u64) * 4
+                };
+                let raw = self.bus.read_u32(base + byte_offset).unwrap_or(0);
+                let swapped = guest_endian_swap(raw, constant.endianness());
+                [
+                    (swapped & 0xFFFF) as f32 / 65535.0,
+                    ((swapped >> 16) & 0xFFFF) as f32 / 65535.0,
+                    0.0,
+                    1.0,
+                ]
+            }
+            // Fallback for other formats: opaque white
+            _ => [1.0, 1.0, 1.0, 1.0],
+        };
+
+        // Apply constant component swizzle: 0=R, 1=G, 2=B, 3=A, 4=0.0, 5=1.0
+        let mut swizzled = [0.0f32; 4];
+        for (c, out) in swizzled.iter_mut().enumerate() {
+            *out = match constant.swizzle(c) {
+                0 => raw_components[0],
+                1 => raw_components[1],
+                2 => raw_components[2],
+                3 => raw_components[3],
+                4 => 0.0,
+                5 => 1.0,
+                _ => 0.0,
+            };
+        }
+
+        // Apply exp_adjust
+        let exp = constant.exp_adjust();
+        if exp != 0 {
+            let factor = 2f32.powi(exp);
+            for v in &mut swizzled {
+                *v *= factor;
+            }
+        }
+
+        swizzled
+    }
+}
+
+impl TextureSampler for GpuTextureSampler<'_> {
+    fn sample(&mut self, constant: &TextureFetchConstant, op: &FetchInstruction, coords: Vec4) -> Vec4 {
+        let (w, h) = constant.size_2d();
+        if w == 0 || h == 0 {
+            return [0.0; 4];
+        }
+
+        // Coordinate calculation (normalized vs unnormalized, plus instruction offset)
+        let (mut u, mut v) = if op.tf_unnormalized_coordinates() {
+            (coords[0], coords[1])
+        } else {
+            (coords[0] * w as f32, coords[1] * h as f32)
+        };
+        u += op.tf_offset_x();
+        v += op.tf_offset_y();
+
+        let filter = if op.tf_mag_filter() == 3 { constant.mag_filter() } else { op.tf_mag_filter() };
+        let result = if filter == 0 {
+            // Point / Nearest
+            self.sample_texel(constant, u.floor() as i32, v.floor() as i32, w, h)
+        } else {
+            // Bilinear
+            let u_prime = u - 0.5;
+            let v_prime = v - 0.5;
+            let x0 = u_prime.floor() as i32;
+            let y0 = v_prime.floor() as i32;
+            let x1 = x0 + 1;
+            let y1 = y0 + 1;
+            let fx = u_prime - x0 as f32;
+            let fy = v_prime - y0 as f32;
+
+            let t00 = self.sample_texel(constant, x0, y0, w, h);
+            let t10 = self.sample_texel(constant, x1, y0, w, h);
+            let t01 = self.sample_texel(constant, x0, y1, w, h);
+            let t11 = self.sample_texel(constant, x1, y1, w, h);
+
+            let w00 = (1.0 - fx) * (1.0 - fy);
+            let w10 = fx * (1.0 - fy);
+            let w01 = (1.0 - fx) * fy;
+            let w11 = fx * fy;
+
+            let mut out = [0.0f32; 4];
+            for c in 0..4 {
+                out[c] = t00[c] * w00 + t10[c] * w10 + t01[c] * w01 + t11[c] * w11;
+            }
+            out
+        };
+
+        self.fetches.push((*constant, coords, result));
+        result
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Texture {
@@ -263,6 +496,73 @@ impl TextureAtlas {
 
     pub fn is_empty(&self) -> bool {
         self.textures.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tiled_offset_2d_matches_xenia_for_1x1_and_framebuffer() {
+        // 1x1 32-bpp texture: aligned to 32 elements width
+        assert_eq!(tiled_offset_2d(0, 0, 32, 2), 0);
+        // Framebuffer 1280x720 32-bpp (width 1280): (0, 0) is 0
+        assert_eq!(tiled_offset_2d(0, 0, 1280, 2), 0);
+        // (1, 0) is element 1
+        assert_eq!(tiled_offset_2d(1, 0, 1280, 2), 1);
+        // (0, 1) is element 4 (staggered by 16 bytes = 4 dwords in 8x8 microtile)
+        assert_eq!(tiled_offset_2d(0, 1, 1280, 2), 4);
+    }
+
+    #[test]
+    fn format_6_unpacks_with_endian_swap_and_swizzle() {
+        let mut bus = MemoryBus::new();
+        // Base address 0x1000, 1x1 texture, format 6 (8_8_8_8), endian 2 (k8in32)
+        // Memory has ARGB: byte0=0x11, byte1=0x22, byte2=0x33, byte3=0x44 (raw dword 0x44332211)
+        bus.write_u32(0x1000, 0x4433_2211).unwrap();
+        let mut words = [0u32; 6];
+        words[0] = (2 << 0) | (2 << 10) | (2 << 13); // 2D, clamp_x=2, clamp_y=2
+        words[1] = (6 << 0) | (2 << 6) | (1 << 12);   // format 6, endian 2, base 0x1000 (1 << 12)
+        words[2] = 0;                                 // size 1x1 (0+1, 0+1), swizzle_x=0 (R)
+        words[3] = (1 << 0) | (2 << 3) | (3 << 6);    // swizzle_y=1 (G), z=2 (B), w=3 (A)
+        let constant = TextureFetchConstant { words };
+        let sampler = GpuTextureSampler::new(&bus);
+        let texel = sampler.sample_texel(&constant, 0, 0, 1, 1);
+        assert!((texel[0] - 0x11 as f32 / 255.0).abs() < 1e-4);
+        assert!((texel[1] - 0x22 as f32 / 255.0).abs() < 1e-4);
+        assert!((texel[2] - 0x33 as f32 / 255.0).abs() < 1e-4);
+        assert!((texel[3] - 0x44 as f32 / 255.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn clamping_modes_wrap_and_clamp_to_edge() {
+        assert_eq!(clamp_coord(-1, 10, 2), Some(0));     // ClampToEdge
+        assert_eq!(clamp_coord(10, 10, 2), Some(9));
+        assert_eq!(clamp_coord(-1, 10, 0), Some(9));     // Wrap
+        assert_eq!(clamp_coord(11, 10, 0), Some(1));
+        assert_eq!(clamp_coord(-1, 10, 3), None);        // BorderColor
+    }
+
+    #[test]
+    fn bilinear_filtering_interpolates_subtexels() {
+        let mut bus = MemoryBus::new();
+        // 2x1 linear texture: pixel 0 = black (0), pixel 1 = white (0xFFFFFFFF)
+        bus.write_u32(0x1000, 0x0000_0000).unwrap();
+        bus.write_u32(0x1004, 0xFFFF_FFFF).unwrap();
+        let mut words = [0u32; 6];
+        words[0] = (2 << 0) | (2 << 10) | (2 << 13); // 2D, clamp_x=2, clamp_y=2, linear (tiled=0)
+        words[1] = (6 << 0) | (2 << 6) | (1 << 12);   // format 6, endian 2, base 0x1000
+        words[2] = 1;                                 // size 2x1 (w=2, h=1)
+        words[3] = (1 << 0) | (2 << 3) | (3 << 6) | (1 << 15); // swizzles R,G,B,A; mag_filter=1 (bilinear)
+        let constant = TextureFetchConstant { words };
+        let mut sampler = GpuTextureSampler::new(&bus);
+        let mut op = FetchInstruction::default();
+        op.0[1] = 3 << 12; // mag_filter=3 (use constant)
+        let result = sampler.sample(&constant, &op, [0.5, 0.5, 0.0, 0.0]);
+        // Pixel 0 is at u_texel=0.5, pixel 1 is at u_texel=1.5
+        // At normalized u=0.5, u_texel = 1.0 (exact midpoint) -> 0.5 interpolation!
+        assert!((result[0] - 0.5).abs() < 0.05);
     }
 }
 

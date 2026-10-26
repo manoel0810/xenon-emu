@@ -295,8 +295,12 @@ Objetivo: os draws da dash produzem pixels.
 
 - ~~Decoder de microcódigo (CF, ALU, fetch) portado a partir de `ucode.h`.~~ **Feito (4.2):** `gpu/ucode.rs` + disassembler `gpu/ucode_disasm.rs` (texto do Xenia); os 9 shaders distintos da dash em 3000 frames decodificam sem problemas.
 - ~~Primeiro, interpretador em CPU (correção antes de velocidade); depois tradução para SPIR-V/wgpu se necessário.~~ **Feito (4.3):** `gpu/shader_interp.rs` (4.3a) e ambiente real `gpu/shader_env.rs` + `XENON_SHADER_EXEC` (4.3b); texturas por sampler de stub até a 4.4.
-- Texturas: fetch constants, formatos, tiling/untile (candidato a estratégia B).
-- EDRAM e resolve para a memória guest; `XE_SWAP` alimenta o frontbuffer.
+- **Etapa 4.4 (Texturas: formatos e untile):**
+  - **4.4a Decodificação de `TextureFetchConstant` e formatos:** portar campos completos de `xe_gpu_texture_fetch_t` (Xenia `xenos.h`: tipos 1D/2D/3D/Cube, clamps X/Y/Z, signs X/Y/Z/W, filtros min/mag/mip, swizzle de componentes da constante, `num_format`, `exp_adjust`, pitch linear). Decodificação de texels cobrindo o que a dash pede (formato 6 `k_8_8_8_8` em 32-bit com endian swap e swizzle) e estrutura preparada para `k_8` (formato 2), `k_16_16` (formato 25) e formatos comprimidos DXT (`k_DXT1`, `k_DXT2_3`, `k_DXT4_5`).
+  - **4.4b Endereçamento linear e untile Xenos (micro/macro tiling):** portar algoritmo de untile `TiledOffset2D` de `texture_util.cc` do Xenia Canary para Rust de baixo acoplamento (macro-tiles de 32x32 elementos, micro-tiles 8x8, bank interleaving com `log2_bpp`), suportando texturas 2D tiled (inclusive texturas pequenas como 1x1 alinhadas a tile). Endereçamento linear baseado no pitch da constante (`pitch * 32` bytes) para texturas como 128x1 linear. Leitura de memória física guest via `MemoryBus` com `guest_endian_swap`.
+  - **4.4c Sampler real (`GpuTextureSampler`):** implementar o trait `TextureSampler` com coordenadas normalizadas `[0..1]` e não normalizadas (pixels), modos de clamp (`Wrap`, `ClampToEdge`, `Mirror`, `BorderColor`), filtragem (Point/Nearest e Bilinear) e aplicação do swizzle da constante + `dest_swizzle` da instrução `tfetch`.
+  - **4.4d Testes e validação:** testes unitários de `TiledOffset2D` contra vetores conhecidos, desempacotamento de texels de formato 6 com endian swap/swizzle, e verificação via `XENON_SHADER_EXEC` na dash para validar que os quads de UI lêem as texturas reais de 1x1 tiled e 128x1 linear sem erro.
+- EDRAM e resolve para a memória guest; `XE_SWAP` alimenta o frontbuffer (4.5).
 - Remover o caminho de dump como padrão; manter `XENON_FB_SOURCE=reference` apenas como comparação.
 
 Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/numérica com `xbox360_real_framebuffer.raw`.
