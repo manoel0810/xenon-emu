@@ -61,6 +61,8 @@ pub struct XenosGpu {
     pub ib_decode_errors: u64,
     /// XENON_DRAW_LOG state (None when off).
     pub draw_log: Option<DrawLog>,
+    /// XENON_SHADER_DISASM / XENON_SHADER_DUMP state (None when off).
+    pub shader_log: Option<crate::gpu::shader_log::ShaderLog>,
 }
 
 impl XenosGpu {
@@ -83,6 +85,7 @@ impl XenosGpu {
             ib_stack: Vec::new(),
             waiting: false,
             draw_log: crate::diag::config().draw_log.then(DrawLog::new),
+            shader_log: crate::gpu::shader_log::ShaderLog::from_config(),
         }
     }
 
@@ -212,6 +215,9 @@ impl XenosGpu {
 
     /// IM_LOAD / IM_LOAD_IMMEDIATE: makes `code` the active shader of `shader_type` (0 vertex, 1 pixel).
     fn set_shader(&mut self, shader_type: u32, code: Vec<u32>) {
+        if let Some(log) = self.shader_log.as_mut() {
+            log.loaded(shader_type, &code);
+        }
         match shader_type {
             0 => self.vertex_shader = code,
             1 => self.pixel_shader = code,

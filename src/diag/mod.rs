@@ -84,6 +84,10 @@ pub struct DiagConfig {
     /// XENON_STARTUP_NOTIFICATIONS: deliver Xenia's startup notifications to the first notification listeners
     /// (kernel/notify.rs). On by default, as in Xenia; XENON_STARTUP_NOTIFICATIONS=0 turns them off.
     pub startup_notifications: bool,
+    /// XENON_SHADER_DISASM: print the disassembly of every distinct shader the guest loads (gpu/shader_log.rs).
+    pub shader_disasm: bool,
+    /// XENON_SHADER_DUMP=<dir>: write every distinct shader as raw dwords to <dir> (outside the repository).
+    pub shader_dump: Option<String>,
 }
 
 /// A boolean variable: unset -> `default`; "0", "false", "off" or "no" (any case) -> false; any other value -> true.
@@ -153,6 +157,8 @@ impl DiagConfig {
             mmio_write_log: flag("XENON_MMIO_WRITE_LOG"),
             list_imports: flag("XENON_LIST_IMPORTS"),
             startup_notifications: flag_or("XENON_STARTUP_NOTIFICATIONS", true),
+            shader_disasm: flag("XENON_SHADER_DISASM"),
+            shader_dump: string("XENON_SHADER_DUMP"),
         }
     }
 }

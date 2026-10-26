@@ -276,6 +276,8 @@ Aceite: o fence chega a 5 no momento correto e o loop em `0x921AFFF8` sai (verif
 
 ### Fase 3: Kernel com bloqueio real (M2)
 
+**Feito** (2026-10-26): etapas 3.0 a 3.6, um commit cada (auditoria de ordinais, CP bloqueante, objetos e handles, escalonador, esperas bloqueantes, timers e IO completion, ciclo de vida e exports); threads esperando dormem (HANDOFF, Atualizações 13 a 18). Depois: endereço efetivo de 32 bits, `cmpldi`/MD-form e notificações de partida ligadas (Atualizações 19 a 21).
+
 Objetivo: esperas e threads com semântica de kernel.
 
 - Object manager: handles, tipos (evento, semáforo, mutante, timer, thread, arquivo), dispatcher headers.
@@ -291,7 +293,7 @@ Aceite: threads 0x9, 0xA, 0x12 deixam de girar em polling (menos passos por fram
 
 Objetivo: os draws da dash produzem pixels.
 
-- Decoder de microcódigo (CF, ALU, fetch) portado a partir de `ucode.h`.
+- ~~Decoder de microcódigo (CF, ALU, fetch) portado a partir de `ucode.h`.~~ **Feito (4.2):** `gpu/ucode.rs` + disassembler `gpu/ucode_disasm.rs` (texto do Xenia); os 9 shaders distintos da dash em 3000 frames decodificam sem problemas.
 - Primeiro, interpretador em CPU (correção antes de velocidade); depois tradução para SPIR-V/wgpu se necessário.
 - Texturas: fetch constants, formatos, tiling/untile (candidato a estratégia B).
 - EDRAM e resolve para a memória guest; `XE_SWAP` alimenta o frontbuffer.
