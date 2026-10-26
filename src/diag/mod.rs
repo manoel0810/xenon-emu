@@ -82,7 +82,8 @@ pub struct DiagConfig {
     /// XENON_LIST_IMPORTS: print the dash's imported functions (library, ordinal, export name) at boot.
     pub list_imports: bool,
     /// XENON_STARTUP_NOTIFICATIONS: deliver Xenia's startup notifications to the first notification listeners
-    /// (kernel/notify.rs). Off by default: with them the 17559 dash calls into a null UI object (docs/HANDOFF.md).
+    /// (kernel/notify.rs). Off by default; the null UI object they used to reach was a CPU/bus bug, fixed
+    /// (docs/HANDOFF.md, updates 19 and 20).
     pub startup_notifications: bool,
 }
 

@@ -40,8 +40,11 @@ impl Cpu {
                     let val = self.regs.gpr[ra] as u32;
                     self.regs.update_cr_cmplw(crf, val, uimm);
                 } else {
-                    let val = self.regs.gpr[ra];
-                    self.regs.update_cr_cmplw(crf, (val >> 32) as u32, 0);
+                    // cmpldi: the full doubleword against the zero-extended immediate (Xenia InstrEmit_cmpli)
+                    let (a, b) = (self.regs.gpr[ra], uimm as u64);
+                    let shift = (7 - crf) * 4;
+                    let bits = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
+                    self.regs.cr = (self.regs.cr & !(0xFu32 << shift)) | (bits << shift);
                 }
             }
 
@@ -209,7 +212,9 @@ impl Cpu {
                 let rs = ((insn >> 21) & 0x1F) as usize;
                 let ra = ((insn >> 16) & 0x1F) as usize;
                 let sh = (((insn >> 11) & 0x1F) | (((insn >> 1) & 0x1) << 5)) as u32;
-                let m = (insn >> 5) & 0x3F; // MB or ME (bits 21..26)
+                // MB/ME is split in MD/MDS forms: mb0:4 in bits 21..25, mb5 in bit 26 (Xenia ppc_emit_alu.cc:
+                // mb = (MB5 << 5) | MB)
+                let m = (((insn >> 5) & 1) << 5) | ((insn >> 6) & 0x1F);
                 let xo = (insn >> 2) & 0x7;
                 let rc = insn & 1;
 
@@ -884,5 +889,50 @@ impl Cpu {
         }
 
         Ok(StepResult::Ok)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cpu::interpreter::{Cpu, StepResult};
+    use crate::memory::MemoryBus;
+
+    const CODE: u64 = 0x8200_0000;
+
+    fn run(insn: u32, setup: impl FnOnce(&mut Cpu)) -> Cpu {
+        let mut bus = MemoryBus::new();
+        bus.write_u32(CODE, insn).unwrap();
+        let mut cpu = Cpu::new(CODE);
+        setup(&mut cpu);
+        assert_eq!(cpu.step(&mut bus), Ok(StepResult::Ok));
+        cpu
+    }
+
+    fn cr6(cpu: &Cpu) -> u32 {
+        (cpu.regs.cr >> 4) & 0xF
+    }
+
+    #[test]
+    fn cmpldi_compares_the_whole_doubleword_with_the_immediate() {
+        // the dash's printf digit loop (0x92824D7C): cmpldi cr6, r11, 0 with r11 = 0x931F000
+        assert_eq!(cr6(&run(0x2B2B_0000, |c| c.regs.gpr[11] = 0x931_F000)), 0b0100);
+        assert_eq!(cr6(&run(0x2B2B_0000, |c| c.regs.gpr[11] = 0)), 0b0010);
+        assert_eq!(cr6(&run(0x2B2B_0010, |c| c.regs.gpr[11] = 0x1_0000_0000)), 0b0100, "upper word counts");
+        assert_eq!(cr6(&run(0x2B2B_0010, |c| c.regs.gpr[11] = 0xF)), 0b1000);
+        assert_eq!(cr6(&run(0x2B2B_FFFF, |c| c.regs.gpr[11] = 0xFFFF)), 0b0010, "immediate is zero-extended");
+    }
+
+    #[test]
+    fn md_form_mask_uses_the_split_mb_field() {
+        // clrldi r11, r11, 32 (rldicl r11, r11, 0, 32) = 0x796B0020, from the dash's printf (0x92824D3C)
+        assert_eq!(run(0x796B_0020, |c| c.regs.gpr[11] = 0x1234_5678_9ABC_DEF0).regs.gpr[11], 0x9ABC_DEF0);
+        // srdi r3, r4, 8 = rldicl r3, r4, 56, 8 (0x7883C202)
+        assert_eq!(run(0x7883_C202, |c| c.regs.gpr[4] = 0x1122_3344_5566_7788).regs.gpr[3], 0x0011_2233_4455_6677);
+        // sldi r3, r4, 8 = rldicr r3, r4, 8, 55 (0x788345E4)
+        assert_eq!(run(0x7883_45E4, |c| c.regs.gpr[4] = 0x1122_3344_5566_7788).regs.gpr[3], 0x2233_4455_6677_8800);
+        // clrrdi r3, r4, 4 = rldicr r3, r4, 0, 59 (0x788306E4)
+        assert_eq!(run(0x7883_06E4, |c| c.regs.gpr[4] = 0xFFFF_FFFF_FFFF_FFFF).regs.gpr[3], 0xFFFF_FFFF_FFFF_FFF0);
+        // rldimi r3, r4, 32, 0 (0x7883000E): insert the low word of r4 into the high word of r3
+        assert_eq!(run(0x7883_000E, |c| { c.regs.gpr[4] = 0xAAAA_BBBB; c.regs.gpr[3] = 0x1111_2222_3333_4444 }).regs.gpr[3], 0xAAAA_BBBB_3333_4444);
     }
 }

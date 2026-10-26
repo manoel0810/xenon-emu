@@ -213,6 +213,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: primeira submissão no frame 1237 (antes 1164), 2997 escritas de `CP_RB_WPTR` medidas com `XENON_MMIO_WRITE_LOG` (HEAD anterior, mesmo método: 3122; o "612" das seções acima contava outra coisa), último `0xE9F`, 107 484 pacotes, `Draws: 1194`, `Swaps: 585` (antes 111 297 / 1244 / 610), CP não termina bloqueado; sem trap nem `KeBugCheck`; principal 60 490 733 passos. O `lua_State` "Dash" da dash passa a ser criado (handle em `0x92A7809C`, frame 275), antes falhava com `E_FAIL`.
 
+## Depois de `cmpldi` e do campo MB/ME do formato MD (2026-10-26)
+
+3000 frames sem notificações: primeira submissão no frame 1621 (antes 1237: a dash agora carrega o Lua `section://931F0000,dashlua` e faz mais trabalho de partida), 100 227 pacotes, `Draws: 2132` (antes 1194), `Swaps: 304`, sem trap nem `KeBugCheck`; principal 69 262 630 passos. Com `XENON_STARTUP_NOTIFICATIONS=1`: frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap; a thread 0x15 (`0x92262008`) termina normalmente (código 0) e aparecem `XamContentCreateDeviceEnumerator`, `XamFitnessInitialize`, `XamBackgroundDownloadNetworkStorageEnable`, `XamNetworkStorageHasUserEnabledStorage` sem implementação.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:
