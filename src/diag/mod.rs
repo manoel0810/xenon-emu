@@ -82,13 +82,24 @@ pub struct DiagConfig {
     /// XENON_LIST_IMPORTS: print the dash's imported functions (library, ordinal, export name) at boot.
     pub list_imports: bool,
     /// XENON_STARTUP_NOTIFICATIONS: deliver Xenia's startup notifications to the first notification listeners
-    /// (kernel/notify.rs). Off by default; the null UI object they used to reach was a CPU/bus bug, fixed
-    /// (docs/HANDOFF.md, updates 19 and 20).
+    /// (kernel/notify.rs). On by default, as in Xenia; XENON_STARTUP_NOTIFICATIONS=0 turns them off.
     pub startup_notifications: bool,
 }
 
+/// A boolean variable: unset -> `default`; "0", "false", "off" or "no" (any case) -> false; any other value -> true.
+fn flag_value(value: Option<&str>, default: bool) -> bool {
+    match value {
+        None => default,
+        Some(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"),
+    }
+}
+
 fn flag(name: &str) -> bool {
-    std::env::var(name).is_ok()
+    flag_or(name, false)
+}
+
+fn flag_or(name: &str, default: bool) -> bool {
+    flag_value(std::env::var(name).ok().as_deref(), default)
 }
 
 fn string(name: &str) -> Option<String> {
@@ -141,7 +152,7 @@ impl DiagConfig {
             draw_log: flag("XENON_DRAW_LOG"),
             mmio_write_log: flag("XENON_MMIO_WRITE_LOG"),
             list_imports: flag("XENON_LIST_IMPORTS"),
-            startup_notifications: flag("XENON_STARTUP_NOTIFICATIONS"),
+            startup_notifications: flag_or("XENON_STARTUP_NOTIFICATIONS", true),
         }
     }
 }
@@ -150,4 +161,21 @@ impl DiagConfig {
 pub fn config() -> &'static DiagConfig {
     static CONFIG: OnceLock<DiagConfig> = OnceLock::new();
     CONFIG.get_or_init(DiagConfig::from_env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flag_value;
+
+    #[test]
+    fn flags_treat_zero_and_false_as_off() {
+        assert!(!flag_value(None, false));
+        assert!(flag_value(None, true));
+        for off in ["0", "false", "OFF", "No", " 0 "] {
+            assert!(!flag_value(Some(off), true), "{off:?}");
+        }
+        for on in ["1", "true", "yes", "on", "anything"] {
+            assert!(flag_value(Some(on), false), "{on:?}");
+        }
+    }
 }

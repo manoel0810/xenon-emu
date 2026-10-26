@@ -217,6 +217,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames sem notificações: primeira submissão no frame 1621 (antes 1237: a dash agora carrega o Lua `section://931F0000,dashlua` e faz mais trabalho de partida), 100 227 pacotes, `Draws: 2132` (antes 1194), `Swaps: 304`, sem trap nem `KeBugCheck`; principal 69 262 630 passos. Com `XENON_STARTUP_NOTIFICATIONS=1`: frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap; a thread 0x15 (`0x92262008`) termina normalmente (código 0) e aparecem `XamContentCreateDeviceEnumerator`, `XamFitnessInitialize`, `XamBackgroundDownloadNetworkStorageEnable`, `XamNetworkStorageHasUserEnabledStorage` sem implementação.
 
+## Notificações de partida ligadas por padrão (2026-10-26)
+
+3000 frames, padrão (notificações ligadas): primeira submissão no frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap; thread 0x15 termina com código 0. Com `XENON_STARTUP_NOTIFICATIONS=0`: frame 1621, 100 227 pacotes, `Draws: 2132`, `Swaps: 304`. Esta é a referência a partir daqui.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

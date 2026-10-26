@@ -701,7 +701,11 @@ mod tests {
             assert_eq!(vars.iter().map(|v| v.0).collect::<Vec<_>>(), vec![0x01BE, 0x01BF, 0x01C0, 0x01C1]);
             assert_eq!(bus.read_u32(0x801D_0E94).unwrap(), 500);
             assert_eq!((bus.read_u32(0x801D_1210 + CS_LOCK_COUNT).unwrap() as i32, bus.read_u8(0x801D_1211).unwrap()), (-1, 40));
-            // a listener without startup notifications (the default): empty, its wait handle not signaled
+            // the first listener of the system area gets the startup notifications (on by default, as in Xenia)
+            let first = k.dispatch("xam.xex", 0x0291, &[1, 1, 10], &mut bus) as u32;
+            let first_ev = k.objects.lookup(first, 0).unwrap().guest_ptr as u64;
+            assert_eq!(bus.read_u32(first_ev + 4).unwrap(), 1);
+            // a later listener of the same area starts empty, its wait handle not signaled
             let h = k.dispatch("xam.xex", 0x0291, &[1, 1, 10], &mut bus) as u32;
             let ev = k.objects.lookup(h, 0).unwrap().guest_ptr as u64;
             assert_eq!(bus.read_u32(ev + 4).unwrap(), 0);

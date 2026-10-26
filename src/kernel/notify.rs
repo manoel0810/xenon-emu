@@ -75,7 +75,7 @@ pub struct Notifications {
 
 impl Notifications {
     /// KernelState::RegisterNotifyListener: the first listener of each area gets the startup notifications, when
-    /// `startup` is set (XENON_STARTUP_NOTIFICATIONS; see docs/HANDOFF.md).
+    /// `startup` is set (on by default; XENON_STARTUP_NOTIFICATIONS=0 turns it off).
     pub fn register(&mut self, mem: &mut dyn GuestMem, handle: u32, mut listener: Listener, is_dashboard: bool, startup: bool) {
         if !startup {
             self.listeners.insert(handle, listener);
