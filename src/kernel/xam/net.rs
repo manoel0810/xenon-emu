@@ -8,6 +8,25 @@ impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xam_net(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
+            // 0x001A: NetDll_inet_addr(addr) -> the dotted IPv4 address, first byte most significant; -1 if invalid,
+            // 0 for an empty string (Xenia xam_net.cc)
+            0x001A => {
+                let p = args.first().copied().unwrap_or(0);
+                if p == 0 {
+                    return Some(0xFFFF_FFFF);
+                }
+                let text = crate::kernel::util::read_c_string(p, bus).unwrap_or_default();
+                if text.is_empty() {
+                    return Some(0);
+                }
+                let parts: Vec<Option<u8>> = text.split('.').map(|x| x.parse().ok()).collect();
+                if parts.len() == 4 && parts.iter().all(|x| x.is_some()) {
+                    parts.iter().fold(0u64, |acc, b| acc << 8 | b.unwrap() as u64)
+                } else {
+                    0xFFFF_FFFF
+                }
+            }
+
             // 0x0001: NetDll_WSAStartup (caller, version, pWsaData)
             0x0001 => {
                 if let Some(&p_wsa) = args.get(2) {

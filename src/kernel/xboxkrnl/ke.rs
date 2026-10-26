@@ -177,8 +177,14 @@ impl KernelDispatcher {
                 p_event => objects::reset_event(bus, p_event),
             },
 
-            // 0x0092: KeResumeThread
-            0x0092 => 1, // Previous suspend count
+            // 0x0092: KeResumeThread(kthread) -> previous suspend count
+            0x0092 => match args.first().copied().unwrap_or(0) {
+                0 => 0,
+                kthread => objects::adjust_suspend_count(bus, kthread, -1) as u64,
+            },
+
+            // 0x0082: KeQueryInterruptTime() -> time since boot in 100 ns units (NT semantics; not in Xenia)
+            0x0082 => bus.timebase.now() / 5,
 
             // 0x0097: KeSetAffinityThread
             0x0097 => 1,

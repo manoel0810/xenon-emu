@@ -529,8 +529,28 @@ impl KernelDispatcher {
                 self.wait_on(bus, target.guest_ptr, arg(4))
             }
 
-            // 0x00FC: NtSuspendThread
-            0x00FC => 0,
+            // 0x00F5: NtResumeThread(handle, suspend_count_ptr) | 0x00FC: NtSuspendThread(handle, suspend_count_ptr)
+            // (XThread::Resume / Suspend): the KTHREAD's suspend count, previous value written back
+            0x00F5 | 0x00FC => match self.handle_object(arg(0), ObjectKind::Thread) {
+                Ok(kthread) => {
+                    let previous = objects::adjust_suspend_count(bus, kthread, if ordinal == 0x00F5 { -1 } else { 1 });
+                    if arg(1) != 0 {
+                        let _ = bus.write_u32(arg(1), previous);
+                    }
+                    0
+                }
+                Err(status) => status,
+            },
+
+            // 0x0111: ObReferenceObjectByName(name, attributes, object_type, parse_context, out_object): object names
+            // are not recorded yet, so (like Xenia's GetObjectByName for an unknown name) none is found
+            0x0111 => {
+                if crate::diag::config().log_syscalls {
+                    let name = bus.read_u32(arg(0) + 4).ok().and_then(|p| crate::kernel::util::read_c_string(p as u64, bus)).unwrap_or_default();
+                    println!("    -> ObReferenceObjectByName('{}'): not found", name);
+                }
+                0xC000_0034 // STATUS_OBJECT_NAME_NOT_FOUND
+            }
 
             // 0x00FD: NtWaitForSingleObjectEx(handle, wait_mode, alertable, timeout_ptr) - blocks on the scheduler
             0x00FD => match self.objects.lookup(arg(0) as u32, self.current_thread).map(|o| o.guest_ptr) {

@@ -9,6 +9,63 @@ impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xam_misc(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
+            // 0x059F: XamLogLocalizationEtx(error_code, unk) -> success for 0x80300034/0x80300035, else
+            // X_E_NOT_IMPLEMENTED (Xenia xam_info.cc stub)
+            0x059F => match args.first().copied().unwrap_or(0) as u32 {
+                0x8030_0034 | 0x8030_0035 => 0,
+                _ => 0x8000_4001,
+            },
+
+            // 0x087A: XamIsNuiAutomationEnabled(unk1, unk2) -> X_ERROR_SUCCESS (Xenia xam_nui.cc stub)
+            0x087A => 0,
+
+            // 0x05DC: XamAvatarInitialize(...) -> ~0: avatar initialization is off outside the avatar editor
+            // (Xenia cvar allow_avatar_initialization = false)
+            0x05DC => 0xFFFF_FFFF,
+
+            // 0x05E7: XamAvatarLoadAnimation(asset_id_ptr, flags, output, overlapped): completes at once; with an
+            // overlapped returns ERROR_IO_PENDING (Xenia xam_avatar.cc)
+            0x05E7 => {
+                let overlapped = args.get(3).copied().unwrap_or(0);
+                if overlapped != 0 {
+                    self.complete_overlapped_immediate(bus, overlapped, 0);
+                    997 // X_ERROR_IO_PENDING
+                } else {
+                    0
+                }
+            }
+
+            // 0x058C: XamGetLanguageTypeface(language, buffer_size, buffer): the typeface locator of the language
+            // (Xenia xam_locale.cc)
+            0x058C => {
+                let path = match args.first().copied().unwrap_or(0) {
+                    7 => "file://media:/XenonSCLatin.xtt", // XLanguage::kSChinese
+                    8 => "file://media:/XenonCLatin.xtt",  // XLanguage::kTChinese
+                    _ => "file://media:/XenonJKLatin.xtt",
+                };
+                Self::write_utf16_truncating(bus, args.get(2).copied().unwrap_or(0), path, path.len() + 1);
+                0
+            }
+
+            // 0x0315: XamBuildSharedSystemResourceLocator(filename, buffer, buffer_count bytes):
+            // "section://<xam hmodule>,shrdres#<filename>" (Xenia xam_info.cc keXamBuildResourceLocator)
+            0x0315 => {
+                let name = Self::read_utf16(bus, args.first().copied().unwrap_or(0));
+                let xam = self.modules.modules.iter().find(|m| m.name.eq_ignore_ascii_case("xam.xex")).map(|m| m.hmodule).unwrap_or(0);
+                let path = if xam != 0 { format!("section://{:X},shrdres#{}", xam, name) } else { format!("file://media:/shrdres.xzp#{}", name) };
+                Self::write_utf16_truncating(bus, args.get(1).copied().unwrap_or(0), &path, (args.get(2).copied().unwrap_or(0) / 2) as usize);
+                0
+            }
+
+            // 0x03CA: XGetAudioFlags() -> XConfig audio flags, Dolby Digital | Dolby Pro Logic by default
+            0x03CA => 0x0001_0001,
+
+            // 0x0200: XamFeatureEnabled(feature_bit) -> bit set in 0x40FFFFFFFF (Xenia xam_info.cc)
+            0x0200 => {
+                let bit = args.first().copied().unwrap_or(0);
+                (bit < 36 && (0x40_FFFF_FFFFu64 >> bit) & 1 != 0) as u64
+            }
+
             // 0x01C5: XamGetDefaultSystemImage (phImage)
             0x01C5 => {
                 if let Some(&p_img) = args.first() {
@@ -243,5 +300,59 @@ impl KernelDispatcher {
 
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::kernel::KernelDispatcher;
+    use crate::memory::MemoryBus;
+
+    fn xam(k: &mut KernelDispatcher, bus: &mut MemoryBus, ordinal: u16, args: &[u64]) -> u64 {
+        k.dispatch("xam.xex", ordinal, args, bus)
+    }
+
+    #[test]
+    fn exports_added_from_xenia() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        assert_eq!(xam(&mut k, &mut bus, 0x087A, &[0, 0]), 0);
+        assert_eq!((xam(&mut k, &mut bus, 0x059F, &[0x8030_0034, 0]), xam(&mut k, &mut bus, 0x059F, &[1, 0])), (0, 0x8000_4001));
+        assert_eq!(xam(&mut k, &mut bus, 0x05DC, &[1, 0, 0, 0, 0, 0]), 0xFFFF_FFFF);
+        assert_eq!(xam(&mut k, &mut bus, 0x03CA, &[]), 0x0001_0001);
+        assert_eq!((xam(&mut k, &mut bus, 0x0200, &[0]), xam(&mut k, &mut bus, 0x0200, &[32]), xam(&mut k, &mut bus, 0x0200, &[38])), (1, 0, 0), "std::bitset<36> drops bit 38 of the constant");
+        // NetDll_inet_addr
+        bus.load_bytes(0x4100_0000, b"192.168.1.20\0").unwrap();
+        assert_eq!(xam(&mut k, &mut bus, 0x001A, &[0x4100_0000]), 0xC0A8_0114);
+        bus.write_u8(0x4100_0000, 0).unwrap();
+        assert_eq!(xam(&mut k, &mut bus, 0x001A, &[0x4100_0000]), 0);
+        // XamGetLanguageTypeface(English): "file://media:/XenonJKLatin.xtt"
+        xam(&mut k, &mut bus, 0x058C, &[1, 0x100, 0x4100_0100]);
+        assert_eq!(KernelDispatcher::read_utf16(&bus, 0x4100_0100), "file://media:/XenonJKLatin.xtt");
+        // XamBuildSharedSystemResourceLocator without a registered xam module: the local file form
+        for (i, u) in "fonts".encode_utf16().chain([0]).enumerate() {
+            bus.write_u16(0x4100_0200 + 2 * i as u64, u).unwrap();
+        }
+        xam(&mut k, &mut bus, 0x0315, &[0x4100_0200, 0x4100_0300, 0x80]);
+        assert_eq!(KernelDispatcher::read_utf16(&bus, 0x4100_0300), "file://media:/shrdres.xzp#fonts");
+        // XamUserIsUnsafeProgrammingAllowed
+        assert_eq!(xam(&mut k, &mut bus, 0x02AE, &[0, 0, 0x4100_0400]), 0);
+        assert_eq!(bus.read_u32(0x4100_0400).unwrap(), 1);
+        assert_eq!(xam(&mut k, &mut bus, 0x02AE, &[5, 0, 0x4100_0400]), 0x57);
+        // XamAvatarLoadAnimation with an overlapped: completed at once, its event set, ERROR_IO_PENDING
+        k.dispatch("xboxkrnl.exe", 0x00D1, &[0x4100_0500, 0, 0, 0], &mut bus);
+        let ev = bus.read_u32(0x4100_0500).unwrap();
+        bus.write_u32(0x4100_060C, ev).unwrap();
+        assert_eq!(xam(&mut k, &mut bus, 0x05E7, &[0x4100_0700, 0, 0, 0x4100_0600]), 997);
+        let ev_ptr = k.objects.lookup(ev, 0).unwrap().guest_ptr as u64;
+        assert_eq!((bus.read_u32(0x4100_0600).unwrap(), bus.read_u32(ev_ptr + 4).unwrap()), (0, 1));
+        // callbacks are stored
+        xam(&mut k, &mut bus, 0x07E2, &[0x9220_0000]);
+        xam(&mut k, &mut bus, 0x0289, &[0x9230_0000]);
+        assert_eq!((k.launch_request_callback, k.content_change_callback), (0x9220_0000, 0x9230_0000));
+        // kernel side: ObReferenceObjectByName finds nothing; KeQueryInterruptTime follows the time base
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0111, &[0, 0, 0, 0, 0x4100_0800], &mut bus), 0xC000_0034);
+        bus.timebase.begin_frame(6, 1);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0082, &[], &mut bus), 6 * 833_333 / 5);
     }
 }

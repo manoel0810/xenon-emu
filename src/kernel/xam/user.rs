@@ -19,6 +19,16 @@ impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xam_user(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
+            // 0x02AE: XamUserIsUnsafeProgrammingAllowed(user_index, pc_check, result_ptr) -> *result = 1 (Xenia stub)
+            0x02AE => {
+                let (user_index, result_ptr) = (args.first().copied().unwrap_or(0) as u32, args.get(2).copied().unwrap_or(0));
+                if result_ptr == 0 || (user_index != 0xFF && user_index >= 4) {
+                    return Some(X_ERROR_INVALID_PARAMETER);
+                }
+                let _ = bus.write_u32(result_ptr, 1);
+                0
+            }
+
             // 0x020A: XamUserGetXUID (userIndex, flags, pXuid)
             0x020A => {
                 if let Some(&p_xuid) = args.get(2) {

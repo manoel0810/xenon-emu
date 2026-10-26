@@ -9,6 +9,12 @@ impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xam_content(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
+            // 0x0289: XamContentRegisterChangeCallback(callback) -> void (stored)
+            0x0289 => {
+                self.content_change_callback = args.first().copied().unwrap_or(0) as u32;
+                0
+            }
+
             // 0x0250: XamEnumerate
             0x0250 => 0x0000_0103, // STATUS_NO_MORE_FILES
 

@@ -80,7 +80,6 @@ pub struct GuestThread {
     pub wait: Option<xenon_emu::kernel::scheduler::WaitRequest>,
     pub name: String,
     pub cpu: Cpu,
-    pub entry_pc: u64,
     pub active: bool,
     pub total_steps: u64,
     pub continuous: bool,
@@ -118,19 +117,6 @@ pub fn setup_kpcr(bus: &mut MemoryBus, slot: u64, stack_base: u64, stack_limit: 
     kpcr
 }
 
-pub fn restart_thread(cpu: &mut Cpu, entry: u64, init: Option<&(u64, u64, u64, u64, u64)>) {
-    cpu.regs.pc = entry;
-    cpu.regs.lr = 0x80001000;
-    cpu.regs.ctr = 0;
-    if let Some(&(sp, r3, r4, r5, r13)) = init {
-        cpu.regs.gpr[1] = sp;
-        cpu.regs.gpr[3] = r3;
-        cpu.regs.gpr[4] = r4;
-        cpu.regs.gpr[5] = r5;
-        cpu.regs.gpr[13] = r13;
-    }
-}
-
 /// A DPC queued by an expiring kernel timer: routine(dpc, context, system time low, high) on a short-lived guest
 /// thread, at DISPATCH_LEVEL with dpc_active set in its KPCR (as a DPC runs on the real kernel).
 pub fn timer_dpc_thread(bus: &mut MemoryBus, call: DpcCall, stack: u64, kpcr_slot: u64, name: String) -> GuestThread {
@@ -147,7 +133,7 @@ pub fn timer_dpc_thread(bus: &mut MemoryBus, call: DpcCall, stack: u64, kpcr_slo
     dpc::begin_impersonation(bus, kpcr);
     cpu.regs.gpr[13] = kpcr;
     cpu.regs.lr = 0x80001000;
-    GuestThread { handle: 0, wait: None, name, cpu, entry_pc: routine, active: true, total_steps: 0, continuous: false }
+    GuestThread { handle: 0, wait: None, name, cpu, active: true, total_steps: 0, continuous: false }
 }
 
 /// Graphics interrupt callback (VdSetGraphicsInterruptCallback), invoked like Xenia's
@@ -175,7 +161,7 @@ pub fn interrupt_callback_thread(
     let _ = bus.write_u8(kpcr + 0x10C, cpu); // current_cpu: the dash clears this CPU's bit for CP interrupts
     cb_cpu.regs.gpr[13] = kpcr;
     cb_cpu.regs.lr = 0x80001000;
-    GuestThread { handle: 0, wait: None, name, cpu: cb_cpu, entry_pc: routine, active: true, total_steps: 0, continuous: false }
+    GuestThread { handle: 0, wait: None, name, cpu: cb_cpu, active: true, total_steps: 0, continuous: false }
 }
 
 /// Registers the threads that exist before the first frame (Metro: only the primary thread).
@@ -204,7 +190,6 @@ pub fn register_initial(
         guest_threads.push(GuestThread { handle: 0, wait: None,
             name: "Metro 17559 Primary Thread".to_string(),
             cpu: metro_cpu,
-            entry_pc: real_entry_vaddr,
             active: true,
             total_steps: 0,
             continuous: true,
@@ -223,7 +208,6 @@ pub fn register_initial(
         guest_threads.push(GuestThread { handle: 0, wait: None,
             name: "Main Controller & Event Pump".to_string(),
             cpu: ctrl_cpu,
-            entry_pc: 0x921C9830,
             active: true,
             total_steps: 0,
             continuous: true,
@@ -242,7 +226,6 @@ pub fn register_initial(
         guest_threads.push(GuestThread { handle: 0, wait: None,
             name: "XUI Presentation Engine".to_string(),
             cpu: xui_cpu,
-            entry_pc: 0x9281FBC0,
             active: true,
             total_steps: 0,
             continuous: true,
@@ -261,7 +244,6 @@ pub fn register_initial(
         guest_threads.push(GuestThread { handle: 0, wait: None,
             name: "Direct3D 9 GPU Driver".to_string(),
             cpu: gpu_cpu,
-            entry_pc: 0x92185BC0,
             active: true,
             total_steps: 0,
             continuous: true,
@@ -280,7 +262,6 @@ pub fn register_initial(
         guest_threads.push(GuestThread { handle: 0, wait: None,
             name: "Dashboard State Machine".to_string(),
             cpu: sm_cpu,
-            entry_pc: 0x92261CE8,
             active: true,
             total_steps: 0,
             continuous: true,
@@ -299,7 +280,6 @@ pub fn register_initial(
         guest_threads.push(GuestThread { handle: 0, wait: None,
             name: "Resource & Stream Worker".to_string(),
             cpu: res_cpu,
-            entry_pc: 0x92267C58,
             active: true,
             total_steps: 0,
             continuous: true,
@@ -318,7 +298,6 @@ pub fn register_initial(
         guest_threads.push(GuestThread { handle: 0, wait: None,
             name: "Content & Tile Initializer".to_string(),
             cpu: worker_cpu,
-            entry_pc: 0x92107280,
             active: true,
             total_steps: 0,
             continuous: true,

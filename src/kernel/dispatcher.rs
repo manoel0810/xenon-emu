@@ -61,6 +61,10 @@ pub struct KernelDispatcher {
     /// xorshift64 state for XeCryptRandom
     pub rng_state: u64,
     pub signin_state: u32,
+    /// XamLoaderRegisterLaunchRequestCallback / XamContentRegisterChangeCallback routines (stored, never called:
+    /// no launch requests or content changes happen here).
+    pub launch_request_callback: u32,
+    pub content_change_callback: u32,
     /// XamSetDashContext value.
     pub dash_context: u32,
     pub perf_counter: u64,
@@ -111,6 +115,8 @@ impl KernelDispatcher {
             rng_state: 0x9E37_79B9_7F4A_7C15,
             signin_state: 1,
             dash_context: 0,
+            launch_request_callback: 0,
+            content_change_callback: 0,
             perf_counter: 10_000_000,
             ring_buffer_ptr: 0x1000_0000,
             ring_buffer_size: 64 * 1024,
@@ -176,6 +182,44 @@ impl KernelDispatcher {
         // the dashboard's title id (XamGetCurrentTitleId)
         self.notifications.register(bus, handle, listener, true, crate::diag::config().startup_notifications);
         handle
+    }
+
+    /// KernelState::CompleteOverlappedImmediate: XAM_OVERLAPPED result, extended error and length (0 on success,
+    /// 0xFFFFFFFF otherwise), context = the calling thread, and its event set when there is no completion routine
+    /// (completion routines are APCs, not emulated yet).
+    pub fn complete_overlapped_immediate(&mut self, bus: &mut MemoryBus, overlapped: u64, result: u32) {
+        let _ = bus.write_u32(overlapped, result);
+        let _ = bus.write_u32(overlapped + 4, if result == 0 { 0 } else { 0xFFFF_FFFF });
+        let _ = bus.write_u32(overlapped + 8, self.current_thread);
+        let _ = bus.write_u32(overlapped + 0x18, result);
+        let event = bus.read_u32(overlapped + 0xC).unwrap_or(0);
+        let routine = bus.read_u32(overlapped + 0x10).unwrap_or(0);
+        if event != 0 && routine == 0 {
+            if let Ok(ev) = self.handle_object(event as u64, super::objects::ObjectKind::Event) {
+                super::objects::set_event(bus, ev);
+            }
+        }
+    }
+
+    /// A NUL-terminated big-endian UTF-16 guest string (at most 512 units).
+    pub fn read_utf16(bus: &MemoryBus, ptr: u64) -> String {
+        if ptr == 0 {
+            return String::new();
+        }
+        let units: Vec<u16> = (0..512u64).map(|i| bus.read_u16(ptr + 2 * i).unwrap_or(0)).take_while(|&u| u != 0).collect();
+        String::from_utf16_lossy(&units)
+    }
+
+    /// string_util::copy_and_swap_truncating: at most `count` UTF-16 units (big-endian), the last one a terminator.
+    pub fn write_utf16_truncating(bus: &mut MemoryBus, ptr: u64, text: &str, count: usize) {
+        if ptr == 0 || count == 0 {
+            return;
+        }
+        let units: Vec<u16> = text.encode_utf16().take(count - 1).collect();
+        for (i, u) in units.iter().enumerate() {
+            let _ = bus.write_u16(ptr + 2 * i as u64, *u);
+        }
+        let _ = bus.write_u16(ptr + 2 * units.len() as u64, 0);
     }
 
     /// Kernel variables exported to the guest (Xenia ExportResolver::SetVariableMapping), as (ordinal, address):

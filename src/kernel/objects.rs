@@ -384,6 +384,26 @@ pub fn set_kthread_stack(mem: &mut dyn GuestMem, kthread: u64, stack_base: u32, 
     mem.write_u32(kthread + 0xD0, stack_base);
 }
 
+/// X_KTHREAD.suspend_count (u8), terminated (u8) and exit_status.
+pub const KTHREAD_SUSPEND_COUNT: u64 = 0xBC;
+pub const KTHREAD_TERMINATED: u64 = 0xBE;
+pub const KTHREAD_EXIT_STATUS: u64 = 0x140;
+
+/// XThread::Exit: the thread is terminated and its header signaled (waiters on the thread wake) with the exit code.
+pub fn exit_kthread(mem: &mut dyn GuestMem, kthread: u64, exit_code: u32) {
+    mem.write_u8(kthread + KTHREAD_TERMINATED, 1);
+    mem.write_u32(kthread + HEADER_SIGNAL_STATE, 1);
+    mem.write_u32(kthread + KTHREAD_EXIT_STATUS, exit_code);
+}
+
+/// XThread::Suspend / Resume on the KTHREAD's suspend count; returns the previous count. A thread runs only while
+/// the count is 0.
+pub fn adjust_suspend_count(mem: &mut dyn GuestMem, kthread: u64, delta: i8) -> u32 {
+    let previous = mem.read_u8(kthread + KTHREAD_SUSPEND_COUNT);
+    mem.write_u8(kthread + KTHREAD_SUSPEND_COUNT, previous.wrapping_add(delta as u8));
+    previous as u32
+}
+
 /// a_prcb_ptr / another_prcb_ptr of a KTHREAD: the KPRCB inside the thread's KPCR.
 pub fn set_kthread_prcb(mem: &mut dyn GuestMem, kthread: u64, kprcb: u32) {
     mem.write_u32(kthread + 0xC0, kprcb);
@@ -692,6 +712,31 @@ mod tests {
             assert_eq!(bus.read_u32(ev + 4).unwrap(), 1);
             assert_eq!(k.dispatch("xam.xex", 0x028B, &[h as u64, 0, 0x4100_0000, 0x4100_0004], &mut bus), 1);
             assert_eq!((bus.read_u32(0x4100_0000).unwrap(), bus.read_u32(0x4100_0004).unwrap(), bus.read_u32(ev + 4).unwrap()), (9, 1, 0));
+        }
+
+        #[test]
+        fn thread_exit_signals_waiters_and_suspension_follows_the_count() {
+            let mut k = KernelDispatcher::new();
+            let mut bus = MemoryBus::new();
+            // ExCreateThread(handle_ptr, stack, tid_ptr, api, start, context, flags = CREATE_SUSPENDED)
+            k.dispatch("xboxkrnl.exe", 0x000D, &[0x4100_0000, 0, 0x4100_0004, 0, 0x9226_1CE8, 0, 1], &mut bus);
+            let h = bus.read_u32(0x4100_0000).unwrap() as u64;
+            let kthread = k.objects.lookup(h as u32, 0).unwrap().guest_ptr as u64;
+            assert_eq!(bus.read_u8(kthread + KTHREAD_SUSPEND_COUNT).unwrap(), 1);
+            // NtResumeThread: previous count 1, now runnable
+            assert_eq!(call(&mut k, &mut bus, 0x00F5, &[h, 0x4100_0008]), 0);
+            assert_eq!((bus.read_u32(0x4100_0008).unwrap(), bus.read_u8(kthread + KTHREAD_SUSPEND_COUNT).unwrap()), (1, 0));
+            assert_eq!(call(&mut k, &mut bus, 0x00FC, &[h, 0x4100_0008]), 0);
+            assert_eq!(bus.read_u8(kthread + KTHREAD_SUSPEND_COUNT).unwrap(), 1);
+            // another thread waits on it; ExTerminateThread (XThread::Exit) signals it with the exit code
+            k.current_kthread = 0x4200_0000;
+            call(&mut k, &mut bus, 0x00FD, &[h, 0, 0, 0]);
+            let wait = k.pending_wait.take().expect("waiting on the thread");
+            assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Pending);
+            exit_kthread(&mut bus, kthread, 0x55);
+            assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Done(0));
+            assert_eq!((bus.read_u8(kthread + KTHREAD_TERMINATED).unwrap(), bus.read_u32(kthread + KTHREAD_EXIT_STATUS).unwrap()), (1, 0x55));
+            assert_eq!(bus.read_u32(kthread + 4).unwrap(), 1, "a thread stays signaled once it has exited");
         }
     }
 }

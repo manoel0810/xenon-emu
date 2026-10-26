@@ -25,10 +25,6 @@ pub struct DiagConfig {
     pub trap_trace: bool,
     /// XENON_TRAP_FULL: full trap dump.
     pub trap_full: bool,
-    /// XENON_NO_RESTART: stop trapped threads instead of restarting them.
-    pub no_restart: bool,
-    /// XENON_RESTART_MAIN: allow restarting the Metro primary thread (off by default, see HANDOFF.md section 10).
-    pub restart_main: bool,
     /// XENON_DUMP_RING_FRAME=<n>: dump the instruction ring of the primary thread at frame n.
     pub dump_ring_frame: Option<u64>,
     /// XENON_DUMP_RING_N=<n>: instructions printed per ring dump (default 400).
@@ -116,8 +112,6 @@ impl DiagConfig {
 
             trap_trace: flag("XENON_TRAP_TRACE"),
             trap_full: flag("XENON_TRAP_FULL"),
-            no_restart: flag("XENON_NO_RESTART"),
-            restart_main: flag("XENON_RESTART_MAIN"),
             dump_ring_frame: parse("XENON_DUMP_RING_FRAME"),
             dump_ring_n: parse("XENON_DUMP_RING_N").unwrap_or(400),
             watchdog: flag("XENON_WATCHDOG"),

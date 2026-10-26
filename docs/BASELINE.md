@@ -205,6 +205,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: GPU igual à 3.3 (fence `0x9D5`, 111 462 pacotes, 611 swaps); passos: principal 59 923 770, 0x3 1 065 320, 0x4 887 (antes 68 316 874), demais < 11 mil; 19 threads estacionadas.
 
+## Depois do ciclo de vida e dos exports (Fase 3.6)
+
+3000 frames: primeira submissão no frame 1164, 612 linhas de `CP_RB_WPTR` (último `4243`), fence `0x9CF`, 111 297 pacotes, 610 swaps; nenhuma thread terminada nem com trap; principal 59 967 741 passos, 0x3 1 063 429, demais < 11 mil.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

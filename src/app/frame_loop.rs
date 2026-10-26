@@ -8,7 +8,7 @@ use xenon_emu::gpu::display::resolve_path;
 use xenon_emu::gpu::{GpuDisplay, RingBuffer, XenosGpu};
 
 use super::boot::Boot;
-use super::threads::{begin_dpc_call, bind_kthread, timer_dpc_thread, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
+use super::threads::{begin_dpc_call, bind_kthread, timer_dpc_thread, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
 
 pub fn run(
     boot: Boot,
@@ -26,15 +26,9 @@ pub fn run(
 
     let max_frames: Option<u64> = diag.max_frames;
     // Trap diagnostics: XENON_TRAP_TRACE keeps a ring of the last executed instructions of the
-    // Metro primary thread and dumps it on trap; XENON_NO_RESTART stops the thread instead of restarting it.
+    // Metro primary thread and dumps it on trap. A trapped thread stops; threads are never restarted.
     let trap_trace = diag.trap_trace;
-    let no_restart = diag.no_restart;
     let trap_full = diag.trap_full;
-    // Restart policy: the Metro primary thread runs the CRT startup once; restarting it re-runs startup
-    // over already-initialised globals (double InsertTailList -> self-linked node). Only restart it when asked.
-    let restart_main = diag.restart_main;
-    // First-run register snapshot per thread: (SP, r3, r4, r5, r13), used to give restarts a clean stack/arguments
-    let mut thread_init: HashMap<String, (u64, u64, u64, u64, u64)> = HashMap::new();
     // XENON_WATCH_DUMP_HIT=<n>: dump the instruction ring right after the n-th watchpoint hit (needs XENON_TRAP_TRACE=1)
     let watch_dump_hit: Option<u64> = diag.watch_dump_hit;
     let mut watch_dump_done = false;
@@ -104,7 +98,6 @@ pub fn run(
                 wait: None,
                 name: format!("Dynamic Thread 0x{:X}", pending.tid),
                 cpu: thread_cpu,
-                entry_pc: routine,
                 active: true,
                 total_steps: 0,
                 continuous: is_worker_or_render,
@@ -135,6 +128,10 @@ pub fn run(
             if !thread.active || kernel.title_terminated {
                 continue;
             }
+            // a suspended thread (KTHREAD suspend count, e.g. created with CREATE_SUSPENDED) waits for NtResumeThread
+            if bus.read_u8(bus.read_u32(thread.cpu.regs.gpr[13] + 0x100).unwrap_or(0) as u64 + 0xBC).unwrap_or(0) != 0 {
+                continue;
+            }
             // a parked thread resumes only when its wait completes (kernel/scheduler.rs)
             if let Some(wait) = &thread.wait {
                 let now = bus.timebase.now();
@@ -153,10 +150,6 @@ pub fn run(
             }
             bus.current_thread.clear();
             bus.current_thread.push_str(&thread.name);
-            if !thread_init.contains_key(&thread.name) {
-                let r = &thread.cpu.regs;
-                thread_init.insert(thread.name.clone(), (r.gpr[1], r.gpr[3], r.gpr[4], r.gpr[5], r.gpr[13]));
-            }
             // Execute a timeslice of up to 25,000 instructions per thread per frame
             let slice_start = std::time::Instant::now();
             for step_i in 0..25000u32 {
@@ -254,30 +247,18 @@ pub fn run(
                                     }
 
                                     if is_term {
-                                        if thread.continuous && no_restart {
-                                            println!("  [NO_RESTART] thread '{}' called ExTerminateThread; stopping", thread.name);
-                                            thread.continuous = false;
-                                            thread.active = false;
-                                            break;
-                                        }
-                                        if thread.continuous && thread.name.starts_with("Metro") && !restart_main {
-                                            println!("  [THREAD EXIT] '{}' called ExTerminateThread at frame {} (pc=0x{:08X}); not restarting (set XENON_RESTART_MAIN=1 to restart)",
-                                                thread.name, frame, current_pc);
-                                            thread.continuous = false;
-                                            thread.active = false;
-                                            break;
+                                        // ExTerminateThread(exit_code) (XThread::Exit): the thread ends for good; its
+                                        // KTHREAD is marked terminated and signaled with the exit code
+                                        let kthread = bus.read_u32(thread.cpu.regs.gpr[13] + 0x100).unwrap_or(0);
+                                        if kthread != 0 {
+                                            xenon_emu::kernel::objects::exit_kthread(&mut bus, kthread as u64, args[0] as u32);
                                         }
                                         if thread.continuous {
-                                            if diag.watch_set {
-                                                println!("  [RESTART:TERM] thread '{}' frame {} called ExTerminateThread (pc=0x{:08X}, SP=0x{:08X}) -> restarting at entry 0x{:08X}",
-                                                    thread.name, frame, current_pc, thread.cpu.regs.gpr[1], thread.entry_pc);
-                                            }
-                                            restart_thread(&mut thread.cpu, thread.entry_pc, thread_init.get(&thread.name));
-                                            break;
-                                        } else {
-                                            thread.active = false;
-                                            break;
+                                            println!("  [THREAD EXIT] '{}' frame {} exit code 0x{:X} (from 0x{:08X})", thread.name, frame, args[0] as u32, thread.cpu.regs.lr & 0xFFFF_FFFF);
                                         }
+                                        thread.continuous = false;
+                                        thread.active = false;
+                                        break;
                                     }
                                     if is_yield {
                                         // Yield timeslice to next thread or frame
@@ -293,31 +274,14 @@ pub fn run(
                                 break;
                             }
                             Err(e) => {
-                                if thread.continuous {
-                                    if trap_trace && thread.name.starts_with("Metro") {
-                                        trap_ring.dump_trap(&e, thread.cpu.regs.lr, thread.cpu.regs.ctr, trap_full);
-                                    }
-                                    if no_restart {
-                                        println!("  [NO_RESTART] stopping thread '{}' after first trap", thread.name);
-                                        thread.continuous = false;
-                                        thread.active = false;
-                                        break;
-                                    }
-                                    if thread.name.starts_with("Metro") && !restart_main {
-                                        println!("  [THREAD TRAP] '{}' trapped at frame {} pc=0x{:08X} SP=0x{:08X}: {} -- thread stopped (set XENON_RESTART_MAIN=1 to restart)",
-                                            thread.name, frame, current_pc, thread.cpu.regs.gpr[1], e);
-                                        thread.continuous = false;
-                                        thread.active = false;
-                                        break;
-                                    }
-                                    if diag.watch_set {
-                                        println!("  [RESTART:ERR] thread '{}' frame {} trapped at pc=0x{:08X} SP=0x{:08X}: {} -> restarting at entry 0x{:08X}",
-                                            thread.name, frame, current_pc, thread.cpu.regs.gpr[1], e, thread.entry_pc);
-                                    }
-                                    restart_thread(&mut thread.cpu, thread.entry_pc, thread_init.get(&thread.name));
-                                } else {
-                                    thread.active = false;
+                                // a trap stops the thread (no restart)
+                                if trap_trace && thread.name.starts_with("Metro") {
+                                    trap_ring.dump_trap(&e, thread.cpu.regs.lr, thread.cpu.regs.ctr, trap_full);
                                 }
+                                println!("  [THREAD TRAP] '{}' trapped at frame {} pc=0x{:08X} SP=0x{:08X}: {} -- thread stopped",
+                                    thread.name, frame, current_pc, thread.cpu.regs.gpr[1], e);
+                                thread.continuous = false;
+                                thread.active = false;
                                 break;
                             }
                         }

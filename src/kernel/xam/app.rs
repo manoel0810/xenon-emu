@@ -7,6 +7,12 @@ impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xam_app(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
+            // 0x07E2: XamLoaderRegisterLaunchRequestCallback(callback) -> void (stored)
+            0x07E2 => {
+                self.launch_request_callback = args.first().copied().unwrap_or(0) as u32;
+                0
+            }
+
             // 0x01A8: XamLoaderGetLaunchData (pLaunchData, cbLaunchData)
             0x01A8 => {
                 if let (Some(&p_data), Some(&cb)) = (args.first(), args.get(1)) {
