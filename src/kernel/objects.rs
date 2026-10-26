@@ -28,6 +28,7 @@ pub const STATUS_INVALID_PARAMETER: u64 = 0xC000_000D;
 pub const STATUS_OBJECT_TYPE_MISMATCH: u64 = 0xC000_0024;
 pub const STATUS_SEMAPHORE_LIMIT_EXCEEDED: u64 = 0xC000_0047;
 pub const STATUS_UNSUCCESSFUL: u64 = 0xC000_0001;
+pub const STATUS_MUTANT_NOT_OWNED: u64 = 0xC000_0046;
 
 // X_DISPATCH_HEADER
 pub const HEADER_TYPE: u64 = 0x00;
@@ -49,6 +50,15 @@ pub const KEVENT_SIZE: u32 = 0x10;
 pub const KSEMAPHORE_SIZE: u32 = 0x14;
 pub const KSEMAPHORE_LIMIT: u64 = 0x10;
 pub const KTHREAD_SIZE: u32 = 0xAB0;
+/// X_KMUTANT: header, list entry, owner (X_KTHREAD) at +0x18, abandoned at +0x1C.
+pub const KMUTANT_SIZE: u32 = 0x20;
+pub const KMUTANT_OWNER: u64 = 0x18;
+/// X_KTIMER: header, due time, list entry, dpc, period.
+pub const KTIMER_SIZE: u32 = 0x28;
+/// X_RTL_CRITICAL_SECTION: a synchronization-event header, then lock_count, recursion_count, owning_thread.
+pub const CS_LOCK_COUNT: u64 = 0x10;
+pub const CS_RECURSION_COUNT: u64 = 0x14;
+pub const CS_OWNING_THREAD: u64 = 0x18;
 
 /// XObject::Type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +266,75 @@ pub fn release_semaphore(mem: &mut dyn GuestMem, semaphore: u64, release: u32) -
     (true, previous)
 }
 
+/// A KMUTANT: free when signal_state > 0; the owner may acquire it again (recursion makes signal_state negative).
+pub fn init_mutant(mem: &mut dyn GuestMem, mutant: u64, owner: u32) {
+    init_header(mem, mutant, MUTANT_OBJECT, KMUTANT_SIZE, if owner != 0 { 0 } else { 1 });
+    mem.write_u32(mutant + KMUTANT_OWNER, owner);
+}
+
+/// Releases a mutant held by `thread` (XMutant::ReleaseMutant): Ok(previous signal state), or not owned.
+pub fn release_mutant(mem: &mut dyn GuestMem, mutant: u64, thread: u32) -> Result<u32, u64> {
+    if mem.read_u32(mutant + KMUTANT_OWNER) != thread {
+        return Err(STATUS_MUTANT_NOT_OWNED);
+    }
+    let previous = mem.read_u32(mutant + HEADER_SIGNAL_STATE);
+    let state = previous.wrapping_add(1);
+    mem.write_u32(mutant + HEADER_SIGNAL_STATE, state);
+    if state as i32 > 0 {
+        mem.write_u32(mutant + KMUTANT_OWNER, 0);
+    }
+    Ok(previous)
+}
+
+/// RtlInitializeCriticalSection(AndSpinCount): a synchronization event with lock_count -1 and no owner.
+pub fn init_critical_section(mem: &mut dyn GuestMem, cs: u64, spin_count_div_256: u8) {
+    init_header(mem, cs, EVENT_SYNCHRONIZATION_OBJECT, 0x10, 0);
+    mem.write_u8(cs + 1, spin_count_div_256);
+    mem.write_u32(cs + CS_LOCK_COUNT, u32::MAX);
+    mem.write_u32(cs + CS_RECURSION_COUNT, 0);
+    mem.write_u32(cs + CS_OWNING_THREAD, 0);
+}
+
+/// RtlEnterCriticalSection for `thread`: true if the section is now held; false if the thread has to wait on the
+/// section's event (lock_count already counts it as a waiter).
+pub fn enter_critical_section(mem: &mut dyn GuestMem, cs: u64, thread: u32) -> bool {
+    let lock_count = mem.read_u32(cs + CS_LOCK_COUNT) as i32;
+    if thread != 0 && mem.read_u32(cs + CS_OWNING_THREAD) == thread {
+        mem.write_u32(cs + CS_LOCK_COUNT, lock_count.wrapping_add(1) as u32);
+        let recursion = mem.read_u32(cs + CS_RECURSION_COUNT);
+        mem.write_u32(cs + CS_RECURSION_COUNT, recursion.wrapping_add(1));
+        return true;
+    }
+    mem.write_u32(cs + CS_LOCK_COUNT, lock_count.wrapping_add(1) as u32);
+    if lock_count == -1 {
+        take_critical_section(mem, cs, thread);
+        return true;
+    }
+    false
+}
+
+/// The thread becomes the owner (after finding the section free, or after its wait on the section's event).
+pub fn take_critical_section(mem: &mut dyn GuestMem, cs: u64, thread: u32) {
+    mem.write_u32(cs + CS_OWNING_THREAD, thread);
+    mem.write_u32(cs + CS_RECURSION_COUNT, 1);
+}
+
+/// RtlLeaveCriticalSection: drops one level; on the last one releases the section and, if threads wait, signals its
+/// event so that one of them takes it.
+pub fn leave_critical_section(mem: &mut dyn GuestMem, cs: u64) {
+    let recursion = mem.read_u32(cs + CS_RECURSION_COUNT).wrapping_sub(1);
+    mem.write_u32(cs + CS_RECURSION_COUNT, recursion);
+    let lock_count = (mem.read_u32(cs + CS_LOCK_COUNT) as i32).wrapping_sub(1);
+    mem.write_u32(cs + CS_LOCK_COUNT, lock_count as u32);
+    if recursion != 0 {
+        return;
+    }
+    mem.write_u32(cs + CS_OWNING_THREAD, 0);
+    if lock_count != -1 {
+        set_event(mem, cs);
+    }
+}
+
 /// Parameters of XThread::InitializeGuestObject that do not depend on the process block.
 pub struct KThreadInit {
     pub thread_id: u32,
@@ -458,6 +537,156 @@ mod tests {
             assert_eq!(bus.read_u32(0x4100_0304).unwrap(), 1);
             assert_eq!(call(&mut k, &mut bus, 0x007F, &[0x4100_0300, 0, 0]), 1, "KePulseEvent returns the previous state");
             assert_eq!(bus.read_u32(0x4100_0304).unwrap(), 0);
+        }
+
+        use crate::kernel::scheduler::{evaluate, WaitOutcome, WakeAction, STATUS_TIMEOUT};
+
+        /// A kernel whose calling thread has the given KTHREAD.
+        fn as_thread(k: &mut KernelDispatcher, kthread: u32) {
+            k.current_kthread = kthread;
+            k.pending_wait = None;
+        }
+
+        #[test]
+        fn ke_waits_complete_at_once_or_park_the_thread() {
+            let mut k = KernelDispatcher::new();
+            let mut bus = MemoryBus::new();
+            as_thread(&mut k, 0x4200_0000);
+            // a signaled synchronization event satisfies the wait at once and resets
+            call(&mut k, &mut bus, 0x0070, &[0x4100_0000, 1, 1]);
+            assert_eq!(call(&mut k, &mut bus, 0x00B0, &[0x4100_0000, 0, 0, 0, 0]), 0);
+            assert_eq!((bus.read_u32(0x4100_0004).unwrap(), k.pending_wait.is_none()), (0, true));
+            // not signaled, timeout 0: only polls
+            bus.write_u64(0x4100_0100, 0).unwrap();
+            assert_eq!(call(&mut k, &mut bus, 0x00B0, &[0x4100_0000, 0, 0, 0, 0x4100_0100]), STATUS_TIMEOUT);
+            assert!(k.pending_wait.is_none());
+            // not signaled, no timeout: the thread is parked until KeSetEvent
+            call(&mut k, &mut bus, 0x00B0, &[0x4100_0000, 0, 0, 0, 0]);
+            let wait = k.pending_wait.take().expect("parked");
+            assert_eq!((wait.objects.clone(), wait.deadline), (vec![0x4100_0000], None));
+            assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Pending);
+            call(&mut k, &mut bus, 0x009D, &[0x4100_0000, 0, 0]);
+            assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Done(0));
+            // KeWaitForMultipleObjects WaitAny (1) returns the index of the signaled object
+            call(&mut k, &mut bus, 0x0070, &[0x4100_0010, 0, 0]);
+            call(&mut k, &mut bus, 0x0070, &[0x4100_0020, 0, 1]);
+            bus.write_u32(0x4100_0200, 0x4100_0010).unwrap();
+            bus.write_u32(0x4100_0204, 0x4100_0020).unwrap();
+            assert_eq!(call(&mut k, &mut bus, 0x00AF, &[2, 0x4100_0200, 1, 0, 0, 0, 0, 0]), 1);
+            // WaitAll (0) parks while one is not signaled; a relative timeout gives a deadline
+            bus.write_u64(0x4100_0108, (-10_000i64) as u64).unwrap();
+            call(&mut k, &mut bus, 0x00AF, &[2, 0x4100_0200, 0, 0, 0, 0, 0x4100_0108, 0]);
+            let all = k.pending_wait.take().expect("parked");
+            assert!(all.wait_all && all.deadline == Some(bus.timebase.now() + 50_000));
+        }
+
+        #[test]
+        fn nt_waits_use_handles() {
+            let mut k = KernelDispatcher::new();
+            let mut bus = MemoryBus::new();
+            as_thread(&mut k, 0x4200_0000);
+            call(&mut k, &mut bus, 0x00D1, &[0x4100_0000, 0, 0, 0]);
+            let ev = bus.read_u32(0x4100_0000).unwrap() as u64;
+            assert_eq!(call(&mut k, &mut bus, 0x00FD, &[ev, 0, 0, 0]), 0);
+            assert!(k.pending_wait.is_some(), "a not-signaled event parks the caller");
+            k.pending_wait = None;
+            assert_eq!(call(&mut k, &mut bus, 0x00FD, &[0xF800_0400, 0, 0, 0]), STATUS_INVALID_HANDLE);
+            // NtWaitForMultipleObjectsEx: an object without a dispatcher header here counts as signaled (WaitAny)
+            let port = k.new_handle(ObjectKind::IoCompletion);
+            bus.write_u32(0x4100_0010, ev as u32).unwrap();
+            bus.write_u32(0x4100_0014, port).unwrap();
+            assert_eq!(call(&mut k, &mut bus, 0x00FE, &[2, 0x4100_0010, 1, 0, 0, 0]), 1);
+            assert_eq!(call(&mut k, &mut bus, 0x00FE, &[0, 0x4100_0010, 1, 0, 0, 0]), STATUS_INVALID_PARAMETER);
+            // NtSignalAndWaitForSingleObjectEx: signals the semaphore, then waits on the (now set) event
+            call(&mut k, &mut bus, 0x00D5, &[0x4100_0020, 0, 0, 5]);
+            let sem = bus.read_u32(0x4100_0020).unwrap();
+            call(&mut k, &mut bus, 0x00F6, &[ev, 0]);
+            assert_eq!(call(&mut k, &mut bus, 0x00FB, &[sem as u64, ev, 0, 0, 0]), 0);
+            let sem_ptr = k.objects.lookup(sem, 0).unwrap().guest_ptr as u64;
+            assert_eq!(bus.read_u32(sem_ptr + 4).unwrap(), 1);
+        }
+
+        #[test]
+        fn mutants_have_an_owner_and_recursion() {
+            let mut k = KernelDispatcher::new();
+            let mut bus = MemoryBus::new();
+            let (a, b) = (0x4200_0000u32, 0x4300_0000u32);
+            as_thread(&mut k, a);
+            // created owned by A; A acquires it again (recursion)
+            call(&mut k, &mut bus, 0x00D4, &[0x4100_0000, 0, 1]);
+            let m = bus.read_u32(0x4100_0000).unwrap() as u64;
+            let mp = k.objects.lookup(m as u32, 0).unwrap().guest_ptr as u64;
+            assert_eq!(call(&mut k, &mut bus, 0x00FD, &[m, 0, 0, 0]), 0);
+            assert_eq!((bus.read_u32(mp + 4).unwrap() as i32, bus.read_u32(mp + KMUTANT_OWNER).unwrap()), (-1, a));
+            // B waits; B cannot release it
+            as_thread(&mut k, b);
+            call(&mut k, &mut bus, 0x00FD, &[m, 0, 0, 0]);
+            let wait = k.pending_wait.take().expect("B parked");
+            assert_eq!(objects_release(&mut bus, mp, b), Err(STATUS_MUTANT_NOT_OWNED));
+            // A releases twice; then B gets it
+            as_thread(&mut k, a);
+            assert_eq!(call(&mut k, &mut bus, 0x00F2, &[m, 0]), 0);
+            assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Pending, "A still holds one level");
+            call(&mut k, &mut bus, 0x00F2, &[m, 0]);
+            assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Done(0));
+            assert_eq!((bus.read_u32(mp + 4).unwrap(), bus.read_u32(mp + KMUTANT_OWNER).unwrap()), (0, b));
+        }
+
+        fn objects_release(bus: &mut MemoryBus, mutant: u64, thread: u32) -> Result<u32, u64> {
+            super::super::release_mutant(bus, mutant, thread)
+        }
+
+        #[test]
+        fn critical_sections_block_and_hand_over() {
+            let mut k = KernelDispatcher::new();
+            let mut bus = MemoryBus::new();
+            let (a, b) = (0x4200_0000u32, 0x4300_0000u32);
+            const CS: u64 = 0x4100_0000;
+            call(&mut k, &mut bus, 0x012F, &[CS, 4000]);
+            assert_eq!((bus.read_u8(CS + 1).unwrap(), bus.read_u32(CS + CS_LOCK_COUNT).unwrap() as i32), (16, -1));
+            // A enters twice (recursion)
+            as_thread(&mut k, a);
+            call(&mut k, &mut bus, 0x0125, &[CS]);
+            call(&mut k, &mut bus, 0x0125, &[CS]);
+            assert_eq!((bus.read_u32(CS + CS_LOCK_COUNT).unwrap(), bus.read_u32(CS + CS_RECURSION_COUNT).unwrap(), bus.read_u32(CS + CS_OWNING_THREAD).unwrap()), (1, 2, a));
+            // B blocks on it
+            as_thread(&mut k, b);
+            call(&mut k, &mut bus, 0x0125, &[CS]);
+            let wait = k.pending_wait.take().expect("B parked");
+            assert_eq!(wait.on_wake, WakeAction::EnterCriticalSection(CS as u32));
+            assert_eq!(call(&mut k, &mut bus, 0x0141, &[CS]), 0, "TryEnter fails for B");
+            // A leaves once: still owner; leaves again: the event hands the section to B
+            as_thread(&mut k, a);
+            call(&mut k, &mut bus, 0x0130, &[CS]);
+            assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Pending);
+            call(&mut k, &mut bus, 0x0130, &[CS]);
+            assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Done(0));
+            assert_eq!((bus.read_u32(CS + CS_LOCK_COUNT).unwrap(), bus.read_u32(CS + CS_RECURSION_COUNT).unwrap(), bus.read_u32(CS + CS_OWNING_THREAD).unwrap()), (0, 1, b));
+            // B leaves: free again
+            as_thread(&mut k, b);
+            call(&mut k, &mut bus, 0x0130, &[CS]);
+            assert_eq!((bus.read_u32(CS + CS_LOCK_COUNT).unwrap() as i32, bus.read_u32(CS + CS_OWNING_THREAD).unwrap()), (-1, 0));
+        }
+
+        #[test]
+        fn video_variables_and_listeners() {
+            let mut k = KernelDispatcher::new();
+            let mut bus = MemoryBus::new();
+            let vars = k.register_variable_exports(&mut bus);
+            assert_eq!(vars.iter().map(|v| v.0).collect::<Vec<_>>(), vec![0x01BE, 0x01BF, 0x01C0, 0x01C1]);
+            assert_eq!(bus.read_u32(0x801D_0E94).unwrap(), 500);
+            assert_eq!((bus.read_u32(0x801D_1210 + CS_LOCK_COUNT).unwrap() as i32, bus.read_u8(0x801D_1211).unwrap()), (-1, 40));
+            // a listener without startup notifications (the default): empty, its wait handle not signaled
+            let h = k.dispatch("xam.xex", 0x0291, &[1, 1, 10], &mut bus) as u32;
+            let ev = k.objects.lookup(h, 0).unwrap().guest_ptr as u64;
+            assert_eq!(bus.read_u32(ev + 4).unwrap(), 0);
+            bus.write_u32(0x4100_0000, 0xFFFF).unwrap();
+            assert_eq!(k.dispatch("xam.xex", 0x028B, &[h as u64, 0, 0x4100_0000, 0x4100_0004], &mut bus), 0);
+            // XNotifyBroadcast queues to it and signals the handle; XNotifyGetNext dequeues
+            k.dispatch("xam.xex", 0x028E, &[0x0000_0009, 1], &mut bus);
+            assert_eq!(bus.read_u32(ev + 4).unwrap(), 1);
+            assert_eq!(k.dispatch("xam.xex", 0x028B, &[h as u64, 0, 0x4100_0000, 0x4100_0004], &mut bus), 1);
+            assert_eq!((bus.read_u32(0x4100_0000).unwrap(), bus.read_u32(0x4100_0004).unwrap(), bus.read_u32(ev + 4).unwrap()), (9, 1, 0));
         }
     }
 }

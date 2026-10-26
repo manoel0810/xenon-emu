@@ -206,6 +206,16 @@ pub fn boot() -> Result<Boot, Box<dyn std::error::Error>> {
     thunk_map.insert(super::threads::DPC_RETURN_TRAMPOLINE, ("xboxkrnl.exe".to_string(), super::threads::DPC_RETURN_ORDINAL));
 
     let mut kernel = KernelDispatcher::new();
+    // Kernel variables the title imports (Xenia SetVariableMapping): the import record gets the variable's address.
+    let variables = kernel.register_variable_exports(&mut bus);
+    for (lib, ordinal, slot) in dash_xex.variable_import_slots(&bus) {
+        if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
+            if let Some(&(_, addr)) = variables.iter().find(|(o, _)| *o == ordinal) {
+                bus.write_u32(slot as u64, addr)?;
+                println!("[*] Kernel variable 0x{:04X} -> import slot 0x{:08X} = 0x{:08X}", ordinal, slot, addr);
+            }
+        }
+    }
     // Loader data entries for XexGetModuleHandle / XexGetModuleSection: the title executable and the HLE kernel modules.
     kernel.modules.register_executable(
         &mut bus,

@@ -640,6 +640,23 @@ impl XexFile {
         println!("------------------------------------------------------------");
     }
 
+    /// Import records that are not function thunks (record type 0: variables, and the descriptors that precede
+    /// function thunks), as (library, ordinal, record address). Read after `setup_import_thunks`, which only
+    /// rewrites type-1 records.
+    pub fn variable_import_slots(&self, bus: &MemoryBus) -> Vec<(String, u16, u32)> {
+        let mut slots = Vec::new();
+        for lib in &self.import_libraries {
+            for &record_addr in &lib.import_table {
+                if let Ok(record_val) = bus.read_u32(record_addr as u64) {
+                    if (record_val >> 24) & 0xFF == 0 {
+                        slots.push((lib.name.clone(), (record_val & 0xFFFF) as u16, record_addr));
+                    }
+                }
+            }
+        }
+        slots
+    }
+
     /// Rewrites all import thunks in memory with `sc 2` and `blr`,
     /// returning a mapping from thunk address to (library_name, ordinal).
     pub fn setup_import_thunks(

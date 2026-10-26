@@ -3,6 +3,7 @@
 use super::super::dispatcher::{KernelDispatcher, VfsFileHandle};
 use super::super::util::read_vfs_path;
 use crate::kernel::objects::{self, KernelObject, ObjectKind};
+use crate::kernel::scheduler;
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
@@ -69,6 +70,7 @@ impl KernelDispatcher {
                 let (status, gone) = self.objects.release(h, self.current_thread);
                 if gone.is_some() {
                     self.vfs_handles.remove(&h);
+                    self.notifications.listeners.remove(&h);
                 }
                 status
             }
@@ -87,23 +89,42 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x00D4: NtCreateMutant(handle_ptr, obj_attributes, initial_owner): no native object (XMutant)
+            // 0x00D4: NtCreateMutant(handle_ptr, obj_attributes, initial_owner): a native KMUTANT, owned by the caller
+            // if initial_owner (Xenia keeps mutants host-side; waits here read the guest header)
             0x00D4 => {
-                let h = self.new_handle(ObjectKind::Mutant);
+                let mutant = self.create_native(bus, objects::KMUTANT_SIZE);
+                objects::init_mutant(bus, mutant, if arg(2) != 0 { self.current_kthread } else { 0 });
+                let h = self.objects.create(KernelObject { kind: ObjectKind::Mutant, guest_ptr: mutant as u32 });
+                objects::stash_handle(bus, mutant, h);
                 if arg(0) != 0 {
                     let _ = bus.write_u32(arg(0), h);
                 }
                 0
             }
 
-            // 0x00D7: NtCreateTimer(handle_ptr, obj_attributes, timer_type): no native object (XTimer)
+            // 0x00D7: NtCreateTimer(handle_ptr, obj_attributes, timer_type): a native KTIMER header, not signaled (timer
+            // type 0 = notification, 1 = synchronization); timers fire from phase 3.4
             0x00D7 => {
-                let h = self.new_handle(ObjectKind::Timer);
+                let timer = self.create_native(bus, objects::KTIMER_SIZE);
+                let timer_type = objects::TIMER_NOTIFICATION_OBJECT + (arg(2) & 1) as u8;
+                objects::init_header(bus, timer, timer_type, objects::KTIMER_SIZE, 0);
+                let h = self.objects.create(KernelObject { kind: ObjectKind::Timer, guest_ptr: timer as u32 });
+                objects::stash_handle(bus, timer, h);
                 if arg(0) != 0 {
                     let _ = bus.write_u32(arg(0), h);
                 }
                 0
             }
+
+            // 0x00F2: NtReleaseMutant(handle, previous_count_ptr): releases it if the caller owns it; Xenia returns
+            // success either way and does not write the previous count
+            0x00F2 => match self.handle_object(arg(0), ObjectKind::Mutant) {
+                Ok(mutant) => {
+                    let _ = objects::release_mutant(bus, mutant, self.current_kthread);
+                    0
+                }
+                Err(status) => status,
+            },
 
             // 0x00DA: NtDuplicateObject(handle, new_handle_ptr, options); options 1 = DUPLICATE_CLOSE_SOURCE
             0x00DA => {
@@ -431,31 +452,62 @@ impl KernelDispatcher {
             // 0x00F8: NtSetIoCompletion
             0x00F8 => 0,
 
-            // 0x00FB: NtSignalAndWaitForSingleObjectEx(signal_handle, wait_handle, ...): signals an event (the wait
-            // does not block yet, Phase 3)
+            // 0x00FB: NtSignalAndWaitForSingleObjectEx(signal_handle, wait_handle, wait_mode, alertable, timeout_ptr)
+            // (XObject::SignalAndWait): signals an event / semaphore (1) / mutant, then waits on the other object
             0x00FB => {
-                if let Ok(ev) = self.handle_object(arg(0), ObjectKind::Event) {
-                    objects::set_event(bus, ev);
+                let signal = self.objects.lookup(arg(0) as u32, self.current_thread).cloned();
+                let target = self.objects.lookup(arg(1) as u32, self.current_thread).cloned();
+                let (Some(signal), Some(target)) = (signal, target) else { return Some(objects::STATUS_INVALID_HANDLE) };
+                let p = signal.guest_ptr as u64;
+                match signal.kind {
+                    ObjectKind::Event => {
+                        objects::set_event(bus, p);
+                    }
+                    ObjectKind::Semaphore => {
+                        objects::release_semaphore(bus, p, 1);
+                    }
+                    ObjectKind::Mutant => {
+                        let _ = objects::release_mutant(bus, p, self.current_kthread);
+                    }
+                    _ => return Some(objects::STATUS_OBJECT_TYPE_MISMATCH),
                 }
-                0
+                self.wait_on(bus, target.guest_ptr, arg(4))
             }
 
             // 0x00FC: NtSuspendThread
             0x00FC => 0,
 
-            // 0x00FD: NtWaitForSingleObjectEx(handle, ...): does not block yet (Phase 3); a synchronization event is
-            // consumed
-            0x00FD => {
-                if let Ok(ev) = self.handle_object(arg(0), ObjectKind::Event) {
-                    if bus.read_u8(ev).unwrap_or(0) == objects::EVENT_SYNCHRONIZATION_OBJECT {
-                        objects::reset_event(bus, ev);
+            // 0x00FD: NtWaitForSingleObjectEx(handle, wait_mode, alertable, timeout_ptr) - blocks on the scheduler
+            0x00FD => match self.objects.lookup(arg(0) as u32, self.current_thread).map(|o| o.guest_ptr) {
+                Some(object) => self.wait_on(bus, object, arg(3)),
+                None => objects::STATUS_INVALID_HANDLE,
+            },
+
+            // 0x00FE: NtWaitForMultipleObjectsEx(count, handles, wait_type (0 all, 1 any), wait_mode, alertable,
+            // timeout_ptr) - blocks on the scheduler. Objects without a dispatcher header here (files, I/O completion
+            // ports) count as signaled.
+            0x00FE => {
+                let count = arg(0);
+                if count == 0 || count > 64 || arg(2) > 1 {
+                    return Some(objects::STATUS_INVALID_PARAMETER);
+                }
+                let mut headers = Vec::new();
+                for i in 0..count {
+                    let handle = bus.read_u32(arg(1) + 4 * i).unwrap_or(0);
+                    match self.objects.lookup(handle, self.current_thread).map(|o| o.guest_ptr) {
+                        None => return Some(objects::STATUS_INVALID_HANDLE),
+                        Some(0) if arg(2) == 1 => return Some(scheduler::STATUS_WAIT_0 + i),
+                        Some(0) => {}
+                        Some(p) => headers.push(p),
                     }
                 }
-                0
+                if headers.is_empty() {
+                    return Some(scheduler::STATUS_WAIT_0);
+                }
+                let deadline = self.wait_deadline(bus, arg(5));
+                let wait = scheduler::WaitRequest::objects(self.current_kthread, headers, arg(2) == 0, deadline);
+                self.begin_wait(bus, wait)
             }
-
-            // 0x00FE: NtWaitForMultipleObjectsEx
-            0x00FE => 0, // STATUS_WAIT_0
 
             // 0x00FF: NtWriteFile
             0x00FF => 0,
@@ -537,5 +589,16 @@ impl KernelDispatcher {
 
             _ => return None,
         })
+    }
+
+    /// Waits on one object for an Nt* wait: objects without a dispatcher header here (files, I/O completion ports)
+    /// count as signaled.
+    fn wait_on(&mut self, bus: &mut MemoryBus, object: u32, timeout_ptr: u64) -> u64 {
+        if object == 0 {
+            return scheduler::STATUS_WAIT_0;
+        }
+        let deadline = self.wait_deadline(bus, timeout_ptr);
+        let wait = scheduler::WaitRequest::objects(self.current_kthread, vec![object], false, deadline);
+        self.begin_wait(bus, wait)
     }
 }

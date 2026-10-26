@@ -201,6 +201,28 @@ impl KernelDispatcher {
             // 0x050C: XamSetConsoleFriendlyName
             0x050C => 0,
 
+            // 0x03D2: XamGetLanguage() -> the XConfig user language (kernel/xconfig.rs)
+            0x03D2 => crate::kernel::xconfig::language() as u64,
+
+            // 0x04A9: XamGetLocale() -> the locale of the XConfig user country
+            0x04A9 => crate::kernel::xconfig::locale() as u64,
+
+            // 0x058B: XamGetOnlineLanguageAndCountry(xuid, language_buffer, country_buffer) -> void: one byte each,
+            // from the XConfig user settings (the signed-in profile has no settings of its own here)
+            0x058B => {
+                if let Some(&p_lang) = args.get(1) {
+                    if p_lang != 0 {
+                        let _ = bus.write_u8(p_lang, crate::kernel::xconfig::USER_LANGUAGE as u8);
+                    }
+                }
+                if let Some(&p_country) = args.get(2) {
+                    if p_country != 0 {
+                        let _ = bus.write_u8(p_country, crate::kernel::xconfig::USER_COUNTRY);
+                    }
+                }
+                0
+            }
+
             // 0x0282: XamGetSystemVersion() -> 0 (Xenia xam_info.cc stub)
             0x0282 => 0,
 

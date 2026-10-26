@@ -38,6 +38,10 @@ pub struct KernelDispatcher {
     pub current_thread: u32,
     /// Wait the calling thread must be parked with (taken by the frame loop after the call), see kernel/scheduler.rs.
     pub pending_wait: Option<super::scheduler::WaitRequest>,
+    /// X_KTHREAD of the calling thread (its KPCR's current thread), for ownership: mutants, critical sections.
+    pub current_kthread: u32,
+    /// XAM notification listeners by handle (kernel/notify.rs).
+    pub notifications: super::notify::Notifications,
     /// Thread handles by thread id (ObLookupThreadByThreadId).
     pub thread_by_id: HashMap<u32, u32>,
     pub tls_slots: HashMap<u32, u64>,
@@ -90,7 +94,9 @@ impl KernelDispatcher {
             objects: Default::default(),
             current_thread: 0,
             pending_wait: None,
+            current_kthread: 0,
             thread_by_id: HashMap::new(),
+            notifications: Default::default(),
             tls_slots: HashMap::new(),
             next_tls_index: 1,
             valloc_bump: 0x4000_0000,
@@ -150,6 +156,59 @@ impl KernelDispatcher {
         let handle = self.objects.create(super::objects::KernelObject { kind: super::objects::ObjectKind::Thread, guest_ptr: kthread as u32 });
         self.thread_by_id.insert(init.thread_id, handle);
         (handle, kthread as u32)
+    }
+
+    /// xeXamNotifyCreateListener: a listener object whose wait handle is a notification KEVENT, registered for the
+    /// startup notifications.
+    pub fn create_notify_listener(&mut self, bus: &mut MemoryBus, mask: u64, max_version: u32) -> u32 {
+        use super::objects::{init_header, stash_handle, KernelObject, ObjectKind, EVENT_NOTIFICATION_OBJECT, KEVENT_SIZE};
+        let event = self.create_native(bus, KEVENT_SIZE);
+        init_header(bus, event, EVENT_NOTIFICATION_OBJECT, KEVENT_SIZE, 0);
+        let handle = self.objects.create(KernelObject { kind: ObjectKind::NotifyListener, guest_ptr: event as u32 });
+        stash_handle(bus, event, handle);
+        let listener = super::notify::Listener { mask, max_version: max_version.min(10), event: event as u32, queue: Default::default() };
+        // the dashboard's title id (XamGetCurrentTitleId)
+        self.notifications.register(bus, handle, listener, true, crate::diag::config().startup_notifications);
+        handle
+    }
+
+    /// Kernel variables exported to the guest (Xenia ExportResolver::SetVariableMapping), as (ordinal, address):
+    /// the video ones from RegisterVideoExports - VdGlobalDevice (points to a 40-byte block), VdGlobalXamDevice (0),
+    /// VdGpuClockInMHz (500) and VdHSIOCalibrationLock (a critical section, spin count 10000). Other kernel
+    /// variables are not exported yet.
+    pub fn register_variable_exports(&mut self, bus: &mut MemoryBus) -> Vec<(u16, u32)> {
+        use super::video::{VD_GLOBAL_DEVICE, VD_GLOBAL_XAM_DEVICE, VD_GPU_CLOCK_IN_MHZ, VD_HSIO_CALIBRATION_LOCK};
+        let device_block = self.alloc_system(bus, 40) as u32;
+        let _ = bus.write_u32(VD_GLOBAL_DEVICE.1 as u64, device_block);
+        let _ = bus.write_u32(VD_GLOBAL_XAM_DEVICE.1 as u64, 0);
+        let _ = bus.write_u32(VD_GPU_CLOCK_IN_MHZ.1 as u64, 500);
+        super::objects::init_critical_section(bus, VD_HSIO_CALIBRATION_LOCK.1 as u64, ((10_000u32 + 255) >> 8) as u8);
+        vec![VD_GLOBAL_DEVICE, VD_GLOBAL_XAM_DEVICE, VD_GPU_CLOCK_IN_MHZ, VD_HSIO_CALIBRATION_LOCK]
+    }
+
+    /// Starts a wait for the calling thread: it completes at once if it can (returning its status), otherwise the
+    /// thread is parked by the frame loop (`pending_wait`) and gets the status when the wait completes.
+    pub fn begin_wait(&mut self, bus: &mut MemoryBus, wait: super::scheduler::WaitRequest) -> u64 {
+        let now = bus.timebase.now();
+        match super::scheduler::evaluate(bus, &wait, now) {
+            super::scheduler::WaitOutcome::Done(status) => status,
+            super::scheduler::WaitOutcome::Pending => {
+                self.pending_wait = Some(wait);
+                0
+            }
+        }
+    }
+
+    /// Deadline of a wait's timeout pointer: none = wait forever, 0 = only poll, otherwise a kernel interval.
+    pub fn wait_deadline(&self, bus: &MemoryBus, timeout_ptr: u64) -> Option<u64> {
+        let now = bus.timebase.now();
+        if timeout_ptr == 0 {
+            return None;
+        }
+        match bus.read_u64(timeout_ptr).unwrap_or(0) as i64 {
+            0 => Some(now),
+            interval => super::scheduler::deadline(now, interval),
+        }
     }
 
     /// The guest dispatcher object behind a handle, if the handle is valid and of `kind`.

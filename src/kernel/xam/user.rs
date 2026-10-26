@@ -11,9 +11,9 @@ const X_E_INVALIDARG: u64 = 0x8007_0057;
 const X_E_NO_SUCH_USER: u64 = 0x8007_0525;
 
 impl KernelDispatcher {
-    /// Users 0..3 share the single local profile state (`signin_state`, also returned by XamUserGetSigninState).
+    /// The single local profile is signed in at user index 0 (`signin_state`); the other user slots are empty.
     fn user_signed_in(&self, user_index: u32) -> bool {
-        user_index < 4 && self.signin_state != 0
+        user_index == 0 && self.signin_state != 0
     }
 
     /// Handles the ordinals of this area; `None` means "not handled here".
@@ -47,8 +47,12 @@ impl KernelDispatcher {
             }
 
 
-            // 0x0210: XamUserGetSigninState (userIndex)
-            0x0210 => self.signin_state as u64, // 1 = Signed in locally
+            // 0x0210: XamUserGetSigninState(user_index) -> the user's sign-in state, 0 for an empty slot or an index
+            // >= 4 such as XUSER_INDEX_ANY (Xenia xam_user.cc); 1 = signed in locally
+            0x0210 => {
+                let user_index = args.first().copied().unwrap_or(0) as u32;
+                if self.user_signed_in(user_index) { self.signin_state as u64 } else { 0 }
+            }
 
             // 0x0211: XamUserGetIndexFromXUID (xuid, pUserIndex)
             0x0211 => {

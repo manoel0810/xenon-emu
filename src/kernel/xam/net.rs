@@ -42,16 +42,6 @@ impl KernelDispatcher {
             // 0x004B NetDll_XNetGetEthernetLinkStatus: no cable
             0x004B => 0,
 
-            // 0x028B: XNotifyGetNext (hListener, flags, pId, pParam)
-            0x028B => {
-                if let Some(&p_id) = args.get(2) {
-                    if p_id != 0 {
-                        let _ = bus.write_u32(p_id, 0); // No pending notifications
-                    }
-                }
-                0
-            }
-
             _ => return None,
         })
     }

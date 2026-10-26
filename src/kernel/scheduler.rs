@@ -9,7 +9,10 @@
 //! cpu/timebase.rs) passes. A thread is ready (no request), waiting (a request) or terminated (inactive).
 
 use super::guest_mem::GuestMem;
-use super::objects::{EVENT_SYNCHRONIZATION_OBJECT, HEADER_SIGNAL_STATE, HEADER_TYPE, SEMAPHORE_OBJECT};
+use super::objects::{
+    take_critical_section, EVENT_SYNCHRONIZATION_OBJECT, HEADER_SIGNAL_STATE, HEADER_TYPE, KMUTANT_OWNER, MUTANT_OBJECT,
+    SEMAPHORE_OBJECT, TIMER_SYNCHRONIZATION_OBJECT,
+};
 use crate::cpu::timebase::TICKS_PER_SECOND;
 
 pub const STATUS_WAIT_0: u64 = 0;
@@ -39,9 +42,20 @@ pub fn deadline(now: u64, interval: i64) -> Option<u64> {
     }
 }
 
+/// What a thread does once its wait is satisfied, before it resumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeAction {
+    None,
+    /// RtlEnterCriticalSection: take ownership of the section at this address.
+    EnterCriticalSection(u32),
+}
+
 /// A parked thread's wait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitRequest {
+    /// The waiting thread's X_KTHREAD (mutant ownership, critical sections).
+    pub thread: u32,
+    pub on_wake: WakeAction,
     /// Dispatcher headers (guest addresses) waited on; empty for a plain delay.
     pub objects: Vec<u32>,
     /// All objects must be signaled (WaitAll) instead of any one (WaitAny).
@@ -55,7 +69,12 @@ pub struct WaitRequest {
 impl WaitRequest {
     /// KeDelayExecutionThread: no objects, completes with STATUS_SUCCESS at the deadline.
     pub fn delay(deadline: u64) -> Self {
-        Self { objects: Vec::new(), wait_all: false, deadline: Some(deadline), timeout_status: 0 }
+        Self { thread: 0, on_wake: WakeAction::None, objects: Vec::new(), wait_all: false, deadline: Some(deadline), timeout_status: 0 }
+    }
+
+    /// A wait on dispatcher objects, finishing with STATUS_TIMEOUT at `deadline`.
+    pub fn objects(thread: u32, objects: Vec<u32>, wait_all: bool, deadline: Option<u64>) -> Self {
+        Self { thread, on_wake: WakeAction::None, objects, wait_all, deadline, timeout_status: STATUS_TIMEOUT }
     }
 }
 
@@ -66,20 +85,35 @@ pub enum WaitOutcome {
     Pending,
 }
 
-fn signaled(mem: &mut dyn GuestMem, header: u32) -> bool {
-    (mem.read_u32(header as u64 + HEADER_SIGNAL_STATE) as i32) > 0
+fn signaled(mem: &mut dyn GuestMem, header: u32, thread: u32) -> bool {
+    let h = header as u64;
+    if mem.read_u8(h + HEADER_TYPE) == MUTANT_OBJECT && thread != 0 && mem.read_u32(h + KMUTANT_OWNER) == thread {
+        return true; // the owner acquires its mutant again
+    }
+    (mem.read_u32(h + HEADER_SIGNAL_STATE) as i32) > 0
 }
 
-/// Consumes what a satisfied wait takes from an object: a synchronization event resets, a semaphore count drops.
-fn acquire(mem: &mut dyn GuestMem, header: u32) {
+/// Consumes what a satisfied wait takes from an object: a synchronization event or timer resets, a semaphore count
+/// drops, a mutant gets (one more level of) `thread` as owner.
+fn acquire(mem: &mut dyn GuestMem, header: u32, thread: u32) {
     let h = header as u64;
-    match mem.read_u8(h + HEADER_TYPE) {
-        EVENT_SYNCHRONIZATION_OBJECT => mem.write_u32(h + HEADER_SIGNAL_STATE, 0),
-        SEMAPHORE_OBJECT => {
+    let object_type = mem.read_u8(h + HEADER_TYPE);
+    match object_type {
+        EVENT_SYNCHRONIZATION_OBJECT | TIMER_SYNCHRONIZATION_OBJECT => mem.write_u32(h + HEADER_SIGNAL_STATE, 0),
+        SEMAPHORE_OBJECT | MUTANT_OBJECT => {
             let count = mem.read_u32(h + HEADER_SIGNAL_STATE);
             mem.write_u32(h + HEADER_SIGNAL_STATE, count.wrapping_sub(1));
+            if object_type == MUTANT_OBJECT {
+                mem.write_u32(h + KMUTANT_OWNER, thread);
+            }
         }
         _ => {}
+    }
+}
+
+fn wake(mem: &mut dyn GuestMem, wait: &WaitRequest) {
+    if let WakeAction::EnterCriticalSection(cs) = wait.on_wake {
+        take_critical_section(mem, cs as u64, wait.thread);
     }
 }
 
@@ -88,14 +122,16 @@ fn acquire(mem: &mut dyn GuestMem, header: u32) {
 pub fn evaluate(mem: &mut dyn GuestMem, wait: &WaitRequest, now: u64) -> WaitOutcome {
     if !wait.objects.is_empty() {
         if wait.wait_all {
-            if wait.objects.iter().all(|&o| signaled(mem, o)) {
+            if wait.objects.iter().all(|&o| signaled(mem, o, wait.thread)) {
                 for &o in &wait.objects {
-                    acquire(mem, o);
+                    acquire(mem, o, wait.thread);
                 }
+                wake(mem, wait);
                 return WaitOutcome::Done(STATUS_WAIT_0);
             }
-        } else if let Some(i) = wait.objects.iter().position(|&o| signaled(mem, o)) {
-            acquire(mem, wait.objects[i]);
+        } else if let Some(i) = wait.objects.iter().position(|&o| signaled(mem, o, wait.thread)) {
+            acquire(mem, wait.objects[i], wait.thread);
+            wake(mem, wait);
             return WaitOutcome::Done(STATUS_WAIT_0 + i as u64);
         }
     }
@@ -137,7 +173,7 @@ mod tests {
         init_header(&mut m, 0x100, EVENT_SYNCHRONIZATION_OBJECT, KEVENT_SIZE, 0);
         init_header(&mut m, 0x200, EVENT_NOTIFICATION_OBJECT, KEVENT_SIZE, 0);
         init_header(&mut m, 0x300, SEMAPHORE_OBJECT, KSEMAPHORE_SIZE, 0);
-        let any = WaitRequest { objects: vec![0x100, 0x200, 0x300], wait_all: false, deadline: Some(1000), timeout_status: STATUS_TIMEOUT };
+        let any = WaitRequest::objects(0, vec![0x100, 0x200, 0x300], false, Some(1000));
         assert_eq!(evaluate(&mut m, &any, 10), WaitOutcome::Pending);
         // the semaphore gets a count: WaitAny returns its index and takes the count
         m.write_u32(0x304, 2);
@@ -146,14 +182,14 @@ mod tests {
         // a synchronization event resets when it satisfies a wait; a notification event stays signaled
         m.write_u32(0x104, 1);
         m.write_u32(0x204, 1);
-        let all = WaitRequest { objects: vec![0x100, 0x200], wait_all: true, deadline: None, timeout_status: STATUS_TIMEOUT };
+        let all = WaitRequest::objects(0, vec![0x100, 0x200], true, None);
         assert_eq!(evaluate(&mut m, &all, 10), WaitOutcome::Done(0));
         assert_eq!((m.read_u32(0x104), m.read_u32(0x204)), (0, 1));
         // WaitAll with one object not signaled never completes without a deadline
         assert_eq!(evaluate(&mut m, &all, u64::MAX), WaitOutcome::Pending);
         // timeout
         m.write_u32(0x304, 0);
-        let none = WaitRequest { objects: vec![0x300], wait_all: false, deadline: Some(1000), timeout_status: STATUS_TIMEOUT };
+        let none = WaitRequest::objects(0, vec![0x300], false, Some(1000));
         assert_eq!(evaluate(&mut m, &none, 1000), WaitOutcome::Done(STATUS_TIMEOUT));
     }
 

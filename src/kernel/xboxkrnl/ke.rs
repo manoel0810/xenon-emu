@@ -152,37 +152,29 @@ impl KernelDispatcher {
                 p_event => objects::set_event(bus, p_event),
             },
 
-            // 0x00AF: KeWaitForMultipleObjects
+            // 0x00AF: KeWaitForMultipleObjects(count, objects_ptr, wait_type (0 all, 1 any), reason, mode, alertable,
+            // timeout_ptr, wait_blocks) - blocks on the scheduler (kernel/scheduler.rs)
             0x00AF => {
-                let count = args.first().copied().unwrap_or(1) as usize;
-                let p_objects = args.get(1).copied().unwrap_or(0);
-                if p_objects != 0 {
-                    for i in 0..count.min(8) {
-                        if let Ok(p_obj) = bus.read_u32(p_objects + (i * 4) as u64) {
-                            if p_obj != 0 {
-                                if let Ok(typ) = bus.read_u8(p_obj as u64) {
-                                    if typ == 1 {
-                                        let _ = bus.write_u32(p_obj as u64 + 4, 0);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                let count = arg(0).min(64);
+                let objects: Vec<u32> = (0..count).map(|i| bus.read_u32(arg(1) + 4 * i).unwrap_or(0)).collect();
+                if objects.is_empty() || objects.contains(&0) || arg(2) > 1 {
+                    return Some(objects::STATUS_INVALID_PARAMETER);
                 }
-                0 // STATUS_WAIT_0 / STATUS_SUCCESS
+                let deadline = self.wait_deadline(bus, arg(6));
+                let wait = scheduler::WaitRequest::objects(self.current_kthread, objects, arg(2) == 0, deadline);
+                self.begin_wait(bus, wait)
             }
 
-            // 0x00B0: KeWaitForSingleObject
+            // 0x00B0: KeWaitForSingleObject(object, reason, mode, alertable, timeout_ptr) - blocks on the scheduler
             0x00B0 => {
-                if let Some(&p_obj) = args.first() {
-                    if p_obj != 0 {
-                        let is_sync = bus.read_u8(p_obj).unwrap_or(0) == 1;
-                        if is_sync {
-                            let _ = bus.write_u32(p_obj + 4, 0);
-                        }
-                    }
+                let object = args.first().copied().unwrap_or(0) as u32;
+                if object == 0 {
+                    return Some(objects::STATUS_INVALID_PARAMETER);
                 }
-                0 // STATUS_SUCCESS / WAIT_OBJECT_0
+                let deadline = self.wait_deadline(bus, args.get(4).copied().unwrap_or(0));
+                let wait = scheduler::WaitRequest::objects(self.current_kthread, vec![object], false, deadline);
+                self.begin_wait(bus, wait)
             }
 
             // 0x00B1: KfAcquireSpinLock | 0x00B2: KfRaiseIrql

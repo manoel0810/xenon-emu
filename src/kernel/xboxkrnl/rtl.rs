@@ -2,6 +2,7 @@
 
 use super::super::dispatcher::KernelDispatcher;
 use super::super::strings::{self, ArrayArgs, StackArgs};
+use crate::kernel::{objects, scheduler};
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
@@ -17,8 +18,18 @@ impl KernelDispatcher {
             // 0x011B: RtlCompareMemoryUlong
             0x011B => args.get(1).copied().unwrap_or(0),
 
-            // 0x0125: RtlEnterCriticalSection
-            0x0125 => 0,
+            // 0x0125: RtlEnterCriticalSection(cs): taken at once when free or already owned; otherwise the thread waits on
+            // the section's event and takes it when woken (Xenia xboxkrnl_rtl.cc; the spin loop has nothing to spin on
+            // here, where one guest thread runs at a time)
+            0x0125 => {
+                let cs = arg(0);
+                if cs != 0 && !objects::enter_critical_section(bus, cs, self.current_kthread) {
+                    let mut wait = scheduler::WaitRequest::objects(self.current_kthread, vec![cs as u32], false, None);
+                    wait.on_wake = scheduler::WakeAction::EnterCriticalSection(cs as u32);
+                    self.begin_wait(bus, wait);
+                }
+                0
+            }
 
             // 0x0126: RtlFillMemoryUlong (Destination, Length in BYTES, Pattern)
             // (call site in the dash: r3=dst, r4=800, r5=0x80000000 -> Length=800, Pattern=0x80000000.
@@ -88,20 +99,24 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x012E: RtlInitializeCriticalSection | 0x012F: RtlInitializeCriticalSectionAndSpinCount
+            // 0x012E: RtlInitializeCriticalSection(cs) | 0x012F: RtlInitializeCriticalSectionAndSpinCount(cs, spin_count)
+            // (xeRtlInitializeCriticalSection*: spin count / 256, rounded up, kept in header.absolute)
             0x012E | 0x012F => {
-                if let Some(&ptr) = args.first() {
-                    if ptr != 0 {
-                        for off in (0..28).step_by(4) {
-                            let _ = bus.write_u32(ptr + off, 0);
-                        }
-                    }
+                let cs = arg(0);
+                if cs != 0 {
+                    let spin = if ordinal == 0x012F { ((arg(1) + 255) >> 8).min(255) as u8 } else { 0 };
+                    objects::init_critical_section(bus, cs, spin);
                 }
                 0
             }
 
-            // 0x0130: RtlLeaveCriticalSection
-            0x0130 => 0,
+            // 0x0130: RtlLeaveCriticalSection(cs)
+            0x0130 => {
+                if arg(0) != 0 {
+                    objects::leave_critical_section(bus, arg(0));
+                }
+                0
+            }
 
             // 0x0133: RtlMultiByteToUnicodeN(dst, dst_len_bytes, written_ptr, src, src_len) - see kernel/strings.rs
             0x0133 => strings::rtl_multibyte_to_unicode_n(bus, arg(0), arg(1) as u32, arg(2), arg(3), arg(4) as u32),
@@ -156,9 +171,25 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x0141: RtlTryEnterCriticalSection(cs) -> TRUE. RtlEnterCriticalSection does not track ownership yet
-            // (Phase 3), so trying always succeeds, like entering.
-            0x0141 => 1,
+            // 0x0141: RtlTryEnterCriticalSection(cs) -> TRUE if the section is now held (free, or already owned)
+            0x0141 => {
+                let cs = arg(0);
+                if cs == 0 {
+                    return Some(1); // Xenia: pretend we got it
+                }
+                let thread = self.current_kthread;
+                let lock_count = bus.read_u32(cs + objects::CS_LOCK_COUNT).unwrap_or(0) as i32;
+                if lock_count == -1 {
+                    let _ = bus.write_u32(cs + objects::CS_LOCK_COUNT, 0);
+                    objects::take_critical_section(bus, cs, thread);
+                    1
+                } else if thread != 0 && bus.read_u32(cs + objects::CS_OWNING_THREAD).unwrap_or(0) == thread {
+                    objects::enter_critical_section(bus, cs, thread);
+                    1
+                } else {
+                    0
+                }
+            }
 
             // 0x0142: RtlUnicodeStringToAnsiString (DestinationString, SourceString, AllocateDestinationString)
             0x0142 => {
@@ -264,12 +295,19 @@ mod tests {
     fn rtl_ordinals_do_what_their_names_say() {
         let mut k = KernelDispatcher::new();
         let mut bus = MemoryBus::new();
-        // RtlTryEnterCriticalSection must not touch the critical section (it used to be "RtlFreeUnicodeString")
+        // RtlTryEnterCriticalSection on a section held by another thread fails and leaves it untouched (it used to be
+        // "RtlFreeUnicodeString", which zeroed it)
         for off in (0..0x1C).step_by(4) {
             bus.write_u32(0x4000_0000 + off, 0xEEEE_EEEE).unwrap();
         }
-        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0141, &[0x4000_0000], &mut bus), 1);
+        k.current_kthread = 0x4100_0000;
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0141, &[0x4000_0000], &mut bus), 0);
         assert_eq!(bus.read_u32(0x4000_0004).unwrap(), 0xEEEE_EEEE);
+        // free (initialized) section: taken; again by the same thread: recursion
+        k.dispatch("xboxkrnl.exe", 0x012E, &[0x4000_0040], &mut bus);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0141, &[0x4000_0040], &mut bus), 1);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0141, &[0x4000_0040], &mut bus), 1);
+        assert_eq!((bus.read_u32(0x4000_0050).unwrap(), bus.read_u32(0x4000_0054).unwrap(), bus.read_u32(0x4000_0058).unwrap()), (1, 2, 0x4100_0000));
         // RtlTimeToTimeFields
         bus.write_u64(0x4000_0100, 116_444_736_000_000_000 + 946_684_800 * 10_000_000).unwrap();
         k.dispatch("xboxkrnl.exe", 0x0140, &[0x4000_0100, 0x4000_0200], &mut bus);

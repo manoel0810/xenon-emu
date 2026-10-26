@@ -207,11 +207,7 @@ pub fn run(
                                 if let Some((lib, ordinal)) = thunk {
                                     let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
                                     let is_yield = (*ordinal == 0x0101 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
-                                        || (*ordinal == 0x005A && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
-                                        || (*ordinal == 0x00B0 && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
-                                        || (*ordinal == 0x00AF && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
-                                        || (*ordinal == 0x00FD && lib.eq_ignore_ascii_case("xboxkrnl.exe"))
-                                        || (*ordinal == 0x00FE && lib.eq_ignore_ascii_case("xboxkrnl.exe"));
+                                        || (*ordinal == 0x005A && lib.eq_ignore_ascii_case("xboxkrnl.exe"));
 
                                     let args = [
                                         thread.cpu.regs.gpr[3], thread.cpu.regs.gpr[4], thread.cpu.regs.gpr[5],
@@ -230,6 +226,7 @@ pub fn run(
                                         diag::watchdog::enter_syscall(lib, *ordinal, &args);
                                     }
                                     kernel.current_thread = thread.handle;
+                                    kernel.current_kthread = bus.read_u32(thread.cpu.regs.gpr[13] + 0x100).unwrap_or(0);
                                     kernel.pending_wait = None;
                                     let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
                                     if watchdog { diag::watchdog::leave_syscall(); }
@@ -418,6 +415,12 @@ pub fn run(
                     "    -> [THREAD] \"{}\" | PC: 0x{:08X} | LR: 0x{:08X} | Steps: {} | Active: {} | Cont: {}",
                     t.name, t.cpu.regs.pc, t.cpu.regs.lr, t.total_steps, t.active, t.continuous
                 );
+                if let Some(w) = &t.wait {
+                    // each object: address, type, signal state
+                    let objects: Vec<String> = w.objects.iter().map(|&o| format!("0x{:08X}(type {}, state {})", o,
+                        bus.read_u8(o as u64).unwrap_or(0xFF), bus.read_u32(o as u64 + 4).unwrap_or(0) as i32)).collect();
+                    println!("       waiting ({}) on [{}] deadline {:?} {:?}", if w.wait_all { "all" } else { "any" }, objects.join(", "), w.deadline, w.on_wake);
+                }
             }
         }
     }

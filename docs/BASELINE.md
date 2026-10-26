@@ -197,6 +197,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: igual à Fase 3.1 (614 / `4263` / fence `0x9D5` / 611 swaps); passos por thread iguais (a dash só chama `KeDelayExecutionThread` com intervalo 0).
 
+## Depois das esperas bloqueantes (Fase 3.3)
+
+3000 frames: GPU igual à 3.2 (613 linhas de `CP_RB_WPTR`, último `4263`, fence `0x9D5`, 111 462 pacotes, 611 swaps); 18 threads estacionadas no fim; passos: principal 59 925 040, 0x4 68 316 874, 0x3 1 065 356, demais < 11 mil. Com `XENON_STARTUP_NOTIFICATIONS=1`: GPU para no frame 27 (investigação pendente, HANDOFF Atualização 16).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

@@ -10,6 +10,13 @@
 //! keep the equivalent settings in `VideoConfig`, defaulting to 1280x720 progressive 16:9 NTSC-M at 60 Hz.
 
 use super::guest_mem::GuestMem;
+
+/// Guest addresses of the xboxkrnl video variables, as Xenia's RegisterVideoExports places them
+/// (xboxkrnl_video.cc): (ordinal, address).
+pub const VD_GLOBAL_DEVICE: (u16, u32) = (0x01BE, 0x801E_6FC4);
+pub const VD_GLOBAL_XAM_DEVICE: (u16, u32) = (0x01BF, 0x801E_6FC8);
+pub const VD_GPU_CLOCK_IN_MHZ: (u16, u32) = (0x01C0, 0x801D_0E94);
+pub const VD_HSIO_CALIBRATION_LOCK: (u16, u32) = (0x01C1, 0x801D_1210);
 use super::strings::{ArgSource, StackArgs};
 
 /// X_AV_VIDEO_STANDARD

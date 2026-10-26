@@ -85,6 +85,9 @@ pub struct DiagConfig {
     pub mmio_write_log: bool,
     /// XENON_LIST_IMPORTS: print the dash's imported functions (library, ordinal, export name) at boot.
     pub list_imports: bool,
+    /// XENON_STARTUP_NOTIFICATIONS: deliver Xenia's startup notifications to the first notification listeners
+    /// (kernel/notify.rs). Off by default: with them the 17559 dash calls into a null UI object (docs/HANDOFF.md).
+    pub startup_notifications: bool,
 }
 
 fn flag(name: &str) -> bool {
@@ -143,6 +146,7 @@ impl DiagConfig {
             draw_log: flag("XENON_DRAW_LOG"),
             mmio_write_log: flag("XENON_MMIO_WRITE_LOG"),
             list_imports: flag("XENON_LIST_IMPORTS"),
+            startup_notifications: flag("XENON_STARTUP_NOTIFICATIONS"),
         }
     }
 }

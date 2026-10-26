@@ -5,12 +5,16 @@ use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
-    pub(super) fn xam_ui(&mut self, ordinal: u16, args: &[u64], _bus: &mut MemoryBus) -> Option<u64> {
+    pub(super) fn xam_ui(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
             // 0x01CC: XamSetDashContext(value) -> 0 (Xenia xam_info.cc: stores it and broadcasts
-            // kXNotificationSystemDashContextChanged when it changes; notifications are not delivered here yet)
+            // kXNotificationSystemDashContextChanged when it changes)
             0x01CC => {
-                self.dash_context = args.first().copied().unwrap_or(0) as u32;
+                let value = args.first().copied().unwrap_or(0) as u32;
+                if value != self.dash_context {
+                    self.dash_context = value;
+                    self.notifications.broadcast(bus, crate::kernel::notify::SYSTEM_DASH_CONTEXT_CHANGED, 0);
+                }
                 0
             }
 
