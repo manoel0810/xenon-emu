@@ -45,6 +45,46 @@ impl KernelDispatcher {
             // 0x006B: KeLockL2 | 0x006C: KeUnlockL2
             0x006B | 0x006C => 0,
 
+            // 0x0075: KeInitializeTimerEx(timer, type, process_type) (xeKeInitializeTimerEx): type 0 notification,
+            // 1 synchronization; not set, not signaled
+            0x0075 => {
+                let timer = args.first().copied().unwrap_or(0);
+                if timer != 0 {
+                    let kind = objects::TIMER_NOTIFICATION_OBJECT + (args.get(1).copied().unwrap_or(0) & 1) as u8;
+                    let _ = bus.write_u8(timer, kind);
+                    let _ = bus.write_u8(timer + 2, args.get(2).copied().unwrap_or(0) as u8); // process_type
+                    let _ = bus.write_u8(timer + objects::HEADER_INSERTED, 0);
+                    let _ = bus.write_u32(timer + 4, 0);
+                    let _ = bus.write_u32(timer + 8, (timer + 8) as u32); // empty wait list
+                    let _ = bus.write_u32(timer + 12, (timer + 8) as u32);
+                    let _ = bus.write_u64(timer + objects::KTIMER_DUE_TIME, 0);
+                    let _ = bus.write_u32(timer + objects::KTIMER_PERIOD, 0);
+                    self.timers.cancel(timer as u32);
+                }
+                0
+            }
+
+            // 0x00A6: KeSetTimer(timer, due_time, dpc) | 0x00A7: KeSetTimerEx(timer, due_time, period_ms, dpc)
+            // -> TRUE if the timer was already set (NT semantics; Xenia does not implement these). The due time is a
+            // LARGE_INTEGER passed by value (negative = relative); the DPC runs when the timer expires.
+            0x00A6 | 0x00A7 => {
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                let (period_ms, dpc) = if ordinal == 0x00A6 { (0, arg(2)) } else { (arg(2), arg(3)) };
+                self.set_timer(bus, arg(0), arg(1) as i64, period_ms as u32, dpc as u32)
+            }
+
+            // 0x0054: KeCancelTimer(timer) -> TRUE if it was set
+            0x0054 => {
+                let timer = args.first().copied().unwrap_or(0);
+                if timer == 0 {
+                    return Some(0);
+                }
+                let was_set = bus.read_u8(timer + objects::HEADER_INSERTED).unwrap_or(0) != 0;
+                let _ = bus.write_u8(timer + objects::HEADER_INSERTED, 0);
+                self.timers.cancel(timer as u32);
+                was_set as u64
+            }
+
             // 0x0070: KeInitializeEvent(event, event_type, initial_state): a KEVENT the guest owns; operated on in place
             0x0070 => {
                 let p_event = args.first().copied().unwrap_or(0);

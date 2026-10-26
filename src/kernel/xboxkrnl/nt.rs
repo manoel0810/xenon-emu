@@ -197,9 +197,14 @@ impl KernelDispatcher {
                 }
             }
 
-            // 0x00D3: NtCreateIoCompletion(out_handle, desired_access, obj_attributes, concurrent_threads)
+            // 0x00D3: NtCreateIoCompletion(out_handle, desired_access, obj_attributes, concurrent_threads): a port whose
+            // wait handle is a counting header (one count per queued notification)
             0x00D3 => {
-                let h = self.new_handle(ObjectKind::IoCompletion);
+                let port = self.create_native(bus, objects::KSEMAPHORE_SIZE);
+                objects::init_header(bus, port, objects::SEMAPHORE_OBJECT, objects::KSEMAPHORE_SIZE, 0);
+                let _ = bus.write_u32(port + objects::KSEMAPHORE_LIMIT, i32::MAX as u32);
+                let h = self.objects.create(KernelObject { kind: ObjectKind::IoCompletion, guest_ptr: port as u32 });
+                objects::stash_handle(bus, port, h);
                 if arg(0) != 0 {
                     let _ = bus.write_u32(arg(0), h);
                 }
@@ -412,8 +417,19 @@ impl KernelDispatcher {
                 status
             }
 
-            // 0x00F4: NtRemoveIoCompletion
-            0x00F4 => 0x0000_0102, // STATUS_TIMEOUT
+            // 0x00F4: NtRemoveIoCompletion(handle, key_ptr, apc_ptr, io_status_block, timeout_ptr): waits for the
+            // next notification of the port (XIOCompletion::WaitForNotification). The timeout is the usual kernel
+            // interval; Xenia truncates it to 32 bits, which turns relative timeouts into very long ones.
+            0x00F4 => {
+                let port = match self.handle_object(arg(0), ObjectKind::IoCompletion) {
+                    Ok(p) => p as u32,
+                    Err(status) => return Some(status),
+                };
+                let deadline = self.wait_deadline(bus, arg(4));
+                let mut wait = scheduler::WaitRequest::objects(self.current_kthread, vec![port], false, deadline);
+                wait.on_wake = scheduler::WakeAction::RemoveIoCompletion { port, key_ptr: arg(1) as u32, apc_ptr: arg(2) as u32, iosb_ptr: arg(3) as u32 };
+                self.begin_wait(bus, wait)
+            }
 
             // 0x00F6: NtSetEvent(handle, previous_state_ptr) (xeNtSetEvent)
             0x00F6 => match self.handle_object(arg(0), ObjectKind::Event) {
@@ -449,8 +465,47 @@ impl KernelDispatcher {
                 }
             }
 
-            // 0x00F8: NtSetIoCompletion
-            0x00F8 => 0,
+            // 0x00F8: NtSetIoCompletion(handle, key_context, apc_context, completion_status, num_bytes): queues a
+            // notification on the port (XIOCompletion::QueueNotification)
+            0x00F8 => match self.handle_object(arg(0), ObjectKind::IoCompletion) {
+                Ok(port) => {
+                    let n = crate::kernel::timers::IoNotification { key_context: arg(1) as u32, apc_context: arg(2) as u32, status: arg(3) as u32, num_bytes: arg(4) as u32 };
+                    self.io_completions.entry(port as u32).or_default().push_back(n);
+                    objects::release_semaphore(bus, port, 1);
+                    0
+                }
+                Err(status) => status,
+            },
+
+            // 0x00FA: NtSetTimerEx(handle, due_time_ptr, apc_routine, mode, apc_arg, resume, period_ms, unk): sets the
+            // timer; the APC routine is not delivered (user APCs are not emulated yet)
+            0x00FA => match self.handle_object(arg(0), ObjectKind::Timer) {
+                Ok(timer) => {
+                    let due = bus.read_u64(arg(1)).unwrap_or(0) as i64;
+                    if arg(2) != 0 {
+                        println!("    -> NtSetTimerEx: APC routine 0x{:08X} not delivered (APCs not emulated)", arg(2));
+                    }
+                    self.set_timer(bus, timer, due, arg(6) as u32, 0);
+                    0
+                }
+                Err(status) => status,
+            },
+
+            // 0x00CD: NtCancelTimer(handle, current_state_ptr): Xenia writes 0 as the current state
+            0x00CD => {
+                let status = match self.handle_object(arg(0), ObjectKind::Timer) {
+                    Ok(timer) => {
+                        let _ = bus.write_u8(timer + objects::HEADER_INSERTED, 0);
+                        self.timers.cancel(timer as u32);
+                        0
+                    }
+                    Err(status) => status,
+                };
+                if arg(1) != 0 {
+                    let _ = bus.write_u32(arg(1), 0);
+                }
+                status
+            }
 
             // 0x00FB: NtSignalAndWaitForSingleObjectEx(signal_handle, wait_handle, wait_mode, alertable, timeout_ptr)
             // (XObject::SignalAndWait): signals an event / semaphore (1) / mutant, then waits on the other object

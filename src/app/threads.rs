@@ -131,6 +131,25 @@ pub fn restart_thread(cpu: &mut Cpu, entry: u64, init: Option<&(u64, u64, u64, u
     }
 }
 
+/// A DPC queued by an expiring kernel timer: routine(dpc, context, system time low, high) on a short-lived guest
+/// thread, at DISPATCH_LEVEL with dpc_active set in its KPCR (as a DPC runs on the real kernel).
+pub fn timer_dpc_thread(bus: &mut MemoryBus, call: DpcCall, stack: u64, kpcr_slot: u64, name: String) -> GuestThread {
+    let routine = call.routine as u64;
+    let _ = bus.write_u32(stack - 8, 0x80001000);
+    let _ = bus.write_u32(stack + 0x100 - 8, 0x80001000);
+    let mut cpu = Cpu::new(routine);
+    cpu.regs.gpr[1] = stack;
+    cpu.regs.gpr[3] = call.dpc as u64;
+    cpu.regs.gpr[4] = call.context as u64;
+    cpu.regs.gpr[5] = call.arg1 as u64;
+    cpu.regs.gpr[6] = call.arg2 as u64;
+    let kpcr = setup_kpcr(bus, kpcr_slot, stack, stack - 0x20000);
+    dpc::begin_impersonation(bus, kpcr);
+    cpu.regs.gpr[13] = kpcr;
+    cpu.regs.lr = 0x80001000;
+    GuestThread { handle: 0, wait: None, name, cpu, entry_pc: routine, active: true, total_steps: 0, continuous: false }
+}
+
 /// Graphics interrupt callback (VdSetGraphicsInterruptCallback), invoked like Xenia's
 /// KernelState::EmulateCPInterruptDPC: callback(source, context) with `cpu` as the active CPU (KPCR+0x10C).
 /// source 0 = vblank (Xenia MarkVblank uses cpu 2), 1 = CP interrupt from a PM4 INTERRUPT packet.

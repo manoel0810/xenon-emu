@@ -53,8 +53,13 @@ pub const KTHREAD_SIZE: u32 = 0xAB0;
 /// X_KMUTANT: header, list entry, owner (X_KTHREAD) at +0x18, abandoned at +0x1C.
 pub const KMUTANT_SIZE: u32 = 0x20;
 pub const KMUTANT_OWNER: u64 = 0x18;
-/// X_KTIMER: header, due time, list entry, dpc, period.
+/// X_KTIMER: header, due time (+0x10), list entry, dpc (+0x20), period in ms (+0x24).
 pub const KTIMER_SIZE: u32 = 0x28;
+pub const KTIMER_DUE_TIME: u64 = 0x10;
+pub const KTIMER_DPC: u64 = 0x20;
+pub const KTIMER_PERIOD: u64 = 0x24;
+/// X_DISPATCH_HEADER.inserted: the timer is in the timer list (set and not yet expired).
+pub const HEADER_INSERTED: u64 = 0x03;
 /// X_RTL_CRITICAL_SECTION: a synchronization-event header, then lock_count, recursion_count, owning_thread.
 pub const CS_LOCK_COUNT: u64 = 0x10;
 pub const CS_RECURSION_COUNT: u64 = 0x14;

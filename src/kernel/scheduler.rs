@@ -48,6 +48,9 @@ pub enum WakeAction {
     None,
     /// RtlEnterCriticalSection: take ownership of the section at this address.
     EnterCriticalSection(u32),
+    /// NtRemoveIoCompletion: take the next notification of the port (completed by the kernel,
+    /// `KernelDispatcher::complete_wait`) and write it through these pointers.
+    RemoveIoCompletion { port: u32, key_ptr: u32, apc_ptr: u32, iosb_ptr: u32 },
 }
 
 /// A parked thread's wait.

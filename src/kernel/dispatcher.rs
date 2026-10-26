@@ -40,6 +40,10 @@ pub struct KernelDispatcher {
     pub pending_wait: Option<super::scheduler::WaitRequest>,
     /// X_KTHREAD of the calling thread (its KPCR's current thread), for ownership: mutants, critical sections.
     pub current_kthread: u32,
+    /// Set kernel timers by KTIMER address (kernel/timers.rs).
+    pub timers: super::timers::TimerQueue,
+    /// Queued notifications of I/O completion ports, by the port's guest header.
+    pub io_completions: HashMap<u32, std::collections::VecDeque<super::timers::IoNotification>>,
     /// XAM notification listeners by handle (kernel/notify.rs).
     pub notifications: super::notify::Notifications,
     /// Thread handles by thread id (ObLookupThreadByThreadId).
@@ -97,6 +101,8 @@ impl KernelDispatcher {
             current_kthread: 0,
             thread_by_id: HashMap::new(),
             notifications: Default::default(),
+            timers: Default::default(),
+            io_completions: HashMap::new(),
             tls_slots: HashMap::new(),
             next_tls_index: 1,
             valloc_bump: 0x4000_0000,
@@ -191,12 +197,33 @@ impl KernelDispatcher {
     pub fn begin_wait(&mut self, bus: &mut MemoryBus, wait: super::scheduler::WaitRequest) -> u64 {
         let now = bus.timebase.now();
         match super::scheduler::evaluate(bus, &wait, now) {
-            super::scheduler::WaitOutcome::Done(status) => status,
+            super::scheduler::WaitOutcome::Done(status) => self.complete_wait(bus, &wait, status),
             super::scheduler::WaitOutcome::Pending => {
                 self.pending_wait = Some(wait);
                 0
             }
         }
+    }
+
+    /// Kernel-side part of a completed wait (after the scheduler acquired its objects); returns the final status.
+    pub fn complete_wait(&mut self, bus: &mut MemoryBus, wait: &super::scheduler::WaitRequest, status: u64) -> u64 {
+        if let super::scheduler::WakeAction::RemoveIoCompletion { port, key_ptr, apc_ptr, iosb_ptr } = wait.on_wake {
+            if status == super::scheduler::STATUS_WAIT_0 {
+                let n = self.io_completions.get_mut(&port).and_then(|q| q.pop_front()).unwrap_or_default();
+                if key_ptr != 0 {
+                    let _ = bus.write_u32(key_ptr as u64, n.key_context);
+                }
+                if apc_ptr != 0 {
+                    let _ = bus.write_u32(apc_ptr as u64, n.apc_context);
+                }
+                if iosb_ptr != 0 {
+                    let _ = bus.write_u32(iosb_ptr as u64, n.status);
+                    let _ = bus.write_u32(iosb_ptr as u64 + 4, n.num_bytes);
+                }
+                return 0;
+            }
+        }
+        status
     }
 
     /// Deadline of a wait's timeout pointer: none = wait forever, 0 = only poll, otherwise a kernel interval.

@@ -201,6 +201,10 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: GPU igual à 3.2 (613 linhas de `CP_RB_WPTR`, último `4263`, fence `0x9D5`, 111 462 pacotes, 611 swaps); 18 threads estacionadas no fim; passos: principal 59 925 040, 0x4 68 316 874, 0x3 1 065 356, demais < 11 mil. Com `XENON_STARTUP_NOTIFICATIONS=1`: GPU para no frame 27 (investigação pendente, HANDOFF Atualização 16).
 
+## Depois de timers e IO completion (Fase 3.4)
+
+3000 frames: GPU igual à 3.3 (fence `0x9D5`, 111 462 pacotes, 611 swaps); passos: principal 59 923 770, 0x3 1 065 320, 0x4 887 (antes 68 316 874), demais < 11 mil; 19 threads estacionadas.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

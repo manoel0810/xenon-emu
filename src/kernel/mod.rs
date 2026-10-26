@@ -8,6 +8,7 @@ pub mod input;
 pub mod modules;
 pub mod notify;
 pub mod strings;
+pub mod timers;
 pub mod video;
 pub mod xconfig;
 mod util;

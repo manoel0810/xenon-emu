@@ -8,7 +8,7 @@ use xenon_emu::gpu::display::resolve_path;
 use xenon_emu::gpu::{GpuDisplay, RingBuffer, XenosGpu};
 
 use super::boot::Boot;
-use super::threads::{begin_dpc_call, bind_kthread, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
+use super::threads::{begin_dpc_call, bind_kthread, timer_dpc_thread, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, restart_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
 
 pub fn run(
     boot: Boot,
@@ -116,6 +116,13 @@ pub fn run(
         kernel.update_gamepad(gp_state);
 
         // 3. Interleave continuous guest execution of genuine dashboard threads
+        // kernel timers due now: signaled (their waiters wake below); each DPC runs on a short-lived guest thread
+        for call in kernel.fire_timers(&mut bus) {
+            let slot = 48 + (next_callback_slot % 16);
+            next_callback_slot += 1;
+            guest_threads.push(timer_dpc_thread(&mut bus, call, callback_stack_top(slot - 48), slot, format!("Timer DPC #{} 0x{:08X}", frame, call.routine)));
+        }
+
         // threads parked in a kernel wait run no instructions, so they do not count toward the frame's time slices
         let runnable_threads = guest_threads.iter().filter(|t| t.active && t.wait.is_none()).count().max(1) as u64;
         bus.timebase.begin_frame(frame, runnable_threads * 25000);
@@ -134,8 +141,8 @@ pub fn run(
                 match xenon_emu::kernel::scheduler::evaluate(&mut bus, wait, now) {
                     xenon_emu::kernel::scheduler::WaitOutcome::Pending => continue,
                     xenon_emu::kernel::scheduler::WaitOutcome::Done(status) => {
-                        thread.cpu.regs.gpr[3] = status;
-                        thread.wait = None;
+                        let wait = thread.wait.take().unwrap();
+                        thread.cpu.regs.gpr[3] = kernel.complete_wait(&mut bus, &wait, status);
                     }
                 }
             }
