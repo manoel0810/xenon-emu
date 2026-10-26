@@ -1,6 +1,14 @@
-use crate::gpu::draw_log::DrawLog;
+use crate::gpu::draw_log::{DrawInitiator, DrawLog};
+use crate::gpu::edram::{resolve_edram_to_guest, EdramBuffer, EDRAM_HEIGHT, EDRAM_WIDTH, RB_MODECONTROL};
 use crate::gpu::pm4::*;
+use crate::gpu::primitive::{assemble_primitives, screen_depth, screen_position, Vertex};
+use crate::gpu::rasterizer::rasterize_triangle;
 use crate::gpu::ring_buffer::RingBuffer;
+use crate::gpu::shader_env::GpuShaderEnv;
+use crate::gpu::shader_exec::draw_indices;
+use crate::gpu::shader_interp::{run, ShaderState};
+use crate::gpu::texture::{tiled_offset_2d, GpuTextureSampler};
+use crate::gpu::ucode::ShaderType;
 use crate::memory::MemoryBus;
 use std::collections::HashMap;
 
@@ -28,6 +36,8 @@ pub struct IbFrame {
 pub struct XenosGpu {
     /// EDRAM resolve target shown by the display (stays empty until draws are rasterized, Phase 4)
     pub color_buffer: Vec<u32>,
+    /// EDRAM on-chip buffer (color + depth) for rasterization (Phase 4.5)
+    pub edram: EdramBuffer,
     /// Execution counters
     pub packets_executed: u64,
     /// Real Xenos opcodes (as emitted by the Direct3D driver in the dash) seen so far, by opcode value
@@ -71,6 +81,7 @@ impl XenosGpu {
     pub fn new() -> Self {
         Self {
             color_buffer: vec![0u32; XENOS_WIDTH * XENOS_HEIGHT],
+            edram: EdramBuffer::new(),
             packets_executed: 0,
             real_opcode_counts: HashMap::new(),
             gpu_counter: 0,
@@ -225,6 +236,59 @@ impl XenosGpu {
             0 => self.vertex_shader = code,
             1 => self.pixel_shader = code,
             _ => {}
+        }
+    }
+
+    /// Rasterizes primitives for a DRAW packet into EDRAM (Phase 4.5).
+    pub fn draw(&mut self, bus: &mut MemoryBus, opcode: u8, data: &[u32]) {
+        let dma = opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_BIN;
+        let initiator = data.get(if dma { 1 } else { 0 }).copied().unwrap_or(0);
+        let di = DrawInitiator::decode(initiator);
+        if di.num_indices == 0 {
+            return;
+        }
+
+        let indices = match draw_indices(bus, opcode, data, di.num_indices) {
+            Ok(idx) => idx,
+            Err(_) => return,
+        };
+        if indices.is_empty() {
+            return;
+        }
+
+        {
+            let mut sampler = GpuTextureSampler::new(bus);
+            let mut vertices = Vec::with_capacity(indices.len());
+            for &index in &indices {
+                let mut state = ShaderState::default();
+                state.r[0][0] = index as f32;
+                let mut env = GpuShaderEnv { bus, sampler: &mut sampler };
+                if !self.vertex_shader.is_empty() {
+                    let _ = run(&self.vertex_shader, ShaderType::Vertex, &mut state, &mut env);
+                }
+                let pos = state.exports.position.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                let screen = screen_position(bus, &pos);
+                let z = screen_depth(bus, &pos);
+                let inv_w = if pos[3].abs() > 1e-6 { 1.0 / pos[3] } else { 1.0 };
+                vertices.push(Vertex {
+                    position: pos,
+                    screen,
+                    z,
+                    inv_w,
+                    interpolators: state.exports.interpolators,
+                });
+            }
+
+            let triangles = assemble_primitives(di.prim_type, &vertices);
+            for tri in &triangles {
+                rasterize_triangle(&mut self.edram, tri, bus, &self.pixel_shader, &mut sampler);
+            }
+        }
+
+        // If draw specifies copy / resolve mode (RB_MODECONTROL == 6), resolve EDRAM to guest memory
+        if (bus.gpu_regs.get(RB_MODECONTROL) & 7) == 6 {
+            resolve_edram_to_guest(&self.edram, bus);
+            self.color_buffer.copy_from_slice(&self.edram.color);
         }
     }
 
@@ -395,11 +459,23 @@ impl XenosGpu {
                         if data.first() == Some(&crate::kernel::video::SWAP_SIGNATURE) && data.len() >= 4 {
                             self.last_swap = Some((data[1], data[2], data[3]));
                             self.swaps += 1;
+                            // Present EDRAM rendered frame to color_buffer and guest frontbuffer memory
+                            self.color_buffer.copy_from_slice(&self.edram.color);
+                            let fb_addr = (data[1] & 0x1FFF_FFFF) as u64;
+                            if fb_addr != 0 {
+                                let width_aligned = (EDRAM_WIDTH as u32 + 31) & !31;
+                                for y in 0..EDRAM_HEIGHT {
+                                    for x in 0..EDRAM_WIDTH {
+                                        let pixel = self.edram.color[y * EDRAM_WIDTH + x];
+                                        let tiled_off = (tiled_offset_2d(x as u32, y as u32, width_aligned, 2) as u64) * 4;
+                                        let _ = bus.write_u32(fb_addr + tiled_off, pixel);
+                                    }
+                                }
+                            }
                         }
                         self.gpu_counter = self.gpu_counter.wrapping_add(1);
                     }
                     PM4_DRAW_INDX | PM4_DRAW_INDX_2 | PM4_DRAW_INDX_BIN | PM4_DRAW_INDX_2_BIN => {
-                        // Counted; Xenos microcode shaders are not rasterised yet (Phase 4).
                         self.real_draws += 1;
                         if let Some(log) = self.draw_log.as_mut() {
                             log.log(bus, *opcode, *predicated, data, &self.vertex_shader, &self.pixel_shader);
@@ -407,6 +483,7 @@ impl XenosGpu {
                         if let Some(exec) = self.shader_exec.as_mut() {
                             exec.draw(bus, *opcode, data, &self.vertex_shader, &self.pixel_shader);
                         }
+                        self.draw(bus, *opcode, data);
                     }
                     PM4_IM_LOAD_IMMEDIATE => {
                         // [shader type (0 vertex, 1 pixel), start << 16 | size in dwords, microcode...]
@@ -799,5 +876,33 @@ mod cp_tests {
         // initiator bit 31 writes the counter instead of the value
         gpu.execute_packet(&mut bus, &t3(0x58, &[0x8000_0003, 0x1010_2002, 0xDEAD])).unwrap();
         assert_eq!((bus.read_u32(FENCE).unwrap(), gpu.gpu_counter), (3, 3));
+    }
+
+    #[test]
+    fn draw_rasterizes_and_swap_transfers_to_guest_memory() {
+        let mut gpu = XenosGpu::new();
+        let mut bus = MemoryBus::new();
+        const FB_ADDR: u64 = 0x1040_0000;
+
+        let v0 = Vertex { screen: (0.0, 0.0), z: 0.1, inv_w: 1.0, interpolators: [Some([0.0, 1.0, 0.0, 1.0]); 16], ..Default::default() };
+        let v1 = Vertex { screen: (20.0, 0.0), z: 0.1, inv_w: 1.0, interpolators: [Some([0.0, 1.0, 0.0, 1.0]); 16], ..Default::default() };
+        let v2 = Vertex { screen: (0.0, 20.0), z: 0.1, inv_w: 1.0, interpolators: [Some([0.0, 1.0, 0.0, 1.0]); 16], ..Default::default() };
+        let tri = crate::gpu::primitive::Triangle { v: [v0, v1, v2] };
+        let mut sampler = GpuTextureSampler::new(&bus);
+        rasterize_triangle(&mut gpu.edram, &tri, &bus, &[], &mut sampler);
+        drop(sampler);
+
+        assert_eq!(gpu.edram.color[5 * EDRAM_WIDTH + 5], 0xFF00_FF00); // Green
+
+        // Issue XE_SWAP with target framebuffer address
+        gpu.execute_packet(&mut bus, &t3(PM4_XE_SWAP, &[0x5357_4150, FB_ADDR as u32, 1280, 720])).unwrap();
+
+        // Color buffer received EDRAM pixel
+        assert_eq!(gpu.color_buffer[5 * EDRAM_WIDTH + 5], 0xFF00_FF00);
+
+        // Guest physical memory received pixel at tiled offset
+        let width_aligned = (EDRAM_WIDTH as u32 + 31) & !31;
+        let tiled_off = (tiled_offset_2d(5, 5, width_aligned, 2) as u64) * 4;
+        assert_eq!(bus.read_u32(FB_ADDR + tiled_off).unwrap(), 0xFF00_FF00);
     }
 }

@@ -1,7 +1,9 @@
 pub mod display;
 pub mod draw_log;
+pub mod edram;
 pub mod font;
 pub mod pm4;
+pub mod primitive;
 pub mod register_file;
 pub mod rasterizer;
 pub mod ring_buffer;
