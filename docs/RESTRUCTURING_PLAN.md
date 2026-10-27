@@ -317,9 +317,11 @@ Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/num�
   - Normalização de caminhos NT (`\\Device\\Harddisk0\\Partition1\\`, `\\Device\\Cdrom0\\`, `\\Device\\Flash\\`) e resolução de symlinks (`hdd0:`, `game:`, `dvd:`, `systemroot:`, `d:`, `update:`).
   - Montagem de contêineres STFS (`src/loader/stfs.rs`) como dispositivos montáveis transparentes no VFS.
   - Integrado `pub vfs: super::vfs::VirtualFileSystem` em `KernelDispatcher`, conectando `find_vfs_file` e `register_vfs_file`.
-- [ ] **5.3: Integração dos Serviços de Rede e Tempo do Host no XAM/Xboxkrnl**
-  - Rotear `XNetGetEthernetLinkStatus`, `XNetStartup`, `WSAStartup`, `XHttp*` e sockets para `dispatcher.host.net()`.
-  - Conectar `KeQuerySystemTime` e `KeQueryPerformanceCounter` a `dispatcher.host.time()`.
+- [x] **5.3: Integração dos Serviços de Rede e Tempo do Host no XAM/Xboxkrnl**
+  - Roteado `NetDll_XNetGetEthernetLinkStatus` (0x004B) para `self.host.net().link_status()` e implementados `NetDll_socket` (0x0003), `NetDll_closesocket` (0x0004), `NetDll_XNetGetTitleXnAddr` (0x0036).
+  - Conectados `KeQueryPerformanceFrequency` (0x0083) e `KeQuerySystemTime` (0x0084) a `self.host.time()`.
+  - Implementados em `src/kernel/xam/misc.rs`: `GetTickCount` (0x0415), `QueryPerformanceCounter` (0x042F) e `QueryPerformanceFrequency` (0x0430) utilizando a base temporal do host.
+  - Testes unitários de rede e tempo adicionados e validados (146 testes passando).
 - [ ] **5.4: Gestão de Perfis de Usuário, Entrada e Resolução de Stubs de XAM**
   - Rotear `XamUserGetSigninState`, `XamUserGetName`, `XamUserGetSigninInfo` para `dispatcher.host.profile()`.
   - Rotear `XInputGetState` para `dispatcher.host.input()`.

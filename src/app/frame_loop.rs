@@ -363,16 +363,19 @@ pub fn run(
         }
 
         // 6. Direct Presentation: Boot Animation -> Direct ATI Xenos GPU Framebuffer
-        display.present_guest_memory_framebuffer(&bus, frontbuffer, &xenos_gpu.color_buffer);
-        display.update()?;
+        let needs_present = display.window.is_some() || frame == 70 || frame == 180 || frame == 290;
+        if needs_present {
+            display.present_guest_memory_framebuffer(&bus, frontbuffer, &xenos_gpu.color_buffer);
+            display.update()?;
 
-        if frame == 70 {
-            let _ = display.save_bmp(resolve_path("bootanim_ribbons.bmp"));
-        } else if frame == 180 {
-            let _ = display.save_bmp(resolve_path("bootanim_sphere.bmp"));
-        } else if frame == 290 {
-            let out_name = if is_metro { resolve_path("dash_17559_framebuffer.bmp") } else { resolve_path("dash_framebuffer.bmp") };
-            let _ = display.save_bmp(&out_name);
+            if frame == 70 {
+                let _ = display.save_bmp(resolve_path("bootanim_ribbons.bmp"));
+            } else if frame == 180 {
+                let _ = display.save_bmp(resolve_path("bootanim_sphere.bmp"));
+            } else if frame == 290 {
+                let out_name = if is_metro { resolve_path("dash_17559_framebuffer.bmp") } else { resolve_path("dash_framebuffer.bmp") };
+                let _ = display.save_bmp(&out_name);
+            }
         }
 
         if frame % 180 == 0 {

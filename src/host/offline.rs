@@ -201,7 +201,7 @@ pub struct OfflineTime {
 impl Default for OfflineTime {
     fn default() -> Self {
         Self {
-            counter: AtomicU64::new(0),
+            counter: AtomicU64::new(1_000_000),
         }
     }
 }

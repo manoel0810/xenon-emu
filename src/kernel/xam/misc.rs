@@ -215,6 +215,32 @@ impl KernelDispatcher {
                 }
             }
 
+            // 0x0415: GetTickCount() -> ms count
+            0x0415 => {
+                let ticks = self.host.time().query_performance_counter();
+                (ticks / 50_000) as u64
+            }
+
+            // 0x042F: QueryPerformanceCounter (lpPerformanceCount) -> BOOL
+            0x042F => {
+                let p_counter = args.first().copied().unwrap_or(0);
+                if p_counter != 0 {
+                    let ticks = self.host.time().query_performance_counter();
+                    let _ = bus.write_u64(p_counter, ticks);
+                }
+                1 // TRUE
+            }
+
+            // 0x0430: QueryPerformanceFrequency (lpFrequency) -> BOOL
+            0x0430 => {
+                let p_freq = args.first().copied().unwrap_or(0);
+                if p_freq != 0 {
+                    let freq = self.host.time().query_performance_frequency();
+                    let _ = bus.write_u64(p_freq, freq);
+                }
+                1 // TRUE
+            }
+
             // 0x04C1: XamFitnessClearBodyProfileRecords
             0x04C1 => 0,
 
@@ -354,5 +380,17 @@ mod tests {
         assert_eq!(k.dispatch("xboxkrnl.exe", 0x0111, &[0, 0, 0, 0, 0x4100_0800], &mut bus), 0xC000_0034);
         bus.timebase.begin_frame(6, 1);
         assert_eq!(k.dispatch("xboxkrnl.exe", 0x0082, &[], &mut bus), 6 * 833_333 / 5);
+
+        // QueryPerformanceFrequency & QueryPerformanceCounter & GetTickCount
+        assert_eq!(xam(&mut k, &mut bus, 0x0430, &[0x4100_0900]), 1);
+        assert_eq!(bus.read_u64(0x4100_0900).unwrap(), 50_000_000);
+        assert_eq!(xam(&mut k, &mut bus, 0x042F, &[0x4100_0908]), 1);
+        let qpc1 = bus.read_u64(0x4100_0908).unwrap();
+        assert!(qpc1 > 0);
+        assert_eq!(xam(&mut k, &mut bus, 0x042F, &[0x4100_0910]), 1);
+        let qpc2 = bus.read_u64(0x4100_0910).unwrap();
+        assert!(qpc2 > qpc1);
+        let tc = xam(&mut k, &mut bus, 0x0415, &[]);
+        assert!(tc > 0);
     }
 }

@@ -4,9 +4,6 @@ use super::super::dispatcher::KernelDispatcher;
 use crate::kernel::{objects, scheduler};
 use crate::memory::MemoryBus;
 
-/// Guest timebase frequency (mftb ticks per second), as reported by KeQueryPerformanceFrequency.
-pub(crate) const GUEST_TICK_FREQUENCY: u64 = 50_000_000;
-
 impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xboxkrnl_ke(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
@@ -149,16 +146,20 @@ impl KernelDispatcher {
                 p_sem => objects::release_semaphore(bus, p_sem, args.get(2).copied().unwrap_or(0) as u32).1 as u64,
             },
 
-            // 0x0083: KeQueryPerformanceFrequency() -> frequency. No arguments: it returns the guest timebase
-            // frequency, 50 MHz (Xenia Canary 451f9155, xboxkrnl_threading.cc: Clock::guest_tick_frequency()).
-            0x0083 => GUEST_TICK_FREQUENCY,
+            // 0x0083: KeQueryPerformanceFrequency() -> frequency. No arguments: returns 50 MHz
+            // (Xenia Canary xboxkrnl_threading.cc: Clock::guest_tick_frequency()).
+            0x0083 => self.host.time().query_performance_frequency(),
 
             // 0x0084: KeQuerySystemTime (pCurrentTime)
             0x0084 => {
                 if let Some(&p_time) = args.first() {
                     if p_time != 0 {
-                        // guest time base (50 MHz) as 100 ns units after a fixed boot date
-                        let ft = scheduler::system_time(bus.timebase.now());
+                        let now = bus.timebase.now();
+                        let ft = if now > 0 {
+                            scheduler::system_time(now)
+                        } else {
+                            self.host.time().now_filetime()
+                        };
                         let _ = bus.write_u64(p_time, ft);
                     }
                 }

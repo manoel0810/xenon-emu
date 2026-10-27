@@ -10,6 +10,7 @@ use crate::gpu::shader_interp::{run, ShaderState};
 use crate::gpu::texture::{tiled_offset_2d, GpuTextureSampler};
 use crate::gpu::ucode::ShaderType;
 use crate::memory::MemoryBus;
+use byteorder::{BigEndian, ByteOrder};
 use std::collections::HashMap;
 
 pub const XENOS_WIDTH: usize = 1280;
@@ -461,14 +462,19 @@ impl XenosGpu {
                             self.swaps += 1;
                             // Present EDRAM rendered frame to color_buffer and guest frontbuffer memory
                             self.color_buffer.copy_from_slice(&self.edram.color);
-                            let fb_addr = (data[1] & 0x1FFF_FFFF) as u64;
+                            let fb_addr = (data[1] & 0x1FFF_FFFF) as usize;
                             if fb_addr != 0 {
                                 let width_aligned = (EDRAM_WIDTH as u32 + 31) & !31;
+                                let ram_len = bus.ram.len();
                                 for y in 0..EDRAM_HEIGHT {
+                                    let row_start = y * EDRAM_WIDTH;
                                     for x in 0..EDRAM_WIDTH {
-                                        let pixel = self.edram.color[y * EDRAM_WIDTH + x];
-                                        let tiled_off = (tiled_offset_2d(x as u32, y as u32, width_aligned, 2) as u64) * 4;
-                                        let _ = bus.write_u32(fb_addr + tiled_off, pixel);
+                                        let pixel = self.edram.color[row_start + x];
+                                        let tiled_off = (tiled_offset_2d(x as u32, y as u32, width_aligned, 2) as usize) * 4;
+                                        let dst_idx = fb_addr + tiled_off;
+                                        if dst_idx + 4 <= ram_len {
+                                            BigEndian::write_u32(&mut bus.ram[dst_idx..dst_idx + 4], pixel);
+                                        }
                                     }
                                 }
                             }
