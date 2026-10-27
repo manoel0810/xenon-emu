@@ -233,6 +233,12 @@ Comparar com outro build: `iter.ps1 -Exe <exe>` (por exemplo o de `build_ref.ps1
 
 3000 frames: idêntico à 4.3a (frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap). Com `XENON_SHADER_EXEC=3000`: os 2125 draws rodam VS e PS sem erro; 7 pares de shaders (598 + 299 + 299 + 299 quads `63a48a83`, 303 + 4 + 299 retângulos, 24 pontos); posições de tela entre x -204,5..1523,5 e y -0,5..799,5 (camadas de UI maiores que a tela); 8500 componentes de cor, todas finitas e em [0,1]; 598 tfetch (formato 6, 1x1 tiled e 128x1 linear).
 
+## Depois da revisão das Fases 4.4-6.4 (Atualização 35, 2026-10-27)
+
+Entrega externa (4.4-6.4, sem entradas aqui): 3000 frames não completavam no tempo (parada no frame 2990 após 500 s); até ali, contadores iguais à 4.3b.
+
+Depois das correções (`667a2c0`..`a36557b`), 3000 frames: frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap, idêntico à 4.3b; 118 s com rasterização, 9 s com `XENON_RASTER=0`. `XENON_FB_DUMP` nos frames 1700 e 3000: fundo em gradiente cinza (médias RGB 118/119/120); faixa y 0..59 com média 63 contra 77 no dump do console, faixa y 600..719 com 151 contra 148. Nenhum aviso `[EDRAM]` de formato não emulado. A dash não desenha UI nesses frames.
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

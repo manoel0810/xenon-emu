@@ -15,6 +15,8 @@ Esta pasta dedicada contém os scripts para compilar e executar o emulador em **
 
 ---
 
+> **Atenção:** `run_real.bat`/`run_real.ps1` ligam por padrão o host real (`XENON_HOST=real`: sistema de arquivos e relógio do PC) e a **rede real** (`XENON_NET_ONLINE=1`: sockets TCP/UDP e DNS do PC acessíveis ao guest). O padrão do emulador sem esses scripts continua offline. O `run_real.ps1` também encerra à força qualquer processo `*xenon*` em execução.
+
 ## Ambiente Configurado no Teste Real
 
 Ao executar `run_real.bat` ou `run_real.ps1`, as seguintes configurações de hardware/host são ativadas:

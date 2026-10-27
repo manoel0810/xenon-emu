@@ -295,15 +295,17 @@ Objetivo: os draws da dash produzem pixels.
 
 - ~~Decoder de microcódigo (CF, ALU, fetch) portado a partir de `ucode.h`.~~ **Feito (4.2):** `gpu/ucode.rs` + disassembler `gpu/ucode_disasm.rs` (texto do Xenia); os 9 shaders distintos da dash em 3000 frames decodificam sem problemas.
 - ~~Primeiro, interpretador em CPU (correção antes de velocidade); depois tradução para SPIR-V/wgpu se necessário.~~ **Feito (4.3):** `gpu/shader_interp.rs` (4.3a) e ambiente real `gpu/shader_env.rs` + `XENON_SHADER_EXEC` (4.3b); texturas por sampler de stub até a 4.4.
-- ~~**Etapa 4.4 (Texturas: formatos e untile):**~~ **Feito (4.4):** `gpu/texture.rs` (`tiled_offset_2d` do Xenia Canary, cobrindo 2D tiled 1x1 e linear 128x1), `TextureFetchConstant` com clamps/swizzles/filtros/sinais, `GpuTextureSampler` com leitura da memória guest física, filtragem point/bilinear e desempacotamento de texels do formato 6 (`k_8_8_8_8`), 4 testes unitários e regressão limpa.
-- ~~**Etapa 4.5 (Montagem de primitivas, EDRAM e rasterização):**~~ **Feito (4.5):**
-  - **4.5a Montagem de primitivas e setup (`gpu/primitive.rs`):** decodificação de índices (auto e DMA via `draw_indices`), montagem de primitivas (`RECTLIST` de 3 vértices decomposto em 2 triângulos via espelhamento diagonal $v_3 = v_1 + v_2 - v_0$, `triangle_list`, `triangle_strip` com winding alternado, `triangle_fan`, `quad_list`, `point_list`), transformação de viewport (`PA_CL_VTE_CNTL`, `PA_CL_VPORT_*`) para screen-space $(sx, sy)$ e profundidade $z \in [0.0, 1.0]$.
-  - **4.5b Rasterizador de triângulos em CPU (`gpu/rasterizer.rs`):** scanning por edge functions (Pineda) com bounding box recortado por scissor, interpolação perspectivo-correta dos interpoladores ($o_0..o_{15}$) e $z$, execução do pixel shader ativo por pixel via `GpuShaderEnv` com `GpuTextureSampler`, e descarte de fragmentos por `kill`.
-  - **4.5c Render Backend (`gpu/edram.rs`):** buffer de EDRAM 1280×720 (cor ARGB8 + profundidade float), teste e escrita de depth via `RB_DEPTHCONTROL` (NEVER, LESS, EQUAL, LEQUAL, GREATER, NOTEQUAL, GEQUAL, ALWAYS), alpha blending e combinação via `RB_BLENDCONTROL0` (fatores ZERO, ONE, SRC_COLOR/ALPHA, ONE_MINUS, DST, CONSTANT; opcodes ADD, SUB, MIN, MAX, REVSUB) e máscara de canais `RB_COLOR_MASK`.
-  - **4.5d Resolve, Swap (`XE_SWAP`) e Apresentação (`gpu/xenos.rs`):** `draw` executa shaders e rasteriza primitivas na EDRAM, resolve para guest RAM (`RB_COPY_*`), `PM4_XE_SWAP` transfere a EDRAM para `color_buffer` e grava no frontbuffer guest ativo em formato tiled (via `tiled_offset_2d`); testes unitários cobrindo todo o pipeline e regressão de 400 frames limpa.
+- ~~**Etapa 4.4 (Texturas: formatos e untile):**~~ **Feito (4.4, corrigido na Atualização 35):** `gpu/texture.rs` (`tiled_offset_2d` do Xenia), `GpuTextureSampler` lendo a memória guest com endian, clamps, point/bilinear e formatos `k_8_8_8_8`, `k_8`, `k_16_16`. O decodificador do fetch constant da entrega original lia `num_format`, swizzle, `exp_adjust`, filtros e cor de borda nos bits errados e tratava o pitch linear como bytes (o fundo da dash saía magenta); corrigido pelo `xe_gpu_texture_fetch_t`, com `TextureSign` e `num_format`. Pendente: degamma `kGamma`, demais formatos.
+- ~~**Etapa 4.5 (Montagem de primitivas, EDRAM e rasterização):**~~ **Feito (4.5, refeito na Atualização 35):**
+  - **Montagem e recorte (`gpu/primitive.rs`):** listas, strips, fans, quads e `RECTLIST` (o vértice oposto à aresta mais longa é espelhado, como o geometry shader do Xenia); posição pelo epílogo do Xenia (`VTX_W0_FMT`, `VTX_XY_FMT`, `VTX_Z_FMT`), centro de pixel D3D9, profundidade -W..W salvo `dx_clip_space_def`, recorte near/far e W > 0 salvo `clip_disable`. Point lists não são desenhadas.
+  - **Rasterizador (`gpu/rasterizer.rs`):** regra top-left do D3D, z linear em tela, interpoladores com perspectiva (`persp_corr_dis`), PS, kill, alpha test, depth/stencil e cor; triângulos grandes em faixas de linhas paralelas com resultado idêntico ao serial.
+  - **EDRAM (`gpu/edram.rs`):** 2048 tiles de 80x16 amostras de 32 bits; alvos por base/pitch em tiles e MSAA (`RB_SURFACE_INFO`, `RB_COLOR_INFO`, `RB_DEPTH_INFO`), aliasing como no console, metades de 40 amostras trocadas nos tiles de profundidade, D24S8, stencil, blend e máscaras pelos campos do `registers.h`. Desvios: cobertura avaliada uma vez por pixel e escrita em todas as amostras; só `k_8_8_8_8` e D24S8.
+  - **Resolve e swap:** o draw com `RB_MODECONTROL = kCopy` é um resolve pelo `GetResolveInfo` (retângulo do vertex fetch 0, alinhamento, média de amostras, destino `k_8_8_8_8` tiled com troca R/B e endian, clears do `RB_COPY_CONTROL`); o `XE_SWAP` só registra o frontbuffer, como o `IssueSwap` (a entrega original copiava a EDRAM para a memória guest no swap).
 - Remover o caminho de dump como padrão; manter `XENON_FB_SOURCE=reference` apenas como comparação.
 
 Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/numérica com `xbox360_real_framebuffer.raw`.
+
+Situação do aceite (Atualização 35): **parcial**. Os draws da dash geram o fundo (gradiente cinza) no frontbuffer pelo resolve do próprio guest; nas faixas só de fundo a média difere do dump do console em ~3 (baixo) e ~13 níveis (alto, vinheta animada). A dash não desenha UI (cartões, texto) em 3000 frames (só os 7 pares de shaders do fundo), então a comparação com a UI do dump ainda não é possível; o untile do dump de referência com `tiled_offset_2d` mostra artefatos de linha, a investigar.
 
 ### Fase 5: `xe-host` e HLE restante (M4)
 
@@ -318,7 +320,7 @@ Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/num�
   - Montagem de contêineres STFS (`src/loader/stfs.rs`) como dispositivos montáveis transparentes no VFS.
   - Integrado `pub vfs: super::vfs::VirtualFileSystem` em `KernelDispatcher`, conectando `find_vfs_file` e `register_vfs_file`.
 - [x] **5.3: Integração dos Serviços de Rede e Tempo do Host no XAM/Xboxkrnl**
-  - Roteado `NetDll_XNetGetEthernetLinkStatus` (0x004B) para `self.host.net().link_status()` e implementados `NetDll_socket` (0x0003), `NetDll_closesocket` (0x0004), `NetDll_XNetGetTitleXnAddr` (0x0036).
+  - Roteado `NetDll_XNetGetEthernetLinkStatus` (0x004B) para `self.host.net().link_status()` e implementados `NetDll_socket` (0x0003), `NetDll_closesocket` (0x0004). (Corrigido na Atualização 35: 0x0036 é `NetDll_XNetCreateKey`; `NetDll_XNetGetTitleXnAddr` é 0x0049, ambos pelo `xam_net.cc`.)
   - Conectados `KeQueryPerformanceFrequency` (0x0083) e `KeQuerySystemTime` (0x0084) a `self.host.time()`.
   - Implementados em `src/kernel/xam/misc.rs`: `GetTickCount` (0x0415), `QueryPerformanceCounter` (0x042F) e `QueryPerformanceFrequency` (0x0430) utilizando a base temporal do host.
   - Testes unitários de rede e tempo adicionados e validados (146 testes passando).
@@ -328,14 +330,16 @@ Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/num�
   - Adicionados stubs de XAM para localização e typeface: `XamGetLanguageLocaleFallbackString` (0x058A) e `XamGetLanguageTypefacePatch` (0x058D).
   - Testes unitários adicionados para `XamInputGetState` e `XamInputSetState` (148 testes passando).
 
-Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem loops. Fase 5 concluída.
+Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem loops.
+
+Situação do aceite (Atualização 35): **pendente**. As etapas 5.1-5.4 entregaram a infraestrutura (traits, VFS, serviços), mas não há evidência de navegação: a dash não desenha telas além do fundo em 3000 frames e nenhuma tela foi percorrida com input.
 
 ### Fase 6: Áudio, input, rede real (M5)
 
 - [x] **6.1: Subsistema de Áudio Host e Processamento PCM / XAudio**
   - Implementado ring buffer de áudio PCM em `HostAudio` (`src/host/traits.rs`, `src/host/offline.rs`, `src/host/real.rs`) com suporte a drenagem (`drain_pcm`) e armazenamento temporário de amostras para sinks de áudio.
-  - Implementados exports de áudio em `src/kernel/xboxkrnl/misc.rs`: `XAudioGetSpeakerConfig` (0x01FF, 5.1/Stereo), `XAudioRegisterRenderDriverClient` (0x01F3), `XAudioSubmitRenderDriverFrame` (0x01F5, submissão direta de buffers PCM ao host), `XAudioRenderDriverInitialize` (0x01F2), `XAudioUnregisterRenderDriverClient` (0x01F4), `XAudioRenderDriverLock` (0x01F6), `XAudioSetSpeakerConfig` (0x0200) e `XAudioOverrideSpeakerConfig` (0x0276).
-  - Implementados stubs e gestão de contexto XMA (`XMACreateContext` 0x0224, `XMAReleaseContext` 0x0226, e buffers `XMASetInputBuffer*` 0x022E..0x0238).
+  - Exports XAudio em `src/kernel/xboxkrnl/misc.rs`, refeitos na Atualização 35 pelo `xboxkrnl_audio.cc`: registro de cliente (handle `0x41550000 | índice`), frame de 6 canais x 256 floats big-endian (`apu/audio_driver.h`) entregue ao host como PCM 16 bits intercalado, `XAudioGetSpeakerConfig` com as audio flags da XConfig. Não há worker que chame os callbacks dos clientes, nem saída de áudio no host (o PCM fica num buffer), e a dash não chama XAudio em 3000 frames.
+  - XMA: só stubs (`XMACreateContext` devolve um endereço fixo); sem decodificador.
   - Adicionados testes unitários específicos para `XAudioGetSpeakerConfig` e submissão/drenagem de frames PCM (150 testes passando).
 - [x] **6.2: Entrada Interativa (Teclado Host + Gamepad XInput)**
   - Adicionado suporte a injeção e mesclagem de gamepad virtual via `set_virtual_pad` na trait `HostInput` (`src/host/traits.rs`), `OfflineInput` (`src/host/offline.rs`) e `RealInput` (`src/host/real.rs`).
@@ -356,9 +360,11 @@ Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem
   - Adicionado controle de seleção de host via `XENON_HOST=real` ou `XENON_HOST_REAL=1` em `DiagConfig` (`src/diag/mod.rs`), integrado a `default_host()` (`src/host/mod.rs`).
   - Adicionados métodos de injeção e inspeção de host em `KernelDispatcher` (`set_host`, `host`, `host_mut` em `src/kernel/dispatcher.rs`).
   - Adicionado teste de integração e switching de host (`test_host_switching_and_dispatcher_integration`, 156 testes passando no total).
-  - Validada a baseline com teste de regressão de 3000 frames (timeout 120s estrito) sem traps nem regressões.
+  - A entrega original registrou "regressão de 3000 frames com timeout de 120 s", mas essas execuções pararam por volta do frame 2040; a regressão completa só voltou a caber no tempo com a Atualização 35 (118 s).
 
-Aceite: dashboard reproduz áudio, responde a comandos de controle (teclado e gamepad físico) e suporta rede real opt-in sem regressões. FASE 6 CONCLUÍDA.
+Aceite: dashboard reproduz áudio, responde a comandos de controle (teclado e gamepad físico) e suporta rede real opt-in sem regressões.
+
+Situação do aceite (Atualização 35): **pendente**. Rede real opt-in e o caminho de input (teclado/XInput até `XamInputGetState`) existem; não há saída de áudio nem XMA, e a resposta da dash a input não foi verificada.
 
 ---
 
