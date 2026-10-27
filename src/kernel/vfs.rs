@@ -210,6 +210,65 @@ impl VfsDevice for MemoryDevice {
 }
 
 // -------------------------------------------------------------------------------------------------
+// HostDirectoryDevice
+// -------------------------------------------------------------------------------------------------
+
+/// A host directory exposed read-only, with case-insensitive names (the console's FAT/flash file systems are
+/// case-insensitive: the dash asks for `XenonJKLatin.xtt`, the flash holds `xenonjklatin.xtt`).
+pub struct HostDirectoryDevice {
+    name: String,
+    root: std::path::PathBuf,
+}
+
+impl HostDirectoryDevice {
+    pub fn new(name: &str, root: impl Into<std::path::PathBuf>) -> Self {
+        Self { name: name.to_string(), root: root.into() }
+    }
+
+    /// The host path of `relative_path`, matching each component case-insensitively.
+    fn host_path(&self, relative_path: &str) -> Option<std::path::PathBuf> {
+        let mut path = self.root.clone();
+        for part in relative_path.split(['\\', '/']).filter(|p| !p.is_empty()) {
+            let entry = std::fs::read_dir(&path).ok()?.flatten().find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(part))?;
+            path = entry.path();
+        }
+        Some(path)
+    }
+}
+
+impl VfsDevice for HostDirectoryDevice {
+    fn device_name(&self) -> &str {
+        &self.name
+    }
+
+    fn open(&mut self, relative_path: &str, mode: OpenMode) -> Result<Box<dyn VfsFile>, VfsError> {
+        if mode != OpenMode::Read {
+            return Err(VfsError::PermissionDenied);
+        }
+        Ok(Box::new(MemoryFile::new(self.read_file(relative_path)?)))
+    }
+
+    fn read_file(&self, relative_path: &str) -> Result<Vec<u8>, VfsError> {
+        let path = self.host_path(relative_path).filter(|p| p.is_file()).ok_or(VfsError::NotFound)?;
+        std::fs::read(path).map_err(|e| VfsError::Other(e.to_string()))
+    }
+
+    fn write_file(&mut self, _relative_path: &str, _data: &[u8]) -> Result<(), VfsError> {
+        Err(VfsError::PermissionDenied)
+    }
+
+    fn exists(&self, relative_path: &str) -> bool {
+        self.host_path(relative_path).is_some()
+    }
+
+    fn list_dir(&self, relative_path: &str) -> Result<Vec<String>, VfsError> {
+        let path = self.host_path(relative_path).filter(|p| p.is_dir()).ok_or(VfsError::NotFound)?;
+        let entries = std::fs::read_dir(path).map_err(|e| VfsError::Other(e.to_string()))?;
+        Ok(entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
 // StfsDevice
 // -------------------------------------------------------------------------------------------------
 
@@ -288,6 +347,9 @@ impl Default for VirtualFileSystem {
         vfs.add_symlink("cdrom0:", "\\device\\cdrom0");
         vfs.add_symlink("game:", "\\device\\harddisk0\\partition1\\game");
         vfs.add_symlink("systemroot:", "\\device\\flash");
+        // the console's media: drive is the flash (xbdm drivelist/dirlist list the same files)
+        vfs.add_symlink("media:", "\\device\\flash");
+        vfs.add_symlink("flash:", "\\device\\flash");
         vfs.add_symlink("devkit:", "\\device\\harddisk0\\partition1");
         vfs.add_symlink("d:", "\\device\\cdrom0");
 
@@ -454,6 +516,28 @@ impl VirtualFileSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_directory_is_read_only_and_case_insensitive() {
+        let root = std::env::temp_dir().join(format!("xenon_vfs_test_{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Sub")).unwrap();
+        std::fs::write(root.join("xenonjklatin.xtt"), b"font").unwrap();
+        std::fs::write(root.join("Sub").join("shrdres.xzp"), b"XUIZ").unwrap();
+        let mut vfs = VirtualFileSystem::new();
+        vfs.mount("\\device\\flash", Box::new(HostDirectoryDevice::new("flash", &root)));
+        assert_eq!(vfs.read_file("media:\\XenonJKLatin.xtt").as_deref(), Some(&b"font"[..]));
+        assert_eq!(vfs.read_file("\\Device\\Flash\\sub\\SHRDRES.xzp").as_deref(), Some(&b"XUIZ"[..]));
+        assert!(vfs.exists("flash:\\sub"));
+        let (dev, rel) = vfs.resolve_device("media:\\xenonjklatin.xtt").unwrap();
+        let mut file = dev.open(&rel, OpenMode::Read).unwrap();
+        let mut buf = [0u8; 2];
+        file.seek(SeekFrom::Start(2)).unwrap();
+        assert_eq!((file.read(&mut buf).unwrap(), &buf), (2, b"nt"));
+        assert_eq!(dev.write_file(&rel, b"x"), Err(VfsError::PermissionDenied));
+        assert!(dev.open(&rel, OpenMode::ReadWrite).is_err());
+        assert_eq!(dev.read_file("missing.xtt"), Err(VfsError::NotFound));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn test_vfs_path_normalization_and_symlinks() {

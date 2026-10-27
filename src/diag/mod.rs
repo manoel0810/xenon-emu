@@ -99,6 +99,9 @@ pub struct DiagConfig {
     pub fb_dump: Option<String>,
     /// XENON_RASTER=0: skip rasterizing draws (resolves still copy the EDRAM); on by default.
     pub raster: bool,
+    /// XENON_FLASH_DIR=<dir>: host directory mounted read-only as the flash (\Device\Flash, media:, flash:);
+    /// default `console_flash` (next to dash.xex, outside the repository). Ignored when it does not exist.
+    pub flash_dir: Option<String>,
 }
 
 /// A boolean variable: unset -> `default`; "0", "false", "off" or "no" (any case) -> false; any other value -> true.
@@ -175,6 +178,7 @@ impl DiagConfig {
             shader_exec: parse("XENON_SHADER_EXEC"),
             fb_dump: string("XENON_FB_DUMP"),
             raster: flag_or("XENON_RASTER", true),
+            flash_dir: Some(string("XENON_FLASH_DIR").unwrap_or_else(|| "console_flash".to_string())),
         }
     }
 }

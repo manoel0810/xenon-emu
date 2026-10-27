@@ -144,7 +144,14 @@ impl KernelDispatcher {
             vfs_handles: HashMap::new(),
             host: crate::host::default_host(),
             audio_clients: [None; 8],
-            vfs: super::vfs::VirtualFileSystem::new(),
+            vfs: {
+                let mut vfs = super::vfs::VirtualFileSystem::new();
+                // XENON_FLASH_DIR: the console's flash files (fonts, xam.xex resources as .xzp) as \Device\Flash
+                if let Some(dir) = crate::diag::config().flash_dir.as_ref().filter(|d| std::path::Path::new(d).is_dir()) {
+                    vfs.mount("\\device\\flash", Box::new(super::vfs::HostDirectoryDevice::new("flash", dir)));
+                }
+                vfs
+            },
         }
     }
 
