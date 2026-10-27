@@ -307,10 +307,21 @@ Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/num�
 
 ### Fase 5: `xe-host` e HLE restante (M4)
 
-- Implementar traits e backends offline/real conforme seção 6.
-- VFS: `hdd0:`, `game:`, content, STFS.
-- `vpkd3d128` e `vupkd3d128` tipos 2 e 6.
-- Resolver o restante dos stubs de XAM com semântica real.
+- [x] **5.1: Módulo `xe-host` e Traits Abstratas (`src/host/`)**
+  - Definidas interfaces abstratas `HostNet`, `HostStorage`, `HostFile`, `HostTime`, `HostInput`, `HostAudio`, `HostProfile` e a master trait `Host` em `src/host/traits.rs`.
+  - Backend padrão determinístico e isolado `HostOffline` em `src/host/offline.rs` (rede desconectada, armazenamento em memória mock, tempo determinístico virtual, controle neutro, áudio no-op, perfil padrão "Xbox Player").
+  - Backend real acoplado ao SO `HostReal` em `src/host/real.rs` (`std::fs`, alta resolução de tempo com `SystemTime` e `Instant`, XInput no Windows).
+  - Conectado `pub host: Box<dyn crate::host::Host>` no `KernelDispatcher` com `default_host()`.
+- [ ] **5.2: VFS Unificado (`hdd0:`, `game:`, `dvd:`, content e STFS)**
+  - Unificar `src/kernel/vfs.rs` com os dispositivos `\\Device\\Harddisk0\\Partition1` (`hdd0:`), `game:`, `dvd:`, integrando com `HostStorage`.
+  - Conectar contêineres STFS (`src/loader/stfs.rs`) como provedores de arquivos montáveis.
+- [ ] **5.3: Integração dos Serviços de Rede e Tempo do Host no XAM/Xboxkrnl**
+  - Rotear `XNetGetEthernetLinkStatus`, `XNetStartup`, `WSAStartup`, `XHttp*` e sockets para `dispatcher.host.net()`.
+  - Conectar `KeQuerySystemTime` e `KeQueryPerformanceCounter` a `dispatcher.host.time()`.
+- [ ] **5.4: Gestão de Perfis de Usuário, Entrada e Resolução de Stubs de XAM**
+  - Rotear `XamUserGetSigninState`, `XamUserGetName`, `XamUserGetSigninInfo` para `dispatcher.host.profile()`.
+  - Rotear `XInputGetState` para `dispatcher.host.input()`.
+  - Resolver stubs pendentes de XAM para navegação de telas sem dependências pendentes.
 
 Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem loops.
 

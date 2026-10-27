@@ -93,6 +93,7 @@ pub struct KernelDispatcher {
     /// Video mode reported by VdQueryVideoMode.
     pub video: super::video::VideoConfig,
     pub vfs_handles: HashMap<u32, VfsFileHandle>,
+    pub host: Box<dyn crate::host::Host>,
 }
 
 impl KernelDispatcher {
@@ -138,6 +139,7 @@ impl KernelDispatcher {
             title_terminated: false,
             video: super::video::VideoConfig::default(),
             vfs_handles: HashMap::new(),
+            host: crate::host::default_host(),
         }
     }
 
