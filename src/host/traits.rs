@@ -150,6 +150,11 @@ pub trait HostInput: Send + Sync {
 
     /// Sets vibration motors for a slot.
     fn set_vibration(&mut self, slot: u32, left_motor: u16, right_motor: u16);
+
+    /// Injects or updates the virtual gamepad state (e.g. from host keyboard or window input) for a given slot (0..3).
+    fn set_virtual_pad(&mut self, slot: u32, pad: PadState) {
+        let _ = (slot, pad);
+    }
 }
 
 // -------------------------------------------------------------------------------------------------

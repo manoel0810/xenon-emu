@@ -83,6 +83,57 @@ mod tests {
         assert_eq!(host.time().query_performance_frequency(), 50_000_000);
 
         // Polling pad shouldn't panic even without controller
-        let _pad = host.input().poll_pad(0);
+        let pad = host.input().poll_pad(0);
+        assert!(pad.connected); // Slot 0 has virtual keyboard gamepad connected by default
+    }
+
+    #[test]
+    fn test_host_offline_virtual_pad_injection() {
+        let mut host = HostOffline::new();
+        let pad = host.input().poll_pad(0);
+        assert!(pad.connected);
+        assert_eq!(pad.w_buttons, 0);
+
+        // Inject virtual keyboard input (e.g. A button + thumb stick)
+        let virtual_pad = PadState {
+            w_buttons: 0x1000, // XINPUT_GAMEPAD_A
+            b_left_trigger: 128,
+            b_right_trigger: 0,
+            s_thumb_lx: 24000,
+            s_thumb_ly: -12000,
+            s_thumb_rx: 0,
+            s_thumb_ry: 0,
+            connected: true,
+        };
+        host.input().set_virtual_pad(0, virtual_pad);
+
+        let polled = host.input().poll_pad(0);
+        assert!(polled.connected);
+        assert_eq!(polled.w_buttons, 0x1000);
+        assert_eq!(polled.b_left_trigger, 128);
+        assert_eq!(polled.s_thumb_lx, 24000);
+        assert_eq!(polled.s_thumb_ly, -12000);
+    }
+
+    #[test]
+    fn test_host_real_virtual_pad_merging() {
+        let mut host = HostReal::new();
+        let pad_state = PadState {
+            w_buttons: 0x2000 | 0x0010, // B + START
+            b_left_trigger: 255,
+            b_right_trigger: 255,
+            s_thumb_lx: -15000,
+            s_thumb_ly: 15000,
+            s_thumb_rx: 0,
+            s_thumb_ry: 0,
+            connected: true,
+        };
+        host.input().set_virtual_pad(0, pad_state);
+
+        let polled = host.input().poll_pad(0);
+        assert!(polled.connected);
+        assert_eq!(polled.w_buttons & (0x2000 | 0x0010), 0x2000 | 0x0010);
+        assert_eq!(polled.b_left_trigger, 255);
+        assert_eq!(polled.b_right_trigger, 255);
     }
 }

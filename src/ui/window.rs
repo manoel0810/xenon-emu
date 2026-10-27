@@ -32,9 +32,10 @@ pub fn open(is_metro: bool, xus_table: &Option<XusTable>, loaded_scenes: &[XurSc
     println!("    - [B]: Alternar Buffer de Vídeo (VRAM Guest Ao Vivo vs Dump Calibrado de Hardware)");
     println!("    - [C]: Alternar Formato de Canais de Cor (ARGB / BGRA / RGBA / Raw)");
     println!("    - [X] ou [1..4]: Alternar Cenas XUI (BladeSkin, gamesSignedOut)");
-    println!("    - Setas / A,D ou D-Pad / Thumbstick: Alternar Blades");
-    println!("    - Setas / W,S ou D-Pad: Navegar nos itens do menu");
-    println!("    - Pressione ESC ou clique no [X] para fechar a janela");
+    println!("    - Setas / WASD ou D-Pad / Thumbstick: Navegar nos menus e paineis");
+    println!("    - ESPACO / ENTER: Botao (A) | ESC / BACKSPACE: Botao (B)");
+    println!("    - F1 / Home: Start | F2 / Tab / \\: Back | Q/E: Bumpers LB/RB | Z/V: Gatilhos LT/RT");
+    println!("    - Pressione Shift+ESC ou clique no [X] para fechar a janela");
     println!("    ========================================================\n");
 
     Ok(display)

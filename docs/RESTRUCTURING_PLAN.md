@@ -337,9 +337,13 @@ Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem
   - Implementados exports de áudio em `src/kernel/xboxkrnl/misc.rs`: `XAudioGetSpeakerConfig` (0x01FF, 5.1/Stereo), `XAudioRegisterRenderDriverClient` (0x01F3), `XAudioSubmitRenderDriverFrame` (0x01F5, submissão direta de buffers PCM ao host), `XAudioRenderDriverInitialize` (0x01F2), `XAudioUnregisterRenderDriverClient` (0x01F4), `XAudioRenderDriverLock` (0x01F6), `XAudioSetSpeakerConfig` (0x0200) e `XAudioOverrideSpeakerConfig` (0x0276).
   - Implementados stubs e gestão de contexto XMA (`XMACreateContext` 0x0224, `XMAReleaseContext` 0x0226, e buffers `XMASetInputBuffer*` 0x022E..0x0238).
   - Adicionados testes unitários específicos para `XAudioGetSpeakerConfig` e submissão/drenagem de frames PCM (150 testes passando).
-- [ ] **6.2: Entrada Interativa (Teclado Host + Gamepad XInput)**
-  - Mapear eventos de teclado da janela (`src/ui/window.rs`, `winit`) para o gamepad virtual no frame loop (`src/app/frame_loop.rs`): WASD/Setas (D-pad/analógico), Enter/Espaço (A), Esc/Backspace (B), X/Y, Start/Back.
-  - Alternância transparente entre XInput físico (se conectado no Windows) e teclado virtual no `HostReal` / `HostOffline`.
+- [x] **6.2: Entrada Interativa (Teclado Host + Gamepad XInput)**
+  - Adicionado suporte a injeção e mesclagem de gamepad virtual via `set_virtual_pad` na trait `HostInput` (`src/host/traits.rs`), `OfflineInput` (`src/host/offline.rs`) e `RealInput` (`src/host/real.rs`).
+  - Implementada mesclagem transparente entre controle físico XInput e gamepad virtual no `RealInput`: se um controle USB estiver conectado, inputs físicos e teclado virtual são combinados sem sobreposição; se não houver controle físico conectado, o teclado virtual no slot 0 atua com estado ativo `connected: true`.
+  - Mapeado teclado completo em `src/gpu/display.rs` para o gamepad virtual: WASD / Setas (D-pad e analógico), Espaço / Enter (A), Esc / Backspace (B), X / Y, Bumpers (Q / E), Gatilhos LT / RT (Z / V), Start (F1 / Home), Back (F2 / Tab / Delete), e L3 / R3 (Shift Esquerdo / Direito).
+  - Atualizado `KernelDispatcher::update_gamepad` e `update_pad_state` (`src/kernel/dispatcher.rs`) para propagar entradas em tempo real ao subsistema de input do host e ao `XamInputGetState`.
+  - Atualizado banner interativo em `src/ui/window.rs` e suporte a fechar janela via `Shift+ESC` ou `[X]`.
+  - Adicionados 3 novos testes unitários (153 testes passando no total).
 - [ ] **6.3: Backend de Rede Real Opt-in (`HostReal::net`)**
   - Implementar `HostNet` real com sockets TCP/UDP e resolução DNS padrão via `std::net`.
   - Sincronização de status de link com a interface ativa do host (detecção de IP local e conectividade real de forma segura e opt-in).

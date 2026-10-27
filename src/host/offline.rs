@@ -256,6 +256,12 @@ impl HostInput for OfflineInput {
     }
 
     fn set_vibration(&mut self, _slot: u32, _left_motor: u16, _right_motor: u16) {}
+
+    fn set_virtual_pad(&mut self, slot: u32, pad: PadState) {
+        if let Some(p) = self.pads.get_mut(slot as usize) {
+            *p = pad;
+        }
+    }
 }
 
 // -------------------------------------------------------------------------------------------------

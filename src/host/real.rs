@@ -274,6 +274,7 @@ unsafe extern "system" {
 pub struct RealInput {
     get_state_fn: Option<XInputGetStateFn>,
     set_state_fn: Option<XInputSetStateFn>,
+    virtual_pads: [PadState; 4],
 }
 
 impl Default for RealInput {
@@ -284,6 +285,9 @@ impl Default for RealInput {
 
 impl RealInput {
     pub fn new() -> Self {
+        let mut virtual_pads = [PadState::default(); 4];
+        virtual_pads[0].connected = true; // Virtual gamepad 0 connected by default (keyboard mapping)
+
         #[cfg(windows)]
         {
             let mut get_state_fn = None;
@@ -312,6 +316,7 @@ impl RealInput {
             Self {
                 get_state_fn,
                 set_state_fn,
+                virtual_pads,
             }
         }
         #[cfg(not(windows))]
@@ -319,6 +324,7 @@ impl RealInput {
             Self {
                 get_state_fn: None,
                 set_state_fn: None,
+                virtual_pads,
             }
         }
     }
@@ -326,11 +332,12 @@ impl RealInput {
 
 impl HostInput for RealInput {
     fn poll_pad(&mut self, slot: u32) -> PadState {
+        let mut physical = None;
         if let Some(func) = self.get_state_fn {
             let mut state = RawXInputState::default();
             let res = unsafe { func(slot, &mut state) };
             if res == 0 {
-                return PadState {
+                physical = Some(PadState {
                     w_buttons: state.gamepad.w_buttons,
                     b_left_trigger: state.gamepad.b_left_trigger,
                     b_right_trigger: state.gamepad.b_right_trigger,
@@ -339,12 +346,29 @@ impl HostInput for RealInput {
                     s_thumb_rx: state.gamepad.s_thumb_rx,
                     s_thumb_ry: state.gamepad.s_thumb_ry,
                     connected: true,
-                };
+                });
             }
         }
-        PadState {
-            connected: false,
-            ..Default::default()
+
+        let virt = self.virtual_pads.get(slot as usize).copied().unwrap_or_default();
+
+        match (physical, virt) {
+            (Some(phys), v) if v.connected => PadState {
+                w_buttons: phys.w_buttons | v.w_buttons,
+                b_left_trigger: phys.b_left_trigger.max(v.b_left_trigger),
+                b_right_trigger: phys.b_right_trigger.max(v.b_right_trigger),
+                s_thumb_lx: if phys.s_thumb_lx != 0 { phys.s_thumb_lx } else { v.s_thumb_lx },
+                s_thumb_ly: if phys.s_thumb_ly != 0 { phys.s_thumb_ly } else { v.s_thumb_ly },
+                s_thumb_rx: if phys.s_thumb_rx != 0 { phys.s_thumb_rx } else { v.s_thumb_rx },
+                s_thumb_ry: if phys.s_thumb_ry != 0 { phys.s_thumb_ry } else { v.s_thumb_ry },
+                connected: true,
+            },
+            (Some(phys), _) => phys,
+            (None, v) if v.connected => v,
+            (None, _) => PadState {
+                connected: false,
+                ..Default::default()
+            },
         }
     }
 
@@ -357,6 +381,12 @@ impl HostInput for RealInput {
             unsafe {
                 func(slot, &vib);
             }
+        }
+    }
+
+    fn set_virtual_pad(&mut self, slot: u32, pad: PadState) {
+        if let Some(p) = self.virtual_pads.get_mut(slot as usize) {
+            *p = pad;
         }
     }
 }

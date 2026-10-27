@@ -340,7 +340,9 @@ impl GpuDisplay {
     }
 
     pub fn is_open(&self) -> bool {
-        self.window.as_ref().map_or(true, |w| w.is_open()) && !self.key_down(Key::Escape)
+        let shift = self.key_down(Key::LeftShift) || self.key_down(Key::RightShift);
+        let should_close = self.key_down(Key::Escape) && shift;
+        self.window.as_ref().map_or(true, |w| w.is_open()) && !should_close
     }
 
     /// Handles both physical USB Xbox 360 controller and keyboard navigation
@@ -591,7 +593,7 @@ impl GpuDisplay {
         if self.key_down(Key::Space) || self.key_down(Key::Enter) {
             gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_A;
         }
-        if self.key_down(Key::Backspace) {
+        if self.key_down(Key::Backspace) || self.key_down(Key::Escape) {
             gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_B;
         }
         if self.key_down(Key::X) {
@@ -629,6 +631,24 @@ impl GpuDisplay {
         }
         if self.key_down(Key::E) {
             gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        }
+        if self.key_down(Key::Z) {
+            gp.b_left_trigger = 255;
+        }
+        if self.key_down(Key::V) {
+            gp.b_right_trigger = 255;
+        }
+        if self.key_down(Key::Home) || self.key_down(Key::F1) || self.key_down(Key::RightBracket) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_START;
+        }
+        if self.key_down(Key::Backslash) || self.key_down(Key::F2) || self.key_down(Key::Delete) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_BACK;
+        }
+        if self.key_down(Key::LeftShift) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_LEFT_THUMB;
+        }
+        if self.key_down(Key::RightShift) {
+            gp.w_buttons |= crate::kernel::input::XINPUT_GAMEPAD_RIGHT_THUMB;
         }
 
         gp

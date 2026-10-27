@@ -399,6 +399,35 @@ impl KernelDispatcher {
             self.gamepad_packet_number = self.gamepad_packet_number.wrapping_add(1);
             self.gamepad_state = gamepad;
         }
+
+        let pad = crate::host::PadState {
+            w_buttons: gamepad.w_buttons,
+            b_left_trigger: gamepad.b_left_trigger,
+            b_right_trigger: gamepad.b_right_trigger,
+            s_thumb_lx: gamepad.s_thumb_lx,
+            s_thumb_ly: gamepad.s_thumb_ly,
+            s_thumb_rx: gamepad.s_thumb_rx,
+            s_thumb_ry: gamepad.s_thumb_ry,
+            connected: true,
+        };
+        self.host.input().set_virtual_pad(0, pad);
+    }
+
+    pub fn update_pad_state(&mut self, slot: u32, pad: crate::host::PadState) {
+        if slot == 0 {
+            let gp = crate::kernel::input::XInputGamepad {
+                w_buttons: pad.w_buttons,
+                b_left_trigger: pad.b_left_trigger,
+                b_right_trigger: pad.b_right_trigger,
+                s_thumb_lx: pad.s_thumb_lx,
+                s_thumb_ly: pad.s_thumb_ly,
+                s_thumb_rx: pad.s_thumb_rx,
+                s_thumb_ry: pad.s_thumb_ry,
+            };
+            self.update_gamepad(gp);
+        } else {
+            self.host.input().set_virtual_pad(slot, pad);
+        }
     }
 
     pub fn resolve_xboxkrnl(&self, ordinal: u16) -> Option<&'static str> {

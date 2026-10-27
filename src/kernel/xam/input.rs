@@ -108,4 +108,30 @@ mod tests {
         bus.write_u16(vib_ptr + 2, 2000).unwrap();
         assert_eq!(k.dispatch("xam.xex", 0x0192, &[0, 0, vib_ptr], &mut bus), 0);
     }
+
+    #[test]
+    fn test_xam_input_live_update() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+
+        let state_ptr = 0x4000_0200;
+        let gp = crate::kernel::input::XInputGamepad {
+            w_buttons: crate::kernel::input::XINPUT_GAMEPAD_A | crate::kernel::input::XINPUT_GAMEPAD_DPAD_UP,
+            b_left_trigger: 200,
+            b_right_trigger: 100,
+            s_thumb_lx: -10000,
+            s_thumb_ly: 20000,
+            s_thumb_rx: 5000,
+            s_thumb_ry: -5000,
+        };
+        k.update_gamepad(gp);
+
+        assert_eq!(k.dispatch("xam.xex", 0x0191, &[0, 0, state_ptr], &mut bus), 0);
+        let buttons = bus.read_u16(state_ptr + 4).unwrap();
+        assert_eq!(buttons, crate::kernel::input::XINPUT_GAMEPAD_A | crate::kernel::input::XINPUT_GAMEPAD_DPAD_UP);
+        assert_eq!(bus.read_u8(state_ptr + 6).unwrap(), 200);
+        assert_eq!(bus.read_u8(state_ptr + 7).unwrap(), 100);
+        assert_eq!(bus.read_u16(state_ptr + 8).unwrap() as i16, -10000);
+        assert_eq!(bus.read_u16(state_ptr + 10).unwrap() as i16, 20000);
+    }
 }
