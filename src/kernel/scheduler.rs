@@ -3,6 +3,7 @@
 //   src/xenia/kernel/xthread.cc                 XThread::Delay (interval units and signs)
 //   src/xenia/kernel/xboxkrnl/xboxkrnl_threading.cc KeDelayExecutionThread, KeWaitFor*/NtWaitFor* statuses
 //   src/xenia/xbox.h                            X_STATUS_TIMEOUT, STATUS_WAIT_0
+//   src/xenia/kernel/xboxkrnl/xboxkrnl_threading.cc xeKeKfAcquireSpinLock (owner KPCR, spin until free)
 //
 //! Thread waits. Xenia blocks a host thread; here a guest thread that waits is parked by the frame loop with a
 //! `WaitRequest` and runs no instructions until the request is satisfied or its deadline (on the global time base,
@@ -51,6 +52,10 @@ pub enum WakeAction {
     /// NtRemoveIoCompletion: take the next notification of the port (completed by the kernel,
     /// `KernelDispatcher::complete_wait`) and write it through these pointers.
     RemoveIoCompletion { port: u32, key_ptr: u32, apc_ptr: u32, iosb_ptr: u32 },
+    /// KfAcquireSpinLock / KeAcquireSpinLockAtRaisedIrql on a lock another thread holds: the thread stays parked
+    /// until the lock word is 0, then stores its KPCR in it and returns `result` (the previous IRQL). Xenia spins on
+    /// a compare-and-swap and yields instead.
+    AcquireSpinLock { lock: u32, pcr: u32, result: u64 },
 }
 
 /// A parked thread's wait.
@@ -123,6 +128,13 @@ fn wake(mem: &mut dyn GuestMem, wait: &WaitRequest) {
 /// Checks a wait at time `now`: satisfied objects are acquired and STATUS_WAIT_0 (+ index for WaitAny) is returned;
 /// otherwise the timeout status once the deadline has passed; otherwise Pending.
 pub fn evaluate(mem: &mut dyn GuestMem, wait: &WaitRequest, now: u64) -> WaitOutcome {
+    if let WakeAction::AcquireSpinLock { lock, pcr, result } = wait.on_wake {
+        if mem.read_u32(lock as u64) == 0 {
+            mem.write_u32(lock as u64, pcr);
+            return WaitOutcome::Done(result);
+        }
+        return WaitOutcome::Pending;
+    }
     if !wait.objects.is_empty() {
         if wait.wait_all {
             if wait.objects.iter().all(|&o| signaled(mem, o, wait.thread)) {
@@ -160,6 +172,17 @@ mod tests {
         // absolute in the past: due now
         assert_eq!(deadline(7_000, (SYSTEM_TIME_AT_BOOT + 1) as i64), Some(7_000));
         assert_eq!(system_time(50_000_000), SYSTEM_TIME_AT_BOOT + 10_000_000);
+    }
+
+    #[test]
+    fn a_spin_lock_wait_takes_the_lock_once_it_is_free() {
+        let mut m = FakeMem::default();
+        m.write_u32(0x40, 0x9310_2000);
+        let w = WaitRequest { on_wake: WakeAction::AcquireSpinLock { lock: 0x40, pcr: 0x9310_4000, result: 1 }, ..WaitRequest::objects(0, Vec::new(), false, None) };
+        assert_eq!(evaluate(&mut m, &w, u64::MAX), WaitOutcome::Pending);
+        m.write_u32(0x40, 0);
+        assert_eq!(evaluate(&mut m, &w, 0), WaitOutcome::Done(1));
+        assert_eq!(m.read_u32(0x40), 0x9310_4000);
     }
 
     #[test]

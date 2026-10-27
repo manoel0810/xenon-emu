@@ -236,6 +236,7 @@ pub fn run(
                                     }
                                     kernel.current_thread = thread.handle;
                                     kernel.current_kthread = bus.read_u32(thread.cpu.regs.gpr[13] + 0x100).unwrap_or(0);
+                                    kernel.current_pcr = thread.cpu.regs.gpr[13] as u32;
                                     kernel.pending_wait = None;
                                     let ret = kernel.dispatch(lib, *ordinal, &args, &mut bus);
                                     if watchdog { diag::watchdog::leave_syscall(); }

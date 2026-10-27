@@ -40,6 +40,8 @@ pub struct KernelDispatcher {
     pub pending_wait: Option<super::scheduler::WaitRequest>,
     /// X_KTHREAD of the calling thread (its KPCR's current thread), for ownership: mutants, critical sections.
     pub current_kthread: u32,
+    /// KPCR (r13) of the calling thread: spin lock owner and current IRQL (KPCR+0x18).
+    pub current_pcr: u32,
     /// Set kernel timers by KTIMER address (kernel/timers.rs).
     pub timers: super::timers::TimerQueue,
     /// Queued notifications of I/O completion ports, by the port's guest header.
@@ -110,6 +112,7 @@ impl KernelDispatcher {
             current_thread: 0,
             pending_wait: None,
             current_kthread: 0,
+            current_pcr: 0,
             thread_by_id: HashMap::new(),
             notifications: Default::default(),
             timers: Default::default(),

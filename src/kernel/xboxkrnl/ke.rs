@@ -4,12 +4,43 @@ use super::super::dispatcher::KernelDispatcher;
 use crate::kernel::{objects, scheduler};
 use crate::memory::MemoryBus;
 
+/// X_KPCR::current_irql (Xenia xthread.h).
+const KPCR_CURRENT_IRQL: u64 = 0x18;
+/// DISPATCH_LEVEL.
+const DISPATCH_LEVEL: u64 = 2;
+
 impl KernelDispatcher {
+    /// xeKfRaiseIrql: the caller's KPCR current_irql becomes `irql`; returns the previous one.
+    fn raise_irql(&mut self, bus: &mut MemoryBus, irql: u64) -> u64 {
+        let p = self.current_pcr as u64 + KPCR_CURRENT_IRQL;
+        let old = bus.read_u8(p).unwrap_or(0) as u64;
+        let _ = bus.write_u8(p, irql as u8);
+        old
+    }
+
+    /// xeKeKfAcquireSpinLock: the lock word holds the owner's KPCR. A free lock is taken at once; a held one parks
+    /// the caller until it is free (`WakeAction::AcquireSpinLock`). Returns `result` (the previous IRQL).
+    fn acquire_spin_lock(&mut self, bus: &mut MemoryBus, lock: u64, result: u64) -> u64 {
+        let owner = bus.read_u32(lock).unwrap_or(0);
+        if owner == 0 {
+            let _ = bus.write_u32(lock, self.current_pcr);
+            return result;
+        }
+        if owner == self.current_pcr {
+            println!("    [SPINLOCK] 0x{:08X} acquired again by its owner (KPCR 0x{:08X}): the thread never resumes", lock, owner);
+        }
+        self.pending_wait = Some(scheduler::WaitRequest {
+            on_wake: scheduler::WakeAction::AcquireSpinLock { lock: lock as u32, pcr: self.current_pcr, result },
+            ..scheduler::WaitRequest::objects(self.current_kthread, Vec::new(), false, None)
+        });
+        result
+    }
+
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xboxkrnl_ke(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
-            // 0x004D: KeAcquireSpinLockAtRaisedIrql
-            0x004D => 0,
+            // 0x004D: KeAcquireSpinLockAtRaisedIrql(lock): the lock without changing the IRQL; returns 0
+            0x004D => self.acquire_spin_lock(bus, args.first().copied().unwrap_or(0), 0),
 
             // 0x0052: KeBugCheck | 0x0053: KeBugCheckEx
             0x0052 | 0x0053 => {
@@ -137,8 +168,8 @@ impl KernelDispatcher {
             // 0x0081: KeQueryBasePriorityThread
             0x0081 => 8, // Normal thread priority
 
-            // 0x0085: KeRaiseIrqlToDpcLevel
-            0x0085 => 2, // Previous IRQL (DISPATCH_LEVEL)
+            // 0x0085: KeRaiseIrqlToDpcLevel() -> previous IRQL
+            0x0085 => self.raise_irql(bus, DISPATCH_LEVEL),
 
             // 0x0088: KeReleaseSemaphore(semaphore, increment, adjustment, wait) -> previous count
             0x0088 => match args.first().copied().unwrap_or(0) {
@@ -166,8 +197,23 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x0089: KeReleaseSpinLockFromRaisedIrql
-            0x0089 => 0,
+            // 0x0089: KeReleaseSpinLockFromRaisedIrql(lock): the lock word back to 0, the IRQL unchanged
+            0x0089 => {
+                let _ = bus.write_u32(args.first().copied().unwrap_or(0), 0);
+                0
+            }
+
+            // 0x00AE: KeTryToAcquireSpinLockAtRaisedIrql(lock) -> 1 if taken, 0 if another owner holds it (one
+            // compare-and-swap, no wait)
+            0x00AE => {
+                let lock = args.first().copied().unwrap_or(0);
+                if bus.read_u32(lock).unwrap_or(0) == 0 {
+                    let _ = bus.write_u32(lock, self.current_pcr);
+                    1
+                } else {
+                    0
+                }
+            }
 
             // 0x008D: KeRemoveQueue
             0x008D => 0,
@@ -237,14 +283,27 @@ impl KernelDispatcher {
                 self.begin_wait(bus, wait)
             }
 
-            // 0x00B1: KfAcquireSpinLock | 0x00B2: KfRaiseIrql
-            0x00B1 | 0x00B2 => 0,
+            // 0x00B1: KfAcquireSpinLock(lock) -> previous IRQL: raises to DISPATCH_LEVEL, then takes the lock
+            0x00B1 => {
+                let old = self.raise_irql(bus, DISPATCH_LEVEL);
+                self.acquire_spin_lock(bus, args.first().copied().unwrap_or(0), old)
+            }
 
-            // 0x00B3: KfLowerIrql
-            0x00B3 => 0,
+            // 0x00B2: KfRaiseIrql(new_irql) -> previous IRQL
+            0x00B2 => self.raise_irql(bus, args.first().copied().unwrap_or(0) & 0xFF),
 
-            // 0x00B4: KfReleaseSpinLock
-            0x00B4 => 0,
+            // 0x00B3: KfLowerIrql(new_irql)
+            0x00B3 => {
+                self.raise_irql(bus, args.first().copied().unwrap_or(0) & 0xFF);
+                0
+            }
+
+            // 0x00B4: KfReleaseSpinLock(lock, old_irql): the lock word back to 0, then the IRQL restored
+            0x00B4 => {
+                let _ = bus.write_u32(args.first().copied().unwrap_or(0), 0);
+                self.raise_irql(bus, args.get(1).copied().unwrap_or(0) & 0xFF);
+                0
+            }
 
             // 0x0152: KeTlsAlloc
             0x0152 => {
@@ -286,8 +345,49 @@ impl KernelDispatcher {
 
 #[cfg(test)]
 mod tests {
+    use crate::kernel::scheduler::{evaluate, WaitOutcome};
     use crate::kernel::KernelDispatcher;
     use crate::memory::MemoryBus;
+
+    #[test]
+    fn spin_locks_and_irql_follow_xenia() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        let (pcr_a, pcr_b, lock) = (0x9310_0000u32, 0x9310_2000u32, 0x4000_5A94u64);
+        let call = |k: &mut KernelDispatcher, bus: &mut MemoryBus, pcr: u32, ordinal: u16, args: &[u64]| {
+            k.current_pcr = pcr;
+            k.pending_wait = None;
+            k.dispatch("xboxkrnl.exe", ordinal, args, bus)
+        };
+        // KfAcquireSpinLock: IRQL 0 -> 2 (previous returned), the lock holds the owner's KPCR
+        assert_eq!(call(&mut k, &mut bus, pcr_a, 0x00B1, &[lock]), 0);
+        assert_eq!((bus.read_u32(lock).unwrap(), bus.read_u8(pcr_a as u64 + 0x18).unwrap()), (pcr_a, 2));
+        assert!(k.pending_wait.is_none());
+        // another thread: parked; its IRQL is already raised and the previous one is its result
+        assert_eq!(call(&mut k, &mut bus, pcr_b, 0x00B1, &[lock]), 0);
+        let wait = k.pending_wait.take().expect("parked on the held lock");
+        assert_eq!(evaluate(&mut bus, &wait, u64::MAX), WaitOutcome::Pending);
+        // KeTryToAcquireSpinLockAtRaisedIrql fails while it is held
+        assert_eq!(call(&mut k, &mut bus, pcr_b, 0x00AE, &[lock]), 0);
+        // KfReleaseSpinLock(lock, 0): free, IRQL restored; the parked thread then takes it
+        assert_eq!(call(&mut k, &mut bus, pcr_a, 0x00B4, &[lock, 0]), 0);
+        assert_eq!((bus.read_u32(lock).unwrap(), bus.read_u8(pcr_a as u64 + 0x18).unwrap()), (0, 0));
+        assert_eq!(evaluate(&mut bus, &wait, 0), WaitOutcome::Done(0));
+        assert_eq!(bus.read_u32(lock).unwrap(), pcr_b);
+        // the ...AtRaisedIrql pair leaves the IRQL alone
+        call(&mut k, &mut bus, pcr_b, 0x0089, &[lock]);
+        bus.write_u8(pcr_a as u64 + 0x18, 1).unwrap();
+        assert_eq!(call(&mut k, &mut bus, pcr_a, 0x004D, &[lock]), 0);
+        assert_eq!((bus.read_u32(lock).unwrap(), bus.read_u8(pcr_a as u64 + 0x18).unwrap()), (pcr_a, 1));
+        call(&mut k, &mut bus, pcr_a, 0x0089, &[lock]);
+        assert_eq!(call(&mut k, &mut bus, pcr_b, 0x00AE, &[lock]), 1);
+        assert_eq!(bus.read_u32(lock).unwrap(), pcr_b);
+        // KfRaiseIrql / KfLowerIrql / KeRaiseIrqlToDpcLevel
+        assert_eq!(call(&mut k, &mut bus, pcr_a, 0x00B2, &[4]), 1);
+        assert_eq!(call(&mut k, &mut bus, pcr_a, 0x00B3, &[0]), 0);
+        assert_eq!(call(&mut k, &mut bus, pcr_a, 0x0085, &[]), 0);
+        assert_eq!(bus.read_u8(pcr_a as u64 + 0x18).unwrap(), 2);
+    }
 
     #[test]
     fn query_performance_frequency_returns_50mhz_and_writes_nothing() {
