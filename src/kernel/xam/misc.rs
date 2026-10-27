@@ -35,6 +35,14 @@ impl KernelDispatcher {
                 }
             }
 
+            // 0x058A: XamGetLanguageLocaleFallbackString(language, buffer_size, buffer)
+            0x058A => {
+                let p_buf = args.get(2).copied().unwrap_or(0);
+                let cch = (args.get(1).copied().unwrap_or(0) / 2) as usize;
+                Self::write_utf16_truncating(bus, p_buf, "en", cch);
+                0
+            }
+
             // 0x058C: XamGetLanguageTypeface(language, buffer_size, buffer): the typeface locator of the language
             // (Xenia xam_locale.cc)
             0x058C => {
@@ -46,6 +54,9 @@ impl KernelDispatcher {
                 Self::write_utf16_truncating(bus, args.get(2).copied().unwrap_or(0), path, path.len() + 1);
                 0
             }
+
+            // 0x058D: XamGetLanguageTypefacePatch(language, buffer_size, buffer)
+            0x058D => 0,
 
             // 0x0315: XamBuildSharedSystemResourceLocator(filename, buffer, buffer_count bytes):
             // "section://<xam hmodule>,shrdres#<filename>" (Xenia xam_info.cc keXamBuildResourceLocator)

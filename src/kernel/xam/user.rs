@@ -11,9 +11,15 @@ const X_E_INVALIDARG: u64 = 0x8007_0057;
 const X_E_NO_SUCH_USER: u64 = 0x8007_0525;
 
 impl KernelDispatcher {
-    /// The single local profile is signed in at user index 0 (`signin_state`); the other user slots are empty.
+    /// Checks if a user is signed in according to host profile.
     fn user_signed_in(&self, user_index: u32) -> bool {
-        user_index == 0 && self.signin_state != 0
+        if user_index >= 4 {
+            false
+        } else if let Some(u) = self.host.profile().get_user(user_index) {
+            u.signin_state != 0
+        } else {
+            false
+        }
     }
 
     /// Handles the ordinals of this area; `None` means "not handled here".
@@ -31,10 +37,17 @@ impl KernelDispatcher {
 
             // 0x020A: XamUserGetXUID (userIndex, flags, pXuid)
             0x020A => {
+                let user_index = args.first().copied().unwrap_or(0) as u32;
+                let xuid = if let Some(u) = self.host.profile().get_user(user_index) {
+                    u.xuid
+                } else if user_index == 0xFF {
+                    self.host.profile().signed_in_users().first().map(|u| u.xuid).unwrap_or(0x0009_0000_0000_0001)
+                } else {
+                    return Some(X_ERROR_NO_SUCH_USER);
+                };
                 if let Some(&p_xuid) = args.get(2) {
                     if p_xuid != 0 {
-                        let _ = bus.write_u32(p_xuid + 0, 0x0009_0000);
-                        let _ = bus.write_u32(p_xuid + 4, 0x0000_0001);
+                        let _ = bus.write_u64(p_xuid, xuid);
                     }
                 }
                 0
@@ -45,33 +58,59 @@ impl KernelDispatcher {
 
             // 0x020C: XamUserGetGamerTag (userIndex, pBuffer, cchBuffer)
             0x020C => {
+                let user_index = args.first().copied().unwrap_or(0) as u32;
+                let gamertag = if let Some(u) = self.host.profile().get_user(user_index) {
+                    u.gamertag
+                } else if user_index == 0xFF {
+                    self.host.profile().signed_in_users().first().map(|u| u.gamertag.clone()).unwrap_or_else(|| "Xbox Player".to_string())
+                } else {
+                    return Some(X_ERROR_NO_SUCH_USER);
+                };
                 if let (Some(&p_buf), Some(&cch)) = (args.get(1), args.get(2)) {
-                    if p_buf != 0 && cch >= 8 {
-                        let tag = b"Xbox360\0";
-                        for (i, &b) in tag.iter().enumerate() {
-                            let _ = bus.write_u8(p_buf + i as u64, b);
+                    if p_buf != 0 && cch > 0 {
+                        let bytes = gamertag.as_bytes();
+                        let len = bytes.len().min(cch as usize - 1);
+                        for i in 0..len {
+                            let _ = bus.write_u8(p_buf + i as u64, bytes[i]);
                         }
+                        let _ = bus.write_u8(p_buf + len as u64, 0);
                     }
                 }
                 0
             }
-
 
             // 0x0210: XamUserGetSigninState(user_index) -> the user's sign-in state, 0 for an empty slot or an index
             // >= 4 such as XUSER_INDEX_ANY (Xenia xam_user.cc); 1 = signed in locally
             0x0210 => {
                 let user_index = args.first().copied().unwrap_or(0) as u32;
-                if self.user_signed_in(user_index) { self.signin_state as u64 } else { 0 }
+                if user_index == 0xFF {
+                    self.host.profile().signed_in_users().first().map(|u| u.signin_state as u64).unwrap_or(0)
+                } else if let Some(u) = self.host.profile().get_user(user_index) {
+                    u.signin_state as u64
+                } else {
+                    0
+                }
             }
 
             // 0x0211: XamUserGetIndexFromXUID (xuid, pUserIndex)
             0x0211 => {
-                if let Some(&p_idx) = args.get(1) {
-                    if p_idx != 0 {
-                        let _ = bus.write_u32(p_idx, 0);
+                let xuid = args.first().copied().unwrap_or(0);
+                let mut found = None;
+                for user in self.host.profile().signed_in_users() {
+                    if user.xuid == xuid {
+                        found = Some(user.slot);
+                        break;
                     }
                 }
-                0
+                if let Some(&p_idx) = args.get(1) {
+                    if p_idx != 0 {
+                        let _ = bus.write_u32(p_idx, found.unwrap_or(0));
+                    }
+                }
+                match found {
+                    Some(_) => 0,
+                    None => X_ERROR_NO_SUCH_USER,
+                }
             }
 
             // 0x021B: XamUserGetMembershipTier
@@ -138,26 +177,49 @@ impl KernelDispatcher {
                 for off in (0..0x28u64).step_by(4) {
                     let _ = bus.write_u32(p_info + off, 0);
                 }
-                if user_index >= 4 {
+                if user_index >= 4 && user_index != 0xFF {
                     X_E_INVALIDARG
                 } else if !self.user_signed_in(user_index) {
                     X_E_NO_SUCH_USER
                 } else {
-                    let _ = bus.write_u32(p_info, 0x0009_0000); // xuid high
-                    let _ = bus.write_u32(p_info + 4, 0x0000_0001); // xuid low
-                    let _ = bus.write_u32(p_info + 12, self.signin_state); // signin_state (1 = signed in locally)
-                    0 // X_E_SUCCESS
+                    let user = if user_index == 0xFF {
+                        self.host.profile().signed_in_users().into_iter().next()
+                    } else {
+                        self.host.profile().get_user(user_index)
+                    };
+                    if let Some(user) = user {
+                        let _ = bus.write_u64(p_info, user.xuid);
+                        let _ = bus.write_u32(p_info + 12, user.signin_state);
+                        let b = user.gamertag.as_bytes();
+                        let len = b.len().min(15);
+                        for i in 0..len {
+                            let _ = bus.write_u8(p_info + 24 + i as u64, b[i]);
+                        }
+                        0 // X_E_SUCCESS
+                    } else {
+                        X_E_NO_SUCH_USER
+                    }
                 }
             }
 
             // 0x020E: XamUserGetName(user_index, buffer, buffer_len)
             0x020E => {
+                let user_index = args.first().copied().unwrap_or(0) as u32;
+                let gamertag = if let Some(u) = self.host.profile().get_user(user_index) {
+                    u.gamertag
+                } else if user_index == 0xFF {
+                    self.host.profile().signed_in_users().first().map(|u| u.gamertag.clone()).unwrap_or_else(|| "Xbox Player".to_string())
+                } else {
+                    return Some(X_ERROR_NO_SUCH_USER);
+                };
                 if let (Some(&p_buf), Some(&cch)) = (args.get(1), args.get(2)) {
-                    if p_buf != 0 && cch >= 8 {
-                        let tag = b"Xbox360\0";
-                        for (i, &b) in tag.iter().enumerate() {
-                            let _ = bus.write_u8(p_buf + i as u64, b);
+                    if p_buf != 0 && cch > 0 {
+                        let bytes = gamertag.as_bytes();
+                        let len = bytes.len().min(cch as usize - 1);
+                        for i in 0..len {
+                            let _ = bus.write_u8(p_buf + i as u64, bytes[i]);
                         }
+                        let _ = bus.write_u8(p_buf + len as u64, 0);
                     }
                 }
                 0

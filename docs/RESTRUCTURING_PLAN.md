@@ -322,12 +322,13 @@ Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/num�
   - Conectados `KeQueryPerformanceFrequency` (0x0083) e `KeQuerySystemTime` (0x0084) a `self.host.time()`.
   - Implementados em `src/kernel/xam/misc.rs`: `GetTickCount` (0x0415), `QueryPerformanceCounter` (0x042F) e `QueryPerformanceFrequency` (0x0430) utilizando a base temporal do host.
   - Testes unitários de rede e tempo adicionados e validados (146 testes passando).
-- [ ] **5.4: Gestão de Perfis de Usuário, Entrada e Resolução de Stubs de XAM**
-  - Rotear `XamUserGetSigninState`, `XamUserGetName`, `XamUserGetSigninInfo` para `dispatcher.host.profile()`.
-  - Rotear `XInputGetState` para `dispatcher.host.input()`.
-  - Resolver stubs pendentes de XAM para navegação de telas sem dependências pendentes.
+- [x] **5.4: Gestão de Perfis de Usuário, Entrada e Resolução de Stubs de XAM**
+  - Roteados `XamUserGetSigninState` (0x0210), `XamUserGetXUID` (0x020A), `XamUserGetGamerTag` (0x020C), `XamUserGetName` (0x020E), `XamUserGetIndexFromXUID` (0x0211) e `XamUserGetSigninInfo` (0x0227) para `self.host.profile()`.
+  - Roteados `XamInputGetState` (0x0191) e `XamInputSetState` (0x0192) para `self.host.input()`, com verificação de porta conectada e preenchimento de `PadState`.
+  - Adicionados stubs de XAM para localização e typeface: `XamGetLanguageLocaleFallbackString` (0x058A) e `XamGetLanguageTypefacePatch` (0x058D).
+  - Testes unitários adicionados para `XamInputGetState` e `XamInputSetState` (148 testes passando).
 
-Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem loops.
+Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem loops. Fase 5 concluída.
 
 ### Fase 6: Áudio, input, rede real (M5)
 
