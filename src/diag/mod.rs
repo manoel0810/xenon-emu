@@ -102,6 +102,9 @@ pub struct DiagConfig {
     /// XENON_FLASH_DIR=<dir>: host directory mounted read-only as the flash (\Device\Flash, media:, flash:);
     /// default `console_flash` (next to dash.xex, outside the repository). Ignored when it does not exist.
     pub flash_dir: Option<String>,
+    /// XENON_SLICE=<n>: guest instructions each runnable thread may execute per frame (default 25000). The console
+    /// runs ~53 million per hardware thread per 60 Hz frame; larger values shorten CPU-bound waits in guest time.
+    pub slice: u32,
 }
 
 /// A boolean variable: unset -> `default`; "0", "false", "off" or "no" (any case) -> false; any other value -> true.
@@ -179,6 +182,7 @@ impl DiagConfig {
             fb_dump: string("XENON_FB_DUMP"),
             raster: flag_or("XENON_RASTER", true),
             flash_dir: Some(string("XENON_FLASH_DIR").unwrap_or_else(|| "console_flash".to_string())),
+            slice: parse::<u32>("XENON_SLICE").filter(|&n| n > 0).unwrap_or(25_000),
         }
     }
 }

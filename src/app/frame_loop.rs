@@ -127,7 +127,7 @@ pub fn run(
 
         // threads parked in a kernel wait run no instructions, so they do not count toward the frame's time slices
         let runnable_threads = guest_threads.iter().filter(|t| t.active && t.wait.is_none()).count().max(1) as u64;
-        bus.timebase.begin_frame(frame, runnable_threads * 25000);
+        bus.timebase.begin_frame(frame, runnable_threads * diag.slice as u64);
         let parked_without_timeout = guest_threads.iter().filter(|t| t.active && t.wait.as_ref().is_some_and(|w| w.deadline.is_none())).count();
         if parked_without_timeout > 0 && parked_without_timeout == guest_threads.iter().filter(|t| t.active).count() && !deadlock_reported {
             println!("  [SCHED] frame {}: every thread waits without a timeout (deadlock)", frame);
@@ -159,9 +159,9 @@ pub fn run(
             }
             bus.current_thread.clear();
             bus.current_thread.push_str(&thread.name);
-            // Execute a timeslice of up to 25,000 instructions per thread per frame
+            // Execute a timeslice of up to XENON_SLICE (default 25,000) instructions per thread per frame
             let slice_start = std::time::Instant::now();
-            for step_i in 0..25000u32 {
+            for step_i in 0..diag.slice {
                 if watchdog && (step_i & 0x1FF) == 0 && slice_start.elapsed().as_secs() >= 3 {
                     eprintln!("[WATCHDOG] slice > 3s: frame {} thread '{}' step {} pc=0x{:08X} lr=0x{:08X} ctr=0x{:X} r1=0x{:X} r3=0x{:X} r4=0x{:X} r5=0x{:X}",
                         frame, thread.name, step_i, thread.cpu.regs.pc & 0xFFFF_FFFF, thread.cpu.regs.lr & 0xFFFF_FFFF, thread.cpu.regs.ctr,
