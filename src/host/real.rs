@@ -3,8 +3,10 @@
 //! Provides real filesystem access via `std::fs`, real system time via `SystemTime` and `Instant`,
 //! physical gamepad access via XInput on Windows, and real networking capabilities.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,52 +19,231 @@ use super::traits::{
 // Real Network
 // -------------------------------------------------------------------------------------------------
 
-#[derive(Debug, Default)]
-pub struct RealNet;
+#[derive(Debug)]
+enum RealSocket {
+    Tcp {
+        stream: Option<TcpStream>,
+        listener: Option<TcpListener>,
+    },
+    Udp {
+        socket: UdpSocket,
+    },
+}
 
-impl HostNet for RealNet {
-    fn link_status(&self) -> LinkStatus {
-        // Report connected to loopback/local network by default
-        LinkStatus::Connected {
-            ip: [127, 0, 0, 1],
-            gateway: [127, 0, 0, 1],
-            subnet: [255, 255, 255, 0],
-            dns: [127, 0, 0, 1],
+#[derive(Debug)]
+pub struct RealNet {
+    pub online: bool,
+    pub local_ip: [u8; 4],
+    sockets: HashMap<u32, RealSocket>,
+    next_socket_id: u32,
+}
+
+fn map_io_err(err: std::io::Error) -> HostErr {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => HostErr::NotFound,
+        std::io::ErrorKind::PermissionDenied => HostErr::PermissionDenied,
+        std::io::ErrorKind::ConnectionRefused => HostErr::ConnectionRefused,
+        std::io::ErrorKind::TimedOut => HostErr::Timeout,
+        std::io::ErrorKind::AlreadyExists => HostErr::AlreadyExists,
+        std::io::ErrorKind::InvalidInput => HostErr::InvalidInput,
+        _ => HostErr::Other(err.to_string()),
+    }
+}
+
+fn detect_local_ip() -> Option<[u8; 4]> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    match socket.local_addr().ok()? {
+        SocketAddr::V4(v4) => Some(v4.ip().octets()),
+        _ => None,
+    }
+}
+
+impl Default for RealNet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RealNet {
+    pub fn new() -> Self {
+        let online = crate::diag::config().net_online;
+        let local_ip = if online {
+            detect_local_ip().unwrap_or([127, 0, 0, 1])
+        } else {
+            [127, 0, 0, 1]
+        };
+        Self {
+            online,
+            local_ip,
+            sockets: HashMap::new(),
+            next_socket_id: 1,
         }
     }
 
-    fn socket(&mut self, _af: i32, _ty: i32, _proto: i32) -> Result<u32, HostErr> {
-        // Will be expanded in Phase 5.3
-        Err(HostErr::Other("Socket creation not yet attached to real OS socket".to_string()))
+    pub fn with_online(online: bool) -> Self {
+        let local_ip = if online {
+            detect_local_ip().unwrap_or([127, 0, 0, 1])
+        } else {
+            [127, 0, 0, 1]
+        };
+        Self {
+            online,
+            local_ip,
+            sockets: HashMap::new(),
+            next_socket_id: 1,
+        }
     }
 
-    fn connect(&mut self, _sock: u32, _addr: [u8; 4], _port: u16) -> Result<(), HostErr> {
-        Err(HostErr::ConnectionRefused)
+    pub fn set_online(&mut self, online: bool) {
+        self.online = online;
+        if online {
+            self.local_ip = detect_local_ip().unwrap_or([127, 0, 0, 1]);
+        }
     }
 
-    fn bind(&mut self, _sock: u32, _addr: [u8; 4], _port: u16) -> Result<(), HostErr> {
-        Err(HostErr::ConnectionRefused)
+    pub fn is_online(&self) -> bool {
+        self.online
     }
 
-    fn send(&mut self, _sock: u32, _buf: &[u8]) -> Result<usize, HostErr> {
-        Err(HostErr::ConnectionRefused)
+    pub fn local_ip(&self) -> [u8; 4] {
+        self.local_ip
+    }
+}
+
+impl HostNet for RealNet {
+    fn link_status(&self) -> LinkStatus {
+        if self.online {
+            LinkStatus::Connected {
+                ip: self.local_ip,
+                gateway: [self.local_ip[0], self.local_ip[1], self.local_ip[2], 1],
+                subnet: [255, 255, 255, 0],
+                dns: [8, 8, 8, 8],
+            }
+        } else {
+            LinkStatus::Disconnected
+        }
     }
 
-    fn recv(&mut self, _sock: u32, _buf: &mut [u8]) -> Result<usize, HostErr> {
-        Err(HostErr::ConnectionRefused)
+    fn socket(&mut self, af: i32, ty: i32, _proto: i32) -> Result<u32, HostErr> {
+        if !self.online {
+            return Err(HostErr::ConnectionRefused);
+        }
+        if af != 2 {
+            return Err(HostErr::InvalidInput);
+        }
+        let real_sock = match ty {
+            1 => RealSocket::Tcp {
+                stream: None,
+                listener: None,
+            },
+            2 => {
+                let udp = UdpSocket::bind("0.0.0.0:0").map_err(map_io_err)?;
+                udp.set_nonblocking(true).ok();
+                RealSocket::Udp { socket: udp }
+            }
+            _ => return Err(HostErr::InvalidInput),
+        };
+        let id = self.next_socket_id;
+        self.next_socket_id = self.next_socket_id.wrapping_add(1).max(1);
+        self.sockets.insert(id, real_sock);
+        Ok(id)
     }
 
-    fn close_socket(&mut self, _sock: u32) -> Result<(), HostErr> {
+    fn connect(&mut self, sock: u32, addr: [u8; 4], port: u16) -> Result<(), HostErr> {
+        if !self.online {
+            return Err(HostErr::ConnectionRefused);
+        }
+        let target = SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]),
+            port,
+        ));
+        let entry = self.sockets.get_mut(&sock).ok_or(HostErr::NotFound)?;
+        match entry {
+            RealSocket::Tcp { stream, .. } => {
+                let s = TcpStream::connect_timeout(&target, std::time::Duration::from_secs(4))
+                    .map_err(map_io_err)?;
+                s.set_nonblocking(true).ok();
+                *stream = Some(s);
+                Ok(())
+            }
+            RealSocket::Udp { socket } => socket.connect(target).map_err(map_io_err),
+        }
+    }
+
+    fn bind(&mut self, sock: u32, addr: [u8; 4], port: u16) -> Result<(), HostErr> {
+        if !self.online {
+            return Err(HostErr::ConnectionRefused);
+        }
+        let target = SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]),
+            port,
+        ));
+        let entry = self.sockets.get_mut(&sock).ok_or(HostErr::NotFound)?;
+        match entry {
+            RealSocket::Tcp { listener, .. } => {
+                let l = TcpListener::bind(target).map_err(map_io_err)?;
+                l.set_nonblocking(true).ok();
+                *listener = Some(l);
+                Ok(())
+            }
+            RealSocket::Udp { socket } => {
+                let new_udp = UdpSocket::bind(target).map_err(map_io_err)?;
+                new_udp.set_nonblocking(true).ok();
+                *socket = new_udp;
+                Ok(())
+            }
+        }
+    }
+
+    fn send(&mut self, sock: u32, buf: &[u8]) -> Result<usize, HostErr> {
+        if !self.online {
+            return Err(HostErr::ConnectionRefused);
+        }
+        let entry = self.sockets.get_mut(&sock).ok_or(HostErr::NotFound)?;
+        match entry {
+            RealSocket::Tcp { stream, .. } => {
+                if let Some(s) = stream {
+                    s.write(buf).map_err(map_io_err)
+                } else {
+                    Err(HostErr::Other("Socket not connected".to_string()))
+                }
+            }
+            RealSocket::Udp { socket } => socket.send(buf).map_err(map_io_err),
+        }
+    }
+
+    fn recv(&mut self, sock: u32, buf: &mut [u8]) -> Result<usize, HostErr> {
+        if !self.online {
+            return Err(HostErr::ConnectionRefused);
+        }
+        let entry = self.sockets.get_mut(&sock).ok_or(HostErr::NotFound)?;
+        match entry {
+            RealSocket::Tcp { stream, .. } => {
+                if let Some(s) = stream {
+                    s.read(buf).map_err(map_io_err)
+                } else {
+                    Err(HostErr::Other("Socket not connected".to_string()))
+                }
+            }
+            RealSocket::Udp { socket } => socket.recv(buf).map_err(map_io_err),
+        }
+    }
+
+    fn close_socket(&mut self, sock: u32) -> Result<(), HostErr> {
+        self.sockets.remove(&sock);
         Ok(())
     }
 
     fn dns_resolve(&mut self, name: &str) -> Result<Vec<[u8; 4]>, HostErr> {
-        use std::net::ToSocketAddrs;
+        if !self.online {
+            return Err(HostErr::NotFound);
+        }
         let formatted = format!("{}:80", name);
         if let Ok(iter) = formatted.to_socket_addrs() {
             let mut ips = Vec::new();
             for addr in iter {
-                if let std::net::SocketAddr::V4(v4) = addr {
+                if let SocketAddr::V4(v4) = addr {
                     ips.push(v4.ip().octets());
                 }
             }

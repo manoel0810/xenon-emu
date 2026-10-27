@@ -312,6 +312,14 @@ impl MemoryBus {
         }
         Ok(())
     }
+
+    /// Read raw bytes from memory at a given address into a buffer
+    pub fn read_bytes(&self, start_addr: u64, buf: &mut [u8]) -> Result<(), String> {
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = self.read_u8(start_addr + i as u64)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

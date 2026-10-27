@@ -19,6 +19,8 @@ pub struct DiagConfig {
     pub skip_bootanim: bool,
     /// XENON_FB_SOURCE=reference: start on the real-hardware framebuffer dump instead of guest VRAM.
     pub fb_source_reference: bool,
+    /// XENON_NET_ONLINE: opt-in real network access for HostReal (default false / offline).
+    pub net_online: bool,
 
     // ---- Threads / traps ----
     /// XENON_TRAP_TRACE: keep a ring of the last executed instructions and dump it on trap.
@@ -127,6 +129,7 @@ impl DiagConfig {
             max_frames: parse("XENON_MAX_FRAMES"),
             skip_bootanim: flag("XENON_SKIP_BOOTANIM"),
             fb_source_reference: string("XENON_FB_SOURCE").map(|v| v.eq_ignore_ascii_case("reference")).unwrap_or(false),
+            net_online: flag("XENON_NET_ONLINE"),
 
             trap_trace: flag("XENON_TRAP_TRACE"),
             trap_full: flag("XENON_TRAP_FULL"),

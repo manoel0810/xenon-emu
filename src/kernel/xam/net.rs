@@ -58,9 +58,81 @@ impl KernelDispatcher {
                 0
             }
 
+            // 0x000B: NetDll_bind (caller, s, pName, namelen)
+            0x000B => {
+                let s = args.get(1).copied().unwrap_or(0) as u32;
+                let p_name = args.get(2).copied().unwrap_or(0);
+                if p_name != 0 {
+                    let port = bus.read_u16(p_name + 2).unwrap_or(0);
+                    let mut ip = [0u8; 4];
+                    let _ = bus.read_bytes(p_name + 4, &mut ip);
+                    if self.host.net().bind(s, ip, port).is_ok() {
+                        0
+                    } else {
+                        0xFFFF_FFFF
+                    }
+                } else {
+                    0xFFFF_FFFF
+                }
+            }
+
+            // 0x000C: NetDll_connect (caller, s, pName, namelen)
+            0x000C => {
+                let s = args.get(1).copied().unwrap_or(0) as u32;
+                let p_name = args.get(2).copied().unwrap_or(0);
+                if p_name != 0 {
+                    let port = bus.read_u16(p_name + 2).unwrap_or(0);
+                    let mut ip = [0u8; 4];
+                    let _ = bus.read_bytes(p_name + 4, &mut ip);
+                    if self.host.net().connect(s, ip, port).is_ok() {
+                        0
+                    } else {
+                        0xFFFF_FFFF
+                    }
+                } else {
+                    0xFFFF_FFFF
+                }
+            }
+
+            // 0x0012: NetDll_recv (caller, s, buf, len, flags)
+            0x0012 => {
+                let s = args.get(1).copied().unwrap_or(0) as u32;
+                let p_buf = args.get(2).copied().unwrap_or(0);
+                let len = args.get(3).copied().unwrap_or(0) as usize;
+                if p_buf != 0 && len > 0 {
+                    let mut data = vec![0u8; len];
+                    match self.host.net().recv(s, &mut data) {
+                        Ok(n) => {
+                            let _ = bus.load_bytes(p_buf, &data[..n]);
+                            n as u64
+                        }
+                        Err(_) => 0xFFFF_FFFF,
+                    }
+                } else {
+                    0
+                }
+            }
+
+            // 0x0016: NetDll_send (caller, s, buf, len, flags)
+            0x0016 => {
+                let s = args.get(1).copied().unwrap_or(0) as u32;
+                let p_buf = args.get(2).copied().unwrap_or(0);
+                let len = args.get(3).copied().unwrap_or(0) as usize;
+                if p_buf != 0 && len > 0 {
+                    let mut data = vec![0u8; len];
+                    let _ = bus.read_bytes(p_buf, &mut data);
+                    match self.host.net().send(s, &data) {
+                        Ok(n) => n as u64,
+                        Err(_) => 0xFFFF_FFFF,
+                    }
+                } else {
+                    0
+                }
+            }
+
             // NetDll_* exports 0x0005..0x0018, 0x006C..0x006F
-            0x0005 | 0x0006 | 0x0007 | 0x0009 | 0x000A | 0x000B | 0x000D | 0x000E
-            | 0x000F | 0x0010 | 0x0011 | 0x0012 | 0x0013 | 0x0014 | 0x0016 | 0x0017 | 0x0018
+            0x0005 | 0x0006 | 0x0007 | 0x0009 | 0x000A | 0x000D | 0x000E
+            | 0x000F | 0x0010 | 0x0011 | 0x0013 | 0x0014 | 0x0017 | 0x0018
             | 0x006C | 0x006D | 0x006E | 0x006F => 0,
 
             // 0x0024 NetDll_WSAStartupEx / 0x0033 NetDll_XNetStartup: success
@@ -120,5 +192,19 @@ mod tests {
         let res = disp.xam_net(0x0001, &[0, 0x0202, wsa_ptr], &mut bus);
         assert_eq!(res, Some(0));
         assert_eq!(bus.read_u16(wsa_ptr).unwrap(), 0x0202);
+    }
+
+    #[test]
+    fn test_xam_net_socket_lifecycle() {
+        let mut disp = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+
+        // 0x0003: NetDll_socket (caller, af=2, ty=1, proto=6)
+        let sock_handle = disp.xam_net(0x0003, &[0, 2, 1, 6], &mut bus).unwrap();
+        assert_ne!(sock_handle, 0xFFFF_FFFF);
+
+        // 0x0004: NetDll_closesocket
+        let close_res = disp.xam_net(0x0004, &[0, sock_handle], &mut bus);
+        assert_eq!(close_res, Some(0));
     }
 }

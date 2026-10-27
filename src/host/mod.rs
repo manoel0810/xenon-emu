@@ -136,4 +136,34 @@ mod tests {
         assert_eq!(polled.b_left_trigger, 255);
         assert_eq!(polled.b_right_trigger, 255);
     }
+
+    #[test]
+    fn test_host_real_net_opt_in() {
+        // Default / offline mode
+        let mut net_offline = RealNet::with_online(false);
+        assert_eq!(net_offline.link_status(), LinkStatus::Disconnected);
+        assert!(net_offline.socket(2, 1, 6).is_err());
+        assert!(net_offline.dns_resolve("localhost").is_err());
+
+        // Opt-in online mode
+        let mut net_online = RealNet::with_online(true);
+        match net_online.link_status() {
+            LinkStatus::Connected { ip, subnet, .. } => {
+                assert_ne!(ip, [0, 0, 0, 0]);
+                assert_eq!(subnet, [255, 255, 255, 0]);
+            }
+            LinkStatus::Disconnected => panic!("Expected Connected in online mode"),
+        }
+
+        // DNS resolution of localhost
+        let resolved = net_online.dns_resolve("localhost");
+        assert!(resolved.is_ok());
+        let ips = resolved.unwrap();
+        assert!(ips.contains(&[127, 0, 0, 1]));
+
+        // UDP socket creation, send and close
+        let sock = net_online.socket(2, 2, 17).expect("create UDP socket");
+        assert!(sock > 0);
+        assert!(net_online.close_socket(sock).is_ok());
+    }
 }
