@@ -443,11 +443,20 @@ pub fn write_colors(samples: &[AtomicU32], state: &RenderState, x: u32, y: u32, 
         }
         let mask = (state.color_mask >> (4 * i)) & 0xF;
         let keep: u32 = (0..4).filter(|c| mask & (1 << c) == 0).map(|c| 0xFFu32 << (8 * c)).sum();
+        // the samples of a pixel usually hold the same value: blend it once
+        let mut last: Option<(u32, u32)> = None;
         for s in 0..surface.samples_per_pixel() {
             let index = surface.pixel_sample_index(x, y, s);
             let dst = samples[index].load(Relaxed);
-            let blended = pack_8888(state.blend[i].blend(src, unpack_8888(dst), state.blend_constant));
-            samples[index].store((blended & !keep) | (dst & keep), Relaxed);
+            let out = match last {
+                Some((d, out)) if d == dst => out,
+                _ => {
+                    let blended = pack_8888(state.blend[i].blend(src, unpack_8888(dst), state.blend_constant));
+                    (blended & !keep) | (dst & keep)
+                }
+            };
+            last = Some((dst, out));
+            samples[index].store(out, Relaxed);
         }
     }
 }
@@ -617,21 +626,45 @@ impl Edram {
         let base = dest_base - (phase << macro_tile_bytes_log2);
         let x_phase = phase << 5;
 
-        for y in y0 as u32..y1 as u32 {
-            for x in x0 as u32..x1 as u32 {
-                let mut sum = [0f32; 4];
-                for &s in &selected {
-                    let c = unpack_8888(self.samples[color.pixel_sample_index(x, y, s)]);
-                    for k in 0..4 {
-                        sum[k] += c[k];
-                    }
+        // texels computed by row on several threads (they only read the EDRAM), then stored in order
+        let texel = |x: u32, y: u32| -> (u64, u32) {
+            let mut sum = [0f32; 4];
+            for &s in &selected {
+                let c = unpack_8888(self.samples[color.pixel_sample_index(x, y, s)]);
+                for k in 0..4 {
+                    sum[k] += c[k];
                 }
-                let mut c = sum.map(|v| v / selected.len() as f32 * scale);
-                if swap_rb {
-                    c.swap(0, 2);
+            }
+            let mut c = sum.map(|v| v / selected.len() as f32 * scale);
+            if swap_rb {
+                c.swap(0, 2);
+            }
+            let offset = tiled_offset_2d(x + x_phase, y, dest_pitch, 2) as u64 * 4;
+            (base as u64 + offset, guest_endian_swap(pack_8888(c), endian))
+        };
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min((y1 - y0) as usize).max(1);
+        let rows: Vec<Vec<(u64, u32)>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|t| {
+                    let texel = &texel;
+                    scope.spawn(move || {
+                        (y0 as u32 + t as u32..y1 as u32).step_by(threads).flat_map(|y| (x0 as u32..x1 as u32).map(move |x| texel(x, y))).collect()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        // the destination is physical memory: stored straight into RAM, unless a watchpoint wants every write
+        if bus.watch_addr.is_some() {
+            for (address, value) in rows.into_iter().flatten() {
+                let _ = bus.write_u32(address, value);
+            }
+        } else {
+            for (address, value) in rows.into_iter().flatten() {
+                let a = address as usize;
+                if let Some(word) = bus.ram.get_mut(a..a + 4) {
+                    word.copy_from_slice(&value.to_be_bytes());
                 }
-                let offset = tiled_offset_2d(x + x_phase, y, dest_pitch, 2) as u64 * 4;
-                let _ = bus.write_u32(base as u64 + offset, guest_endian_swap(pack_8888(c), endian));
             }
         }
     }
@@ -776,5 +809,33 @@ mod tests {
         // the rectangle was cleared afterwards
         assert_eq!(edram.samples[color.pixel_sample_index(5, 2, 1)], 0x1122_3344);
         assert_eq!(edram.samples[color.pixel_sample_index(16, 0, 0)], 0);
+    }
+
+    /// `cargo test --release --lib bench_resolve -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_resolve() {
+        let mut bus = MemoryBus::new();
+        bus.gpu_regs.set(RB_MODECONTROL, EDRAM_MODE_COPY);
+        bus.gpu_regs.set(RB_SURFACE_INFO, 0x0001_0500);
+        bus.gpu_regs.set(RB_COLOR_INFO, 0x260);
+        bus.gpu_regs.set(RB_COPY_CONTROL, 0x0010_0040);
+        bus.gpu_regs.set(RB_COPY_DEST_BASE, 0x0031_4000);
+        bus.gpu_regs.set(RB_COPY_DEST_PITCH, 0x02D0_0500);
+        bus.gpu_regs.set(RB_COPY_DEST_INFO, 0x0100_0300);
+        bus.gpu_regs.set(PA_SC_WINDOW_SCISSOR_BR, 0x02D0_0500);
+        bus.gpu_regs.set(PA_SC_SCREEN_SCISSOR_BR, 0x2000_2000);
+        bus.gpu_regs.set(PA_SU_VTX_CNTL, 4);
+        bus.gpu_regs.set(FETCH_00, 0x0001_0000 | 3);
+        bus.gpu_regs.set(FETCH_00 + 1, (6 << 2) | 2);
+        for (i, v) in [-0.5f32, -0.5, 1279.5, -0.5, 1279.5, 719.5].iter().enumerate() {
+            bus.write_u32(0x10000 + 4 * i as u64, v.to_bits()).unwrap();
+        }
+        let mut edram = Edram::new();
+        let start = std::time::Instant::now();
+        for _ in 0..5 {
+            edram.resolve(&mut bus);
+        }
+        println!("resolve 1280x720 2x: {:.1} ms", start.elapsed().as_secs_f64() * 1000.0 / 5.0);
     }
 }

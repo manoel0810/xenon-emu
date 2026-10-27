@@ -105,6 +105,8 @@ pub struct DiagConfig {
     /// XENON_SLICE=<n>: guest instructions each runnable thread may execute per frame (default 25000). The console
     /// runs ~53 million per hardware thread per 60 Hz frame; larger values shorten CPU-bound waits in guest time.
     pub slice: u32,
+    /// XENON_RASTER_PROFILE: every 100 swaps, print the host time spent rasterizing per pixel shader and resolving.
+    pub raster_profile: bool,
 }
 
 /// A boolean variable: unset -> `default`; "0", "false", "off" or "no" (any case) -> false; any other value -> true.
@@ -183,6 +185,7 @@ impl DiagConfig {
             raster: flag_or("XENON_RASTER", true),
             flash_dir: Some(string("XENON_FLASH_DIR").unwrap_or_else(|| "console_flash".to_string())),
             slice: parse::<u32>("XENON_SLICE").filter(|&n| n > 0).unwrap_or(25_000),
+            raster_profile: flag("XENON_RASTER_PROFILE"),
         }
     }
 }

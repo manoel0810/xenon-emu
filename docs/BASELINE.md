@@ -243,6 +243,10 @@ Depois das correções (`667a2c0`..`a36557b`), 3000 frames: frame 1622, 99 976 p
 
 Com `console_flash` presente (xam.xex 17559 e fontes da flash do console, recursos extraídos), 3000 frames: 114 739 pacotes, `Draws: 2822`, `Swaps: 314`, sem trap; thread 0x15 termina no frame 1666 (antes 1617); 111 s com rasterização. Os 9 shaders distintos são os mesmos. O frontbuffer mostra o anel de carregamento (`loadingRing.png`) centralizado sobre o fundo. Sem `console_flash`, o comportamento é o da Atualização 35 (99 976 pacotes, 2125 draws, 303 swaps).
 
+## Desempenho da rasterização (Atualização 37, 2026-10-27)
+
+3000 frames com rasterização, `console_flash`, 25 000 instruções por frame: 52-54 s (antes 111 s), frontbuffer idêntico, CP como na Atualização 36. Sem rasterização (`XENON_RASTER=0`): ~10 s. Ryzen 5 8600G (6 núcleos, 12 threads).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:

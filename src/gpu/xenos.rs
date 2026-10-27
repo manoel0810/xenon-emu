@@ -6,7 +6,7 @@ use crate::gpu::rasterizer::rasterize_triangle;
 use crate::gpu::ring_buffer::RingBuffer;
 use crate::gpu::shader_env::GpuShaderEnv;
 use crate::gpu::shader_exec::draw_indices;
-use crate::gpu::shader_interp::{run, ShaderState};
+use crate::gpu::shader_interp::{CompiledShader, ShaderState};
 use crate::gpu::texture::GpuTextureSampler;
 use crate::gpu::ucode::ShaderType;
 use crate::memory::MemoryBus;
@@ -76,6 +76,8 @@ pub struct XenosGpu {
     pub shader_log: Option<crate::gpu::shader_log::ShaderLog>,
     /// XENON_SHADER_EXEC state (None when off).
     pub shader_exec: Option<crate::gpu::shader_exec::ShaderExec>,
+    /// XENON_RASTER_PROFILE: host time spent per pixel shader (draws, seconds) and in resolves; None when off.
+    pub raster_profile: Option<(HashMap<u64, (u64, f64)>, u64, f64)>,
 }
 
 impl XenosGpu {
@@ -101,6 +103,7 @@ impl XenosGpu {
             draw_log: crate::diag::config().draw_log.then(DrawLog::new),
             shader_log: crate::gpu::shader_log::ShaderLog::from_config(),
             shader_exec: crate::diag::config().shader_exec.map(crate::gpu::shader_exec::ShaderExec::new),
+            raster_profile: crate::diag::config().raster_profile.then(|| (HashMap::new(), 0, 0.0)),
         }
     }
 
@@ -249,7 +252,12 @@ impl XenosGpu {
             return;
         }
         if bus.gpu_regs.get(RB_MODECONTROL) & 7 == EDRAM_MODE_COPY {
+            let start = std::time::Instant::now();
             self.edram.resolve(bus);
+            if let Some((_, count, seconds)) = self.raster_profile.as_mut() {
+                *count += 1;
+                *seconds += start.elapsed().as_secs_f64();
+            }
             return;
         }
         if !crate::diag::config().raster {
@@ -263,6 +271,10 @@ impl XenosGpu {
         }
         let Ok(indices) = draw_indices(bus, opcode, data, di.num_indices) else { return };
         let mut sampler = GpuTextureSampler::new(bus);
+        // both shaders are decoded once per draw, with this draw's constants
+        let vertex_shader = CompiledShader::compile(&self.vertex_shader, ShaderType::Vertex, &GpuShaderEnv { bus, sampler: &mut sampler });
+        let pixel_shader = (!self.pixel_shader.is_empty())
+            .then(|| CompiledShader::compile(&self.pixel_shader, ShaderType::Pixel, &GpuShaderEnv { bus, sampler: &mut sampler }));
         // the vertex shader runs once per distinct index
         let mut shaded: HashMap<u32, Vertex> = HashMap::new();
         let vertices: Vec<Vertex> = indices
@@ -274,19 +286,25 @@ impl XenosGpu {
                         let mut vs = ShaderState::default();
                         vs.r[0][0] = index as f32;
                         let mut env = GpuShaderEnv { bus, sampler: &mut sampler };
-                        let _ = run(&self.vertex_shader, ShaderType::Vertex, &mut vs, &mut env);
+                        let _ = vertex_shader.run(&mut vs, &mut env);
                         Vertex { position: clip_position(bus, vs.exports.position.unwrap_or([0.0, 0.0, 0.0, 1.0])), interpolators: vs.exports.interpolators }
                     })
                     .clone()
             })
             .collect();
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let start = std::time::Instant::now();
         for tri in assemble_primitives(di.prim_type, &vertices) {
             let polygon: Vec<ScreenVertex> = clip_triangle(bus, &tri).iter().map(|v| project(bus, v)).collect();
             for i in 1..polygon.len().saturating_sub(1) {
                 let tri = [polygon[0].clone(), polygon[i].clone(), polygon[i + 1].clone()];
-                rasterize_triangle(&mut self.edram, &state, &tri, bus, &self.pixel_shader, threads);
+                rasterize_triangle(&mut self.edram, &state, &tri, bus, pixel_shader.as_ref(), threads);
             }
+        }
+        if let Some((draws, _, _)) = self.raster_profile.as_mut() {
+            let entry = draws.entry(crate::gpu::shader_log::shader_hash(&self.pixel_shader)).or_insert((0, 0.0));
+            entry.0 += 1;
+            entry.1 += start.elapsed().as_secs_f64();
         }
     }
 
@@ -457,6 +475,17 @@ impl XenosGpu {
                         if data.first() == Some(&crate::kernel::video::SWAP_SIGNATURE) && data.len() >= 4 {
                             self.last_swap = Some((data[1], data[2], data[3]));
                             self.swaps += 1;
+                            if let Some((draws, resolves, resolve_seconds)) = self.raster_profile.as_ref() {
+                                if self.swaps % 100 == 0 {
+                                    let mut rows: Vec<_> = draws.iter().collect();
+                                    rows.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1));
+                                    let total: f64 = rows.iter().map(|r| r.1 .1).sum::<f64>() + resolve_seconds;
+                                    println!("  [RASTER PROFILE] {} swaps: {:.2} s ({} resolves {:.2} s)", self.swaps, total, resolves, resolve_seconds);
+                                    for (hash, (n, seconds)) in rows {
+                                        println!("    ps {:016x}: {} draws {:.2} s", hash, n, seconds);
+                                    }
+                                }
+                            }
                         }
                         self.gpu_counter = self.gpu_counter.wrapping_add(1);
                     }

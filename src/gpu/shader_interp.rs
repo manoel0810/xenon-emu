@@ -57,6 +57,42 @@ pub struct ShaderState {
     call_stack: Vec<usize>,
 }
 
+impl ShaderState {
+    /// The default state again, with only the first `temps` registers cleared (a shader that never addresses
+    /// registers past them cannot observe the others).
+    pub fn reset(&mut self, temps: usize) {
+        for r in &mut self.r[..temps.min(64)] {
+            *r = [0.0; 4];
+        }
+        self.ps = 0.0;
+        self.p0 = false;
+        self.a0 = 0;
+        self.al = 0;
+        self.killed = false;
+        self.exports = Exports::default();
+        self.loop_stack.clear();
+        self.call_stack.clear();
+    }
+
+    /// `reset` for a pixel shader thread: a pixel shader exports only colors, depth and memory (see `alu`), so the
+    /// other exports of a state that only ever ran pixel shaders are still unset.
+    pub fn reset_pixel(&mut self, temps: usize) {
+        for r in &mut self.r[..temps.min(64)] {
+            *r = [0.0; 4];
+        }
+        self.ps = 0.0;
+        self.p0 = false;
+        self.a0 = 0;
+        self.al = 0;
+        self.killed = false;
+        self.exports.colors = [None; 4];
+        self.exports.depth = None;
+        self.exports.memexport_writes = 0;
+        self.loop_stack.clear();
+        self.call_stack.clear();
+    }
+}
+
 impl Default for ShaderState {
     fn default() -> Self {
         Self { r: [[0.0; 4]; 64], ps: 0.0, p0: false, a0: 0, al: 0, killed: false, exports: Exports::default(), loop_stack: Vec::new(), call_stack: Vec::new() }
@@ -92,108 +128,347 @@ fn address_from(v: f32) -> i32 {
 
 /// Runs a shader on `state` until it ends. `words` is the whole microcode.
 pub fn run(words: &[u32], shader_type: ShaderType, state: &mut ShaderState, env: &mut dyn ShaderEnv) -> Result<(), String> {
-    let cf_count = control_flow_length(words) * 2;
-    let cf_at = |index: usize| -> CfInstruction {
-        let pair = index / 2;
-        unpack_cf_pair([words[pair * 3], words[pair * 3 + 1], words[pair * 3 + 2]])[index % 2]
-    };
-    let mut previous_vfetch_full = FetchInstruction::default();
-    let mut steps = 0u32;
-    let mut pc = 0usize;
-    while pc < cf_count {
-        steps += 1;
-        if steps > STEP_LIMIT {
-            return Err(format!("shader did not end after {} steps", STEP_LIMIT));
+    CompiledShader::compile(words, shader_type, env).run(state, env)
+}
+
+/// A source operand decoded once.
+#[derive(Debug, Clone, Copy)]
+enum Operand {
+    /// A constant at a fixed index: its final value (swizzle, abs and negate applied), read when compiling.
+    Constant(Vec4),
+    /// A temporary register (relative to aL when `relative`) or a constant indexed by a0 / aL, read at run time.
+    Register { temp: bool, index: u32, relative: bool, a0: bool, base: u32, abs: bool, swizzle: [u8; 4], negate: bool },
+}
+
+impl Operand {
+    /// read_source for ALU source `i` (1..=3).
+    fn decode(op: &AluInstruction, i: u32, shader_type: ShaderType, env: &dyn ShaderEnv) -> Self {
+        let reg = op.src_reg(i);
+        let swizzle_bits = op.src_swizzle(i);
+        let swizzle: [u8; 4] = std::array::from_fn(|c| swizzled_component_index(swizzle_bits, c as u32) as u8);
+        let negate = op.src_negate(i);
+        let base = if shader_type == ShaderType::Pixel { 256 } else { 0 };
+        if op.src_is_temp(i) {
+            return Operand::Register { temp: true, index: reg & 0x3F, relative: reg & 0x40 != 0, a0: false, base, abs: reg & 0x80 != 0, swizzle, negate };
         }
-        let cf = cf_at(pc);
-        let mut next = pc + 1;
-        let op = cf.opcode();
-        match op {
-            CfOpcode::Nop | CfOpcode::Alloc | CfOpcode::MarkVsFetchDone => {}
-            _ if op.is_exec() => {
-                let run_body = match op {
-                    CfOpcode::Exec | CfOpcode::ExecEnd => true,
-                    CfOpcode::CondExecPred | CfOpcode::CondExecPredEnd => state.p0 == cf.condition(),
-                    _ => env.bool_constant(cf.bool_address()) == cf.condition(),
-                };
-                if run_body {
-                    let mut sequence = cf.exec_sequence();
-                    for offset in cf.exec_address()..cf.exec_address() + cf.exec_count() {
-                        let base = offset as usize * 3;
-                        let w = words.get(base..base + 3).ok_or_else(|| format!("exec instruction {} past the end", offset))?;
-                        let w = [w[0], w[1], w[2]];
-                        if sequence & 1 != 0 {
-                            fetch(&FetchInstruction(w), state, env, &mut previous_vfetch_full);
-                        } else {
-                            alu(&AluInstruction(w), shader_type, state, env);
-                        }
-                        sequence >>= 2;
-                        steps += 1;
-                    }
-                }
-                // the end of the shader does not depend on the condition
-                if op.ends_shader() {
-                    return Ok(());
-                }
-            }
-            CfOpcode::LoopStart => {
-                let constant = env.loop_constant(cf.loop_id());
-                let count = constant & 0xFF;
-                if !cf.loop_is_repeat() {
-                    // push: the outer aL comes back on endloop
-                    state.loop_stack.push((count, state.al));
-                    state.al = ((constant >> 8) & 0xFF) as i32;
-                } else {
-                    state.loop_stack.push((count, state.al));
-                }
-                if count == 0 {
-                    // skip the loop (the counter is checked at its end) to the instruction after endloop; Xenia
-                    // leaves this loop's entry on its stack, here it is popped as endloop would
-                    let (_, al) = state.loop_stack.pop().unwrap();
-                    state.al = al;
-                    next = cf.target_address() as usize;
-                }
-            }
-            CfOpcode::LoopEnd => {
-                let constant = env.loop_constant(cf.loop_id());
-                let (count, outer_al) = state.loop_stack.last().copied().unwrap_or((1, state.al));
-                let count = count.saturating_sub(1);
-                let break_now = count == 0 || (cf.loop_is_predicated_break() && state.p0 == cf.condition());
-                if break_now {
-                    state.loop_stack.pop();
-                    state.al = outer_al;
-                } else {
-                    if let Some(top) = state.loop_stack.last_mut() {
-                        top.0 = count;
-                    }
-                    state.al += ((constant >> 16) & 0xFF) as u8 as i8 as i32;
-                    next = cf.target_address() as usize;
-                }
-            }
-            CfOpcode::CondCall | CfOpcode::CondJmp => {
-                let taken = if cf.is_unconditional() {
-                    true
-                } else if cf.is_predicated() {
-                    state.p0 == cf.condition()
-                } else {
-                    env.bool_constant(cf.bool_address()) == cf.condition()
-                };
-                if taken {
-                    if op == CfOpcode::CondCall {
-                        state.call_stack.push(pc + 1);
-                    }
-                    next = cf.target_address() as usize;
-                }
-            }
-            CfOpcode::Return => match state.call_stack.pop() {
-                Some(r) => next = r,
-                None => return Ok(()),
-            },
-            _ => return Err(format!("unhandled control flow opcode {:?}", op)),
+        let abs = op.abs_constants();
+        if op.src_const_is_addressed(i) {
+            return Operand::Register { temp: false, index: reg, relative: true, a0: op.is_const_address_register_relative(), base, abs, swizzle, negate };
         }
-        pc = next;
+        let value = env.float_constant(base + (reg & 0xFF));
+        Operand::Constant(std::array::from_fn(|c| {
+            let v = value[swizzle[c] as usize];
+            let v = if abs { v.abs() } else { v };
+            if negate { -v } else { v }
+        }))
     }
-    Ok(())
+
+    #[inline(always)]
+    fn read(&self, state: &ShaderState, env: &dyn ShaderEnv) -> Vec4 {
+        match *self {
+            Operand::Constant(v) => v,
+            Operand::Register { temp, index, relative, a0, base, abs, swizzle, negate } => {
+                let value = if temp {
+                    state.r[temp_index(index, relative, state)]
+                } else {
+                    let index = index as i32 + if a0 { state.a0 } else { state.al };
+                    env.float_constant(base + (index & 0xFF) as u32)
+                };
+                let mut out = [value[swizzle[0] as usize], value[swizzle[1] as usize], value[swizzle[2] as usize], value[swizzle[3] as usize]];
+                if abs {
+                    out = out.map(f32::abs);
+                }
+                if negate {
+                    out = out.map(|v| -v);
+                }
+                out
+            }
+        }
+    }
+}
+
+/// Where the scalar operation's operands come from (scalar_operands).
+#[derive(Debug, Clone, Copy)]
+enum ScalarSource {
+    None,
+    /// `a` = W and `b` = component `second` of source 3.
+    Source3 { second: usize },
+    /// The constant-register forms: `a` from a constant (fixed value, or indexed by a0 / aL) and `b` from a temporary.
+    ConstTemp { constant: ConstScalar, temp: usize, temp_component: usize, abs: bool, negate: bool },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConstScalar {
+    Fixed(f32),
+    Indexed { index: u32, a0: bool, base: u32, component: usize },
+}
+
+/// Where an ALU instruction writes, decoded once.
+#[derive(Debug, Clone, Copy)]
+enum AluDest {
+    /// Temporaries: the vector result to (index, relative) under its mask, the scalar result likewise.
+    Temps { vector: (u32, bool), vector_mask: u32, scalar: (u32, bool), scalar_mask: u32 },
+    /// An export to register `reg`: vector / scalar result components, constant 1 components, all written ones.
+    Export { reg: u32, vector_mask: u32, scalar_mask: u32, one_mask: u32, mask: u32 },
+}
+
+/// An ALU instruction decoded once.
+#[derive(Debug, Clone, Copy)]
+struct CompiledAlu {
+    predicate: Option<bool>,
+    vector_clamp: bool,
+    scalar_clamp: bool,
+    dest: AluDest,
+    vector_opcode: u32,
+    vector_operands: usize,
+    scalar_opcode: u32,
+    sources: [Operand; 3],
+    scalar: ScalarSource,
+}
+
+impl CompiledAlu {
+    fn decode(op: AluInstruction, shader_type: ShaderType, env: &dyn ShaderEnv) -> Self {
+        let vector_opcode = op.vector_opcode();
+        let scalar_opcode = op.scalar_opcode();
+        let sources = [1, 2, 3].map(|i| Operand::decode(&op, i, shader_type, env));
+        let info = &SCALAR_OPCODES[scalar_opcode as usize];
+        let scalar = if info.operand_count == 0 {
+            ScalarSource::None
+        } else if info.operand_count == 2 {
+            let swizzle = op.src_swizzle(3);
+            let (abs, negate) = (op.abs_constants(), op.src_negate(3));
+            let base = if shader_type == ShaderType::Pixel { 256 } else { 0 };
+            let component = swizzled_component_index(swizzle, 3) as usize;
+            let constant = if op.src_const_is_addressed(3) {
+                ConstScalar::Indexed { index: op.src_reg(3), a0: op.is_const_address_register_relative(), base, component }
+            } else {
+                let v = env.float_constant(base + (op.src_reg(3) & 0xFF))[component];
+                let v = if abs { v.abs() } else { v };
+                ConstScalar::Fixed(if negate { -v } else { v })
+            };
+            ScalarSource::ConstTemp {
+                constant,
+                temp: (op.scalar_const_reg_op_src_temp_reg() & 63) as usize,
+                temp_component: swizzled_component_index(swizzle, 0) as usize,
+                abs,
+                negate,
+            }
+        } else {
+            ScalarSource::Source3 { second: if VECTOR_OPCODES[vector_opcode as usize].operand_count() == 3 { 2 } else { 0 } }
+        };
+        let dest = if op.is_export() {
+            let (vector_mask, scalar_mask) = (op.vector_op_result_write_mask(), op.scalar_op_result_write_mask());
+            let (zero_mask, one_mask) = (op.constant_0_write_mask(), op.constant_1_write_mask());
+            AluDest::Export { reg: op.vector_dest(), vector_mask, scalar_mask, one_mask, mask: vector_mask | scalar_mask | zero_mask | one_mask }
+        } else {
+            AluDest::Temps {
+                vector: (op.vector_dest(), op.is_vector_dest_relative()),
+                vector_mask: op.vector_write_mask(),
+                scalar: (op.scalar_dest(), op.is_scalar_dest_relative()),
+                scalar_mask: op.scalar_write_mask(),
+            }
+        };
+        Self {
+            predicate: op.is_predicated().then(|| op.predicate_condition()),
+            vector_clamp: op.vector_clamp(),
+            scalar_clamp: op.scalar_clamp(),
+            dest,
+            vector_opcode,
+            vector_operands: VECTOR_OPCODES[vector_opcode as usize].operand_count() as usize,
+            scalar_opcode,
+            sources,
+            scalar,
+        }
+    }
+
+    #[inline(always)]
+    fn scalar_operands(&self, state: &ShaderState, env: &dyn ShaderEnv, source3: &Vec4) -> (f32, f32) {
+        match self.scalar {
+            ScalarSource::None => (0.0, 0.0),
+            ScalarSource::Source3 { second } => {
+                // source 3 was just read when the vector operation takes three operands (nothing written since)
+                let v = if self.vector_operands == 3 { *source3 } else { self.sources[2].read(state, env) };
+                (v[3], v[second])
+            }
+            ScalarSource::ConstTemp { constant, temp, temp_component, abs, negate } => {
+                let fix = |v: f32| {
+                    let v = if abs { v.abs() } else { v };
+                    if negate { -v } else { v }
+                };
+                let a = match constant {
+                    ConstScalar::Fixed(v) => v,
+                    ConstScalar::Indexed { index, a0, base, component } => {
+                        let index = index as i32 + if a0 { state.a0 } else { state.al };
+                        fix(env.float_constant(base + (index & 0xFF) as u32)[component])
+                    }
+                };
+                (a, fix(state.r[temp][temp_component]))
+            }
+        }
+    }
+}
+
+/// A shader decoded once for a draw: control flow, and the ALU instructions with the constants they read at fixed
+/// indices already resolved. Running it is the same as `run` on the same microcode and constants.
+pub struct CompiledShader {
+    shader_type: ShaderType,
+    words: Vec<u32>,
+    cf: Vec<CfInstruction>,
+    alu: Vec<Option<CompiledAlu>>,
+    /// Temporary registers the shader can address: one past the highest index it names, all 64 when it addresses
+    /// any relatively.
+    temps: usize,
+}
+
+impl CompiledShader {
+    pub fn compile(words: &[u32], shader_type: ShaderType, env: &dyn ShaderEnv) -> Self {
+        let cf: Vec<CfInstruction> = (0..control_flow_length(words) * 2)
+            .map(|index| {
+                let pair = index / 2;
+                unpack_cf_pair([words[pair * 3], words[pair * 3 + 1], words[pair * 3 + 2]])[index % 2]
+            })
+            .collect();
+        let mut alu = vec![None; words.len() / 3];
+        let mut temps = 0usize;
+        let mut name = |index: u32, relative: bool| temps = if relative { 64 } else { temps.max((index & 63) as usize + 1) };
+        for c in cf.iter().filter(|c| c.opcode().is_exec()) {
+            let mut sequence = c.exec_sequence();
+            for offset in c.exec_address()..c.exec_address() + c.exec_count() {
+                let base = offset as usize * 3;
+                if base + 3 <= words.len() {
+                    let w = [words[base], words[base + 1], words[base + 2]];
+                    if sequence & 1 == 0 {
+                        let op = AluInstruction(w);
+                        for i in 1..=3 {
+                            if op.src_is_temp(i) {
+                                name(op.src_reg(i) & 0x3F, op.src_reg(i) & 0x40 != 0);
+                            }
+                        }
+                        name(op.scalar_const_reg_op_src_temp_reg(), false);
+                        if !op.is_export() {
+                            name(op.vector_dest(), op.is_vector_dest_relative());
+                        }
+                        name(op.scalar_dest(), op.is_scalar_dest_relative());
+                        alu[offset as usize] = Some(CompiledAlu::decode(op, shader_type, env));
+                    } else {
+                        let op = FetchInstruction(w);
+                        name(op.src(), op.is_src_relative());
+                        name(op.dest(), op.is_dest_relative());
+                    }
+                }
+                sequence >>= 2;
+            }
+        }
+        Self { shader_type, words: words.to_vec(), cf, alu, temps }
+    }
+
+    /// See `ShaderState::reset`.
+    pub fn temps(&self) -> usize {
+        self.temps
+    }
+
+    /// Runs the shader on `state` until it ends.
+    pub fn run(&self, state: &mut ShaderState, env: &mut dyn ShaderEnv) -> Result<(), String> {
+        let words = &self.words[..];
+        let shader_type = self.shader_type;
+        let cf_count = self.cf.len();
+        let mut previous_vfetch_full = FetchInstruction::default();
+        let mut steps = 0u32;
+        let mut pc = 0usize;
+        while pc < cf_count {
+            steps += 1;
+            if steps > STEP_LIMIT {
+                return Err(format!("shader did not end after {} steps", STEP_LIMIT));
+            }
+            let cf = self.cf[pc];
+            let mut next = pc + 1;
+            let op = cf.opcode();
+            match op {
+                CfOpcode::Nop | CfOpcode::Alloc | CfOpcode::MarkVsFetchDone => {}
+                _ if op.is_exec() => {
+                    let run_body = match op {
+                        CfOpcode::Exec | CfOpcode::ExecEnd => true,
+                        CfOpcode::CondExecPred | CfOpcode::CondExecPredEnd => state.p0 == cf.condition(),
+                        _ => env.bool_constant(cf.bool_address()) == cf.condition(),
+                    };
+                    if run_body {
+                        let mut sequence = cf.exec_sequence();
+                        for offset in cf.exec_address()..cf.exec_address() + cf.exec_count() {
+                            let base = offset as usize * 3;
+                            let w = words.get(base..base + 3).ok_or_else(|| format!("exec instruction {} past the end", offset))?;
+                            if sequence & 1 != 0 {
+                                fetch(&FetchInstruction([w[0], w[1], w[2]]), state, env, &mut previous_vfetch_full);
+                            } else if let Some(alu_op) = &self.alu[offset as usize] {
+                                alu(alu_op, shader_type, state, env);
+                            }
+                            sequence >>= 2;
+                            steps += 1;
+                        }
+                    }
+                    // the end of the shader does not depend on the condition
+                    if op.ends_shader() {
+                        return Ok(());
+                    }
+                }
+                CfOpcode::LoopStart => {
+                    let constant = env.loop_constant(cf.loop_id());
+                    let count = constant & 0xFF;
+                    if !cf.loop_is_repeat() {
+                        // push: the outer aL comes back on endloop
+                        state.loop_stack.push((count, state.al));
+                        state.al = ((constant >> 8) & 0xFF) as i32;
+                    } else {
+                        state.loop_stack.push((count, state.al));
+                    }
+                    if count == 0 {
+                        // skip the loop (the counter is checked at its end) to the instruction after endloop; Xenia
+                        // leaves this loop's entry on its stack, here it is popped as endloop would
+                        let (_, al) = state.loop_stack.pop().unwrap();
+                        state.al = al;
+                        next = cf.target_address() as usize;
+                    }
+                }
+                CfOpcode::LoopEnd => {
+                    let constant = env.loop_constant(cf.loop_id());
+                    let (count, outer_al) = state.loop_stack.last().copied().unwrap_or((1, state.al));
+                    let count = count.saturating_sub(1);
+                    let break_now = count == 0 || (cf.loop_is_predicated_break() && state.p0 == cf.condition());
+                    if break_now {
+                        state.loop_stack.pop();
+                        state.al = outer_al;
+                    } else {
+                        if let Some(top) = state.loop_stack.last_mut() {
+                            top.0 = count;
+                        }
+                        state.al += ((constant >> 16) & 0xFF) as u8 as i8 as i32;
+                        next = cf.target_address() as usize;
+                    }
+                }
+                CfOpcode::CondCall | CfOpcode::CondJmp => {
+                    let taken = if cf.is_unconditional() {
+                        true
+                    } else if cf.is_predicated() {
+                        state.p0 == cf.condition()
+                    } else {
+                        env.bool_constant(cf.bool_address()) == cf.condition()
+                    };
+                    if taken {
+                        if op == CfOpcode::CondCall {
+                            state.call_stack.push(pc + 1);
+                        }
+                        next = cf.target_address() as usize;
+                    }
+                }
+                CfOpcode::Return => match state.call_stack.pop() {
+                    Some(r) => next = r,
+                    None => return Ok(()),
+                },
+                _ => return Err(format!("unhandled control flow opcode {:?}", op)),
+            }
+            pc = next;
+        }
+        Ok(())
+    }
 }
 
 /// The number of control flow pairs (Shader::AnalyzeUcode): up to the first exec's address.
@@ -215,55 +490,31 @@ fn temp_index(index: u32, relative: bool, state: &ShaderState) -> usize {
     if relative { ((index as i32 + state.al) & 63) as usize } else { (index & 63) as usize }
 }
 
-/// Reads ALU source `i` (1..=3) as four swizzled components, with abs and negate applied.
-fn read_source(op: &AluInstruction, i: u32, shader_type: ShaderType, state: &ShaderState, env: &dyn ShaderEnv) -> Vec4 {
-    let reg = op.src_reg(i);
-    let (value, absolute) = if op.src_is_temp(i) {
-        (state.r[temp_index(reg & 0x3F, reg & 0x40 != 0, state)], reg & 0x80 != 0)
-    } else {
-        let mut index = reg as i32;
-        if op.src_const_is_addressed(i) {
-            index += if op.is_const_address_register_relative() { state.a0 } else { state.al };
-        }
-        let base = if shader_type == ShaderType::Pixel { 256 } else { 0 };
-        (env.float_constant(base + (index & 0xFF) as u32), op.abs_constants())
-    };
-    let swizzle = op.src_swizzle(i);
-    let mut out = [0.0; 4];
-    for (c, o) in out.iter_mut().enumerate() {
-        let mut v = value[swizzled_component_index(swizzle, c as u32) as usize];
-        if absolute {
-            v = v.abs();
-        }
-        if op.src_negate(i) {
-            v = -v;
-        }
-        *o = v;
-    }
-    out
-}
-
 /// One vector ALU operation. Returns the result and updates p0 / a0 / kill as the opcode does.
 fn vector_op(opcode: u32, s: &[Vec4; 3], state: &mut ShaderState) -> Vec4 {
     let [a, b, c] = s;
-    let per = |f: &dyn Fn(f32, f32, f32) -> f32| -> Vec4 { [f(a[0], b[0], c[0]), f(a[1], b[1], c[1]), f(a[2], b[2], c[2]), f(a[3], b[3], c[3])] };
+    #[inline(always)]
+    fn per_component(a: &Vec4, b: &Vec4, c: &Vec4, f: impl Fn(f32, f32, f32) -> f32) -> Vec4 {
+        [f(a[0], b[0], c[0]), f(a[1], b[1], c[1]), f(a[2], b[2], c[2]), f(a[3], b[3], c[3])]
+    }
+
     let splat = |v: f32| [v; 4];
     match opcode {
-        0 => per(&|x, y, _| x + y),
-        1 => per(&|x, y, _| mul_sm3(x, y)),
-        2 => per(&|x, y, _| if x >= y { x } else { y }),
-        3 => per(&|x, y, _| if x < y { x } else { y }),
-        4 => per(&|x, y, _| bool_f(x == y)),
-        5 => per(&|x, y, _| bool_f(x > y)),
-        6 => per(&|x, y, _| bool_f(x >= y)),
-        7 => per(&|x, y, _| bool_f(x != y)),
-        8 => per(&|x, _, _| x - x.floor()),
-        9 => per(&|x, _, _| x.trunc()),
-        10 => per(&|x, _, _| x.floor()),
-        11 => per(&|x, y, z| mul_sm3(x, y) + z),
-        12 => per(&|x, y, z| if x == 0.0 { y } else { z }),
-        13 => per(&|x, y, z| if x >= 0.0 { y } else { z }),
-        14 => per(&|x, y, z| if x > 0.0 { y } else { z }),
+        0 => per_component(a, b, c, |x, y, _| x + y),
+        1 => per_component(a, b, c, |x, y, _| mul_sm3(x, y)),
+        2 => per_component(a, b, c, |x, y, _| if x >= y { x } else { y }),
+        3 => per_component(a, b, c, |x, y, _| if x < y { x } else { y }),
+        4 => per_component(a, b, c, |x, y, _| bool_f(x == y)),
+        5 => per_component(a, b, c, |x, y, _| bool_f(x > y)),
+        6 => per_component(a, b, c, |x, y, _| bool_f(x >= y)),
+        7 => per_component(a, b, c, |x, y, _| bool_f(x != y)),
+        8 => per_component(a, b, c, |x, _, _| x - x.floor()),
+        9 => per_component(a, b, c, |x, _, _| x.trunc()),
+        10 => per_component(a, b, c, |x, _, _| x.floor()),
+        11 => per_component(a, b, c, |x, y, z| mul_sm3(x, y) + z),
+        12 => per_component(a, b, c, |x, y, z| if x == 0.0 { y } else { z }),
+        13 => per_component(a, b, c, |x, y, z| if x >= 0.0 { y } else { z }),
+        14 => per_component(a, b, c, |x, y, z| if x > 0.0 { y } else { z }),
         15 => splat(((mul_sm3(a[0], b[0]) + mul_sm3(a[1], b[1])) + mul_sm3(a[2], b[2])) + mul_sm3(a[3], b[3])),
         16 => splat((mul_sm3(a[0], b[0]) + mul_sm3(a[1], b[1])) + mul_sm3(a[2], b[2])),
         17 => splat((mul_sm3(a[0], b[0]) + mul_sm3(a[1], b[1])) + c[0]),
@@ -314,37 +565,11 @@ fn vector_op(opcode: u32, s: &[Vec4; 3], state: &mut ShaderState) -> Vec4 {
         28 => [1.0, mul_sm3(a[1], b[1]), a[2], b[3]],
         29 => {
             state.a0 = address_from(a[3] + 0.5);
-            per(&|x, y, _| if x >= y { x } else { y })
+            per_component(a, b, c, |x, y, _| if x >= y { x } else { y })
         }
         // opcode_30 / opcode_31: no operation defined
         _ => splat(0.0),
     }
-}
-
-/// The scalar operands: `a` (W of the shared source 3 or the constant) and `b` (the second component or the
-/// temporary register of the constant-register forms).
-fn scalar_operands(op: &AluInstruction, shader_type: ShaderType, state: &ShaderState, env: &dyn ShaderEnv) -> (f32, f32) {
-    let info = &SCALAR_OPCODES[op.scalar_opcode() as usize];
-    let swizzle = op.src_swizzle(3);
-    if info.operand_count == 2 {
-        // c#.w and r#.x share source 3's negate and swizzle; both take abs_constants
-        let mut index = op.src_reg(3) as i32;
-        if op.src_const_is_addressed(3) {
-            index += if op.is_const_address_register_relative() { state.a0 } else { state.al };
-        }
-        let base = if shader_type == ShaderType::Pixel { 256 } else { 0 };
-        let constant = env.float_constant(base + (index & 0xFF) as u32);
-        let temp = state.r[(op.scalar_const_reg_op_src_temp_reg() & 63) as usize];
-        let fix = |v: f32| {
-            let v = if op.abs_constants() { v.abs() } else { v };
-            if op.src_negate(3) { -v } else { v }
-        };
-        return (fix(constant[swizzled_component_index(swizzle, 3) as usize]), fix(temp[swizzled_component_index(swizzle, 0) as usize]));
-    }
-    let v = read_source(op, 3, shader_type, state, env);
-    // `b` is Z when the vector operation also uses source 3, else X (components of the swizzled source)
-    let second = if VECTOR_OPCODES[op.vector_opcode() as usize].operand_count() == 3 { 2 } else { 0 };
-    (v[3], v[second])
 }
 
 /// One scalar ALU operation; updates p0 / a0 / kill as the opcode does.
@@ -432,6 +657,14 @@ fn scalar_op(opcode: u32, a: f32, b: f32, state: &mut ShaderState) -> f32 {
 
 /// Writes `value` to temporary register `index` under `mask`.
 fn write_temp(state: &mut ShaderState, index: usize, mask: u32, value: Vec4) {
+    match mask {
+        0 => return,
+        0xF => {
+            state.r[index] = value;
+            return;
+        }
+        _ => {}
+    }
     for (c, v) in value.iter().enumerate() {
         if mask & (1 << c) != 0 {
             state.r[index][c] = *v;
@@ -453,51 +686,48 @@ fn write_export(slot: &mut Option<Vec4>, mask: u32, value: Vec4) {
 }
 
 /// One ALU instruction: both operations read their sources first, then write.
-fn alu(op: &AluInstruction, shader_type: ShaderType, state: &mut ShaderState, env: &dyn ShaderEnv) {
-    if op.is_predicated() && state.p0 != op.predicate_condition() {
+fn alu(compiled: &CompiledAlu, shader_type: ShaderType, state: &mut ShaderState, env: &dyn ShaderEnv) {
+    if compiled.predicate.is_some_and(|condition| state.p0 != condition) {
         return;
     }
-    let vector_opcode = op.vector_opcode();
-    let vector_operands = VECTOR_OPCODES[vector_opcode as usize].operand_count();
+    let (vector_opcode, scalar_opcode) = (compiled.vector_opcode, compiled.scalar_opcode);
     let mut sources = [[0.0f32; 4]; 3];
-    for i in 0..vector_operands {
-        sources[i as usize] = read_source(op, i + 1, shader_type, state, env);
+    for (i, source) in sources.iter_mut().enumerate().take(compiled.vector_operands) {
+        *source = compiled.sources[i].read(state, env);
     }
-    let scalar_opcode = op.scalar_opcode();
-    let (a, b) = if SCALAR_OPCODES[scalar_opcode as usize].operand_count > 0 { scalar_operands(op, shader_type, state, env) } else { (0.0, 0.0) };
+    let (a, b) = compiled.scalar_operands(state, env, &sources[2]);
 
     let mut vector = vector_op(vector_opcode, &sources, state);
     let mut scalar = scalar_op(scalar_opcode, a, b, state);
     state.ps = scalar;
-    if op.vector_clamp() {
+    if compiled.vector_clamp {
         vector = vector.map(clamp01);
     }
-    if op.scalar_clamp() {
+    if compiled.scalar_clamp {
         scalar = clamp01(scalar);
     }
 
-    if !op.is_export() {
-        write_temp(state, temp_index(op.vector_dest(), op.is_vector_dest_relative(), state), op.vector_write_mask(), vector);
-        write_temp(state, temp_index(op.scalar_dest(), op.is_scalar_dest_relative(), state), op.scalar_write_mask(), [scalar; 4]);
-        return;
-    }
+    let (reg, vmask, smask, one_mask, mask) = match compiled.dest {
+        AluDest::Temps { vector: (vd, vrel), vector_mask, scalar: (sd, srel), scalar_mask } => {
+            write_temp(state, temp_index(vd, vrel, state), vector_mask, vector);
+            write_temp(state, temp_index(sd, srel, state), scalar_mask, [scalar; 4]);
+            return;
+        }
+        AluDest::Export { reg, vector_mask, scalar_mask, one_mask, mask } => (reg, vector_mask, scalar_mask, one_mask, mask),
+    };
     // an export: vector and scalar components, constant 0 and 1 components, into the register in vector_dest
-    let (vmask, smask) = (op.vector_op_result_write_mask(), op.scalar_op_result_write_mask());
-    let (c0, c1) = (op.constant_0_write_mask(), op.constant_1_write_mask());
     let mut value = [0.0; 4];
     for c in 0..4 {
         value[c] = if vmask & (1 << c) != 0 {
             vector[c]
         } else if smask & (1 << c) != 0 {
             scalar
-        } else if c1 & (1 << c) != 0 {
+        } else if one_mask & (1 << c) != 0 {
             1.0
         } else {
             0.0
         };
     }
-    let mask = vmask | smask | c0 | c1;
-    let reg = op.vector_dest();
     let ex = &mut state.exports;
     match (shader_type, reg) {
         (_, export::EXPORT_ADDRESS) | (_, export::EXPORT_DATA_0..=export::EXPORT_DATA_4) => ex.memexport_writes += 1,
@@ -953,6 +1183,34 @@ mod tests {
                 ShaderType::Vertex => assert!(s.exports.position.is_some(), "{}: no position", name),
                 ShaderType::Pixel => assert!(s.exports.colors[0].is_some(), "{}: no color", name),
             }
+        }
+    }
+
+    /// Pixel shader cost: `XENON_SHADER_DIR=<dir> cargo test --release --lib bench_dumped_pixel_shaders -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_dumped_pixel_shaders() {
+        let dir = std::env::var("XENON_SHADER_DIR").expect("XENON_SHADER_DIR");
+        let mut env = Mock::new();
+        env.c.iter_mut().enumerate().for_each(|(i, c)| *c = [0.5 + (i % 7) as f32 * 0.1; 4]);
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !name.starts_with("ps_") {
+                continue;
+            }
+            let words: Vec<u32> = std::fs::read(&path).unwrap().chunks_exact(4).map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+            let n = 200_000;
+            let start = std::time::Instant::now();
+            let mut sum = 0.0f32;
+            let compiled = CompiledShader::compile(&words, ShaderType::Pixel, &env);
+            for i in 0..n {
+                let mut s = ShaderState::default();
+                s.r[0] = [i as f32 / n as f32, 0.25, 0.5, 1.0];
+                compiled.run(&mut s, &mut env).unwrap();
+                sum += s.exports.colors[0].map_or(0.0, |c| c[0]);
+            }
+            println!("{}: {:.0} ns/pixel (checksum {})", name, start.elapsed().as_nanos() as f64 / n as f64, sum);
         }
     }
 }
