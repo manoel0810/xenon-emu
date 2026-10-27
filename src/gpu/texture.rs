@@ -68,13 +68,25 @@ fn clamp_coord(t: i32, size: u32, clamp_mode: u32) -> Option<u32> {
     }
 }
 
-/// Border color value from border_color_type.
+/// BorderColor: k_AGBR_Black, k_AGBR_White; the two YCbCr blacks are treated as black.
 fn border_color_value(border_type: u32) -> Vec4 {
     match border_type {
-        0 => [0.0, 0.0, 0.0, 0.0], // transparent black
-        1 => [0.0, 0.0, 0.0, 1.0], // opaque black
-        2 => [1.0, 1.0, 1.0, 1.0], // opaque white
+        1 => [1.0, 1.0, 1.0, 1.0],
         _ => [0.0, 0.0, 0.0, 0.0],
+    }
+}
+
+/// A `bits`-wide texel component through TextureSign and num_format (deviation: kGamma is read as unsigned, without
+/// Xenia's piecewise-linear degamma).
+fn texel_component(raw: u32, bits: u32, sign: u32, integer: bool) -> f32 {
+    let max = ((1u64 << bits) - 1) as f32;
+    let signed = || ((raw << (32 - bits)) as i32 >> (32 - bits)) as f32;
+    match (sign, integer) {
+        (1, true) => signed(),
+        (_, true) => raw as f32,
+        (1, false) => (signed() / (max / 2.0).floor()).max(-1.0),
+        (2, false) => raw as f32 / max * 2.0 - 1.0,
+        _ => raw as f32 / max,
     }
 }
 
@@ -100,43 +112,36 @@ impl<'a> GpuTextureSampler<'a> {
 
         let base = constant.base_address() as u64;
         let fmt = constant.format();
+        let integer = constant.num_format() == 1;
         let raw_components = match fmt {
             // Format 6: k_8_8_8_8 (32 bpp = 4 bytes)
             6 => {
                 let byte_offset = if constant.tiled() {
-                    let width_aligned = (width + 31) & !31;
-                    (tiled_offset_2d(x, y, width_aligned, 2) as u64) * 4
+                    (tiled_offset_2d(x, y, constant.pitch_texels(width), 2) as u64) * 4
                 } else {
                     let row_pitch = constant.linear_pitch_bytes(width, 4) as u64;
                     (y as u64) * row_pitch + (x as u64) * 4
                 };
                 let raw = self.bus.read_u32(base + byte_offset).unwrap_or(0);
                 let swapped = guest_endian_swap(raw, constant.endianness());
-                [
-                    (swapped & 0xFF) as f32 / 255.0,
-                    ((swapped >> 8) & 0xFF) as f32 / 255.0,
-                    ((swapped >> 16) & 0xFF) as f32 / 255.0,
-                    ((swapped >> 24) & 0xFF) as f32 / 255.0,
-                ]
+                std::array::from_fn(|c| texel_component((swapped >> (8 * c)) & 0xFF, 8, constant.sign(c), integer))
             }
             // Format 2: k_8 (8 bpp = 1 byte)
             2 => {
                 let byte_offset = if constant.tiled() {
-                    let width_aligned = (width + 31) & !31;
-                    tiled_offset_2d(x, y, width_aligned, 0) as u64
+                    tiled_offset_2d(x, y, constant.pitch_texels(width), 0) as u64
                 } else {
                     let row_pitch = constant.linear_pitch_bytes(width, 1) as u64;
                     (y as u64) * row_pitch + (x as u64)
                 };
                 let raw = self.bus.read_u8(base + byte_offset).unwrap_or(0);
-                let v = raw as f32 / 255.0;
+                let v = texel_component(raw as u32, 8, constant.sign(0), integer);
                 [v, v, v, 1.0]
             }
             // Format 25: k_16_16 (32 bpp = 4 bytes: two 16-bit)
             25 => {
                 let byte_offset = if constant.tiled() {
-                    let width_aligned = (width + 31) & !31;
-                    (tiled_offset_2d(x, y, width_aligned, 2) as u64) * 4
+                    (tiled_offset_2d(x, y, constant.pitch_texels(width), 2) as u64) * 4
                 } else {
                     let row_pitch = constant.linear_pitch_bytes(width, 4) as u64;
                     (y as u64) * row_pitch + (x as u64) * 4
@@ -144,8 +149,8 @@ impl<'a> GpuTextureSampler<'a> {
                 let raw = self.bus.read_u32(base + byte_offset).unwrap_or(0);
                 let swapped = guest_endian_swap(raw, constant.endianness());
                 [
-                    (swapped & 0xFFFF) as f32 / 65535.0,
-                    ((swapped >> 16) & 0xFFFF) as f32 / 65535.0,
+                    texel_component(swapped & 0xFFFF, 16, constant.sign(0), integer),
+                    texel_component(swapped >> 16, 16, constant.sign(1), integer),
                     0.0,
                     1.0,
                 ]
@@ -515,6 +520,9 @@ mod tests {
         assert_eq!(tiled_offset_2d(0, 1, 1280, 2), 4);
     }
 
+    /// XE_GPU_MAKE_TEXTURE_SWIZZLE(X, Y, Z, W).
+    const RGBA: u32 = 0 | (1 << 3) | (2 << 6) | (3 << 9);
+
     #[test]
     fn format_6_unpacks_with_endian_swap_and_swizzle() {
         let mut bus = MemoryBus::new();
@@ -524,8 +532,8 @@ mod tests {
         let mut words = [0u32; 6];
         words[0] = (2 << 0) | (2 << 10) | (2 << 13); // 2D, clamp_x=2, clamp_y=2
         words[1] = (6 << 0) | (2 << 6) | (1 << 12);   // format 6, endian 2, base 0x1000 (1 << 12)
-        words[2] = 0;                                 // size 1x1 (0+1, 0+1), swizzle_x=0 (R)
-        words[3] = (1 << 0) | (2 << 3) | (3 << 6);    // swizzle_y=1 (G), z=2 (B), w=3 (A)
+        words[2] = 0;                                 // size 1x1 (0+1, 0+1)
+        words[3] = RGBA << 1;                         // swizzle in dword_3 bits 1..12
         let constant = TextureFetchConstant { words };
         let sampler = GpuTextureSampler::new(&bus);
         let texel = sampler.sample_texel(&constant, 0, 0, 1, 1);
@@ -533,6 +541,17 @@ mod tests {
         assert!((texel[1] - 0x22 as f32 / 255.0).abs() < 1e-4);
         assert!((texel[2] - 0x33 as f32 / 255.0).abs() < 1e-4);
         assert!((texel[3] - 0x44 as f32 / 255.0).abs() < 1e-4);
+        // swizzle BGR1, exp_adjust -1, x signed, y biased
+        let mut words = constant.words;
+        words[0] |= (1 << 2) | (2 << 4);
+        words[3] = ((2 | (1 << 3) | (0 << 6) | (5 << 9)) << 1) | (((-1i32 as u32) & 0x3F) << 13);
+        let constant = TextureFetchConstant { words };
+        assert_eq!((constant.exp_adjust(), constant.swizzle(3), constant.sign(0), constant.sign(1)), (-1, 5, 1, 2));
+        let texel = sampler.sample_texel(&constant, 0, 0, 1, 1);
+        let expected = [0x33 as f32 / 255.0, 0x22 as f32 / 255.0 * 2.0 - 1.0, 0x11 as f32 / 127.0, 1.0].map(|v| v * 0.5);
+        for c in 0..4 {
+            assert!((texel[c] - expected[c]).abs() < 1e-4, "{:?} {:?}", texel, expected);
+        }
     }
 
     #[test]
@@ -554,7 +573,7 @@ mod tests {
         words[0] = (2 << 0) | (2 << 10) | (2 << 13); // 2D, clamp_x=2, clamp_y=2, linear (tiled=0)
         words[1] = (6 << 0) | (2 << 6) | (1 << 12);   // format 6, endian 2, base 0x1000
         words[2] = 1;                                 // size 2x1 (w=2, h=1)
-        words[3] = (1 << 0) | (2 << 3) | (3 << 6) | (1 << 15); // swizzles R,G,B,A; mag_filter=1 (bilinear)
+        words[3] = (RGBA << 1) | (1 << 19);          // swizzle RGBA; mag_filter=1 (bilinear)
         let constant = TextureFetchConstant { words };
         let mut sampler = GpuTextureSampler::new(&bus);
         let mut op = FetchInstruction::default();

@@ -64,68 +64,49 @@ impl TextureFetchConstant {
     pub fn clamp_z(&self) -> u32 {
         (self.words[0] >> 16) & 7
     }
-    pub fn sign_x(&self) -> u32 {
-        (self.words[0] >> 2) & 3
-    }
-    pub fn sign_y(&self) -> u32 {
-        (self.words[0] >> 4) & 3
-    }
-    pub fn sign_z(&self) -> u32 {
-        (self.words[0] >> 6) & 3
-    }
-    pub fn sign_w(&self) -> u32 {
-        (self.words[0] >> 8) & 3
-    }
+    /// dword_3: num_format (0 = fraction, 1 = integer), swizzle (3 bits per component from x), exp_adjust (signed),
+    /// mag/min/mip filters, aniso filter.
     pub fn num_format(&self) -> u32 {
-        (self.words[2] >> 26) & 1
+        self.words[3] & 1
     }
-    pub fn swizzle_x(&self) -> u32 {
-        (self.words[2] >> 27) & 7
-    }
-    pub fn swizzle_y(&self) -> u32 {
-        self.words[3] & 7
-    }
-    pub fn swizzle_z(&self) -> u32 {
-        (self.words[3] >> 3) & 7
-    }
-    pub fn swizzle_w(&self) -> u32 {
-        (self.words[3] >> 6) & 7
-    }
+    /// XE_GPU_TEXTURE_SWIZZLE of `component`: 0..3 = X/Y/Z/W, 4 = 0, 5 = 1.
     pub fn swizzle(&self, component: usize) -> u32 {
-        match component {
-            0 => self.swizzle_x(),
-            1 => self.swizzle_y(),
-            2 => self.swizzle_z(),
-            3 => self.swizzle_w(),
-            _ => 4,
-        }
+        (self.words[3] >> (1 + 3 * component)) & 7
     }
     pub fn exp_adjust(&self) -> i32 {
-        let v = (self.words[3] >> 9) & 0x3F;
-        ((v << 26) as i32) >> 26
+        ((self.words[3] << 13) as i32) >> 26
     }
     pub fn mag_filter(&self) -> u32 {
-        (self.words[3] >> 15) & 3
-    }
-    pub fn min_filter(&self) -> u32 {
-        (self.words[3] >> 17) & 3
-    }
-    pub fn mip_filter(&self) -> u32 {
         (self.words[3] >> 19) & 3
     }
+    pub fn min_filter(&self) -> u32 {
+        (self.words[3] >> 21) & 3
+    }
+    pub fn mip_filter(&self) -> u32 {
+        (self.words[3] >> 23) & 3
+    }
     pub fn aniso_filter(&self) -> u32 {
-        (self.words[3] >> 21) & 7
+        (self.words[3] >> 25) & 7
     }
+    /// dword_5: BorderColor.
     pub fn border_color(&self) -> u32 {
-        self.words[4] & 3
+        self.words[5] & 3
     }
-    pub fn linear_pitch_bytes(&self, width: u32, bpp: usize) -> usize {
-        let p = self.pitch();
-        if p != 0 {
-            (p as usize) * 32
-        } else {
-            (width as usize * bpp + 31) & !31
+    /// TextureSign of `component` (dword_0): 0 unsigned, 1 signed, 2 unsigned biased (2c - 1), 3 gamma.
+    pub fn sign(&self, component: usize) -> u32 {
+        (self.words[0] >> (2 + 2 * component)) & 3
+    }
+    /// Row pitch in texels: the pitch field counts 32-texel units.
+    pub fn pitch_texels(&self, width: u32) -> u32 {
+        match self.pitch() {
+            0 => width.next_multiple_of(32),
+            p => p * 32,
         }
+    }
+    /// Bytes per row of a linear texture: the pitch in texels times the texel size, rows aligned to 256 bytes
+    /// (texture_util.cc kTextureLinearRowAlignmentBytes).
+    pub fn linear_pitch_bytes(&self, width: u32, bpp: usize) -> usize {
+        (self.pitch_texels(width) as usize * bpp).next_multiple_of(256)
     }
 }
 
