@@ -3,6 +3,16 @@
 use super::super::dispatcher::KernelDispatcher;
 use crate::memory::MemoryBus;
 
+const X_E_INVALIDARG: u64 = 0x8007_0057;
+const X_E_FAIL: u64 = 0x8000_4005;
+/// XAudio driver handles (Xenia xboxkrnl_audio.cc): 0x41550000 | client index.
+const AUDIO_DRIVER_HANDLE: u32 = 0x4155_0000;
+/// apu/audio_driver.h kFrameChannelsDefault, kChannelSamplesDefault.
+const AUDIO_CHANNELS: u64 = 6;
+const AUDIO_CHANNEL_SAMPLES: u64 = 256;
+/// XCONFIG_USER_AUDIO_FLAGS as XGetAudioFlags reports it (Dolby Digital | Dolby Pro Logic).
+const XCONFIG_USER_AUDIO_FLAGS: u32 = 0x0001_0001;
+
 impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xboxkrnl_misc(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
@@ -81,58 +91,75 @@ impl KernelDispatcher {
             // 0x01E7: XInputdWriteState | 0x01E8: XInputdNotify
             0x01E7 | 0x01E8 => 0,
 
-            // 0x01F2: XAudioRenderDriverInitialize
-            0x01F2 => 0,
+            // 0x01F2: XAudioRenderDriverInitialize | 0x01F6: XAudioRenderDriverLock | 0x01FA: XAudioBeginDigitalBypassMode |
+            // 0x01FB: XAudioEndDigitalBypassMode | 0x01FC: XAudioSubmitDigitalPacket | 0x0200: XAudioSetSpeakerConfig |
+            // 0x0276: XAudioOverrideSpeakerConfig: not exported by Xenia's xboxkrnl_audio.cc; success
+            0x01F2 | 0x01F6 | 0x01FA | 0x01FB | 0x01FC | 0x0200 | 0x0276 => 0,
 
-            // 0x01F3: XAudioRegisterRenderDriverClient
+            // 0x01F3: XAudioRegisterRenderDriverClient(callback_ptr -> {callback, argument}, driver_ptr): Xenia
+            // registers a client with the audio system and returns the driver handle 0x41550000 | index.
             0x01F3 => {
-                let p_handle = args.get(2).copied().unwrap_or(0);
-                if p_handle != 0 {
-                    let _ = bus.write_u32(p_handle, 1);
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                let callback = if arg(0) != 0 { bus.read_u32(arg(0)).unwrap_or(0) } else { 0 };
+                if callback == 0 {
+                    return Some(X_E_INVALIDARG);
+                }
+                let argument = bus.read_u32(arg(0) + 4).unwrap_or(0);
+                match self.audio_clients.iter().position(Option::is_none) {
+                    Some(index) => {
+                        self.audio_clients[index] = Some((callback, argument));
+                        let _ = bus.write_u32(arg(1), AUDIO_DRIVER_HANDLE | index as u32);
+                        0
+                    }
+                    None => X_E_FAIL,
+                }
+            }
+
+            // 0x01F4: XAudioUnregisterRenderDriverClient(driver)
+            0x01F4 => {
+                let index = (args.first().copied().unwrap_or(0) & 0xFFFF) as usize;
+                if let Some(client) = self.audio_clients.get_mut(index) {
+                    *client = None;
                 }
                 0
             }
 
-            // 0x01F4: XAudioUnregisterRenderDriverClient
-            0x01F4 => 0,
-
-            // 0x01F5: XAudioSubmitRenderDriverFrame
+            // 0x01F5: XAudioSubmitRenderDriverFrame(driver, samples): one frame of 6 channels x 256 big-endian floats,
+            // channel after channel (apu/audio_driver.h), handed to the host interleaved as 16-bit PCM.
             0x01F5 => {
-                let p_frame = args.get(1).copied().unwrap_or(0);
-                if p_frame != 0 {
-                    let mut pcm = Vec::with_capacity(128);
-                    for i in 0..128 {
-                        if let Ok(sample) = bus.read_u16(p_frame + i * 2) {
-                            pcm.push(sample as i16);
-                        }
-                    }
-                    if !pcm.is_empty() {
-                        self.host.audio().submit_pcm(&pcm);
-                    }
+                let samples = args.get(1).copied().unwrap_or(0);
+                if samples != 0 {
+                    let read = |c: u64, i: u64| f32::from_bits(bus.read_u32(samples + 4 * (c * AUDIO_CHANNEL_SAMPLES + i)).unwrap_or(0));
+                    let pcm: Vec<i16> = (0..AUDIO_CHANNEL_SAMPLES)
+                        .flat_map(|i| (0..AUDIO_CHANNELS).map(move |c| (c, i)))
+                        .map(|(c, i)| (read(c, i).clamp(-1.0, 1.0) * 32767.0).round() as i16)
+                        .collect();
+                    self.host.audio().submit_pcm(&pcm);
                 }
                 0
             }
 
-            // 0x01F6: XAudioRenderDriverLock
-            0x01F6 => 0,
+            // 0x01F7: XAudioGetVoiceCategoryVolumeChangeMask(driver, mask_ptr): no change (Xenia writes 0)
+            0x01F7 => {
+                let _ = bus.write_u32(args.get(1).copied().unwrap_or(0), 0);
+                0
+            }
 
-            // 0x01F7: XAudioGetVoiceCategoryVolumeChangeMask | 0x01F8: XAudioGetVoiceCategoryVolume | 0x01FA: XAudioBeginDigitalBypassMode | 0x01FB: XAudioEndDigitalBypassMode | 0x01FC: XAudioSubmitDigitalPacket
-            0x01F7 | 0x01F8 | 0x01FA | 0x01FB | 0x01FC => 0,
+            // 0x01F8: XAudioGetVoiceCategoryVolume(category, volume_ptr): full volume (Xenia writes 1.0f)
+            0x01F8 => {
+                let _ = bus.write_u32(args.get(1).copied().unwrap_or(0), 1f32.to_bits());
+                0
+            }
 
-            // 0x01FF: XAudioGetSpeakerConfig
+            // 0x034D: XAudioEnableDucker
+            0x034D => 0,
+
+            // 0x01FF: XAudioGetSpeakerConfig(config_ptr): XCONFIG_USER_AUDIO_FLAGS, the same value XGetAudioFlags
+            // (xam 0x03CA) reports
             0x01FF => {
-                let p_config = args.first().copied().unwrap_or(0);
-                if p_config != 0 {
-                    let _ = bus.write_u32(p_config, 0x0001_0001); // XAUDIOSPEAKERCONFIG_STEREO
-                }
+                let _ = bus.write_u32(args.first().copied().unwrap_or(0), XCONFIG_USER_AUDIO_FLAGS);
                 0
             }
-
-            // 0x0200: XAudioSetSpeakerConfig
-            0x0200 => 0,
-
-            // 0x0276: XAudioOverrideSpeakerConfig
-            0x0276 => 0,
 
             // 0x021C: XUsbcamSetConfig | 0x021D: XUsbcamGetState | 0x0221: XUsbcamGetView
             0x021C | 0x021D | 0x0221 => 0,
@@ -163,40 +190,41 @@ impl KernelDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::dispatcher::KernelDispatcher;
-    use crate::memory::MemoryBus;
+    use super::*;
 
     #[test]
-    fn test_xaudio_speaker_config() {
+    fn xaudio_clients_and_frames_follow_xenia() {
         let mut k = KernelDispatcher::new();
         let mut bus = MemoryBus::new();
+        // callback {0x82001000, 0x1234}
+        bus.write_u32(0x1000, 0x8200_1000).unwrap();
+        bus.write_u32(0x1004, 0x1234).unwrap();
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01F3, &[0x1000, 0x2000], &mut bus), 0);
+        assert_eq!(bus.read_u32(0x2000).unwrap(), 0x4155_0000);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01F3, &[0x1000, 0x2000], &mut bus), 0);
+        assert_eq!(bus.read_u32(0x2000).unwrap(), 0x4155_0001);
+        assert_eq!(k.audio_clients[1], Some((0x8200_1000, 0x1234)));
+        // a null callback is rejected
+        bus.write_u32(0x1100, 0).unwrap();
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01F3, &[0x1100, 0x2000], &mut bus), X_E_INVALIDARG);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01F4, &[0x4155_0000], &mut bus), 0);
+        assert_eq!(k.audio_clients[0], None);
 
-        let cfg_ptr = 0x4000_1000;
-        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01FF, &[cfg_ptr], &mut bus), 0);
-        assert_eq!(bus.read_u32(cfg_ptr).unwrap(), 0x0001_0001); // Stereo
-    }
-
-    #[test]
-    fn test_xaudio_submit_frame_and_drain() {
-        let mut k = KernelDispatcher::new();
-        let mut bus = MemoryBus::new();
-
-        // Register client
-        let h_ptr = 0x4000_2000;
-        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01F3, &[0, 0, h_ptr], &mut bus), 0);
-        assert_eq!(bus.read_u32(h_ptr).unwrap(), 1);
-
-        // Prepare 16 PCM stereo samples (32 i16 words)
-        let frame_ptr = 0x4000_2100;
-        for i in 0..32 {
-            bus.write_u16(frame_ptr + i * 2, (i * 100) as u16).unwrap();
+        // frame: channel c, sample i = (c + 1) / 8 for i = 0, -1.5 (clamped) for i = 1
+        let frame = 0x3000;
+        for c in 0..6u64 {
+            bus.write_u32(frame + 4 * (c * 256), ((c + 1) as f32 / 8.0).to_bits()).unwrap();
+            bus.write_u32(frame + 4 * (c * 256 + 1), (-1.5f32).to_bits()).unwrap();
         }
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01F5, &[0x4155_0001, frame], &mut bus), 0);
+        let pcm = k.host.audio().drain_pcm();
+        assert_eq!(pcm.len(), 6 * 256);
+        assert_eq!(pcm[..6], [4096, 8192, 12288, 16384, 20479, 24575]);
+        assert_eq!(pcm[6..12], [-32767; 6]);
 
-        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01F5, &[1, frame_ptr], &mut bus), 0);
-
-        let drained = k.host.audio().drain_pcm();
-        assert!(!drained.is_empty());
-        assert_eq!(drained[0], 0);
-        assert_eq!(drained[1], 100);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01FF, &[0x4000], &mut bus), 0);
+        assert_eq!(bus.read_u32(0x4000).unwrap(), XCONFIG_USER_AUDIO_FLAGS);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x01F8, &[0, 0x4004], &mut bus), 0);
+        assert_eq!(bus.read_u32(0x4004).unwrap(), 1f32.to_bits());
     }
 }

@@ -95,6 +95,8 @@ pub struct KernelDispatcher {
     pub vfs_handles: HashMap<u32, VfsFileHandle>,
     pub host: Box<dyn crate::host::Host>,
     pub vfs: super::vfs::VirtualFileSystem,
+    /// XAudio render driver clients (callback, callback argument), by client index (Xenia AudioSystem clients_).
+    pub audio_clients: [Option<(u32, u32)>; 8],
 }
 
 impl KernelDispatcher {
@@ -141,6 +143,7 @@ impl KernelDispatcher {
             video: super::video::VideoConfig::default(),
             vfs_handles: HashMap::new(),
             host: crate::host::default_host(),
+            audio_clients: [None; 8],
             vfs: super::vfs::VirtualFileSystem::new(),
         }
     }
