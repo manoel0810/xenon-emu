@@ -6,6 +6,16 @@ use crate::kernel::objects::{self, KernelObject, ObjectKind};
 use crate::kernel::scheduler;
 use crate::memory::MemoryBus;
 
+/// X_FILE_INFORMATION_CLASS values (Xenia xbox.h).
+const FILE_STANDARD_INFORMATION: u32 = 5;
+const FILE_INTERNAL_INFORMATION: u32 = 6;
+const FILE_POSITION_INFORMATION: u32 = 14;
+const FILE_ALIGNMENT_INFORMATION: u32 = 17;
+const FILE_SECTOR_INFORMATION: u32 = 26;
+const FILE_NETWORK_OPEN_INFORMATION: u32 = 34;
+const STATUS_INVALID_INFO_CLASS: u64 = 0xC000_0003;
+const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xC000_0004;
+
 impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xboxkrnl_nt(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
@@ -282,66 +292,66 @@ impl KernelDispatcher {
                 }
             }
 
-            // 0x00E8: NtQueryInformationFile (FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass)
+            // 0x00E8: NtQueryInformationFile(handle, io_status_block, info, length, class), as Xenia's
+            // xboxkrnl_io_info.cc: unknown classes are X_STATUS_INVALID_INFO_CLASS and short buffers
+            // X_STATUS_INFO_LENGTH_MISMATCH (both before the handle lookup); the buffer is zeroed, then filled.
+            // FileStandardInformation (5) is kept from before (Xenia does not list it).
             0x00E8 => {
-                let h = args.first().copied().unwrap_or(0) as u32;
-                let p_ios = args.get(1).copied().unwrap_or(0);
-                let p_info = args.get(2).copied().unwrap_or(0);
-                let info_class = args.get(4).copied().unwrap_or(0) as u32;
-
-                if let Some(file) = self.vfs_handles.get(&h) {
-                    let flen = file.data.len() as u64;
-                    let pos = file.position as u64;
-                    match info_class {
-                        5 => { // FileStandardInformation
-                            if p_info != 0 {
-                                let _ = bus.write_u64(p_info + 0, flen); // AllocationSize
-                                let _ = bus.write_u64(p_info + 8, flen); // EndOfFile (size)
-                                let _ = bus.write_u32(p_info + 16, 1);   // NumberOfLinks
-                                let _ = bus.write_u8(p_info + 20, 0);    // DeletePending
-                                let _ = bus.write_u8(p_info + 21, if file.is_directory { 1 } else { 0 }); // Directory
-                            }
-                        }
-                        14 => { // FilePositionInformation
-                            if p_info != 0 {
-                                let _ = bus.write_u64(p_info + 0, pos); // CurrentByteOffset
-                            }
-                        }
-                        4 => { // FileBasicInformation
-                            if p_info != 0 {
-                                let _ = bus.write_u64(p_info + 0, 0);
-                                let _ = bus.write_u64(p_info + 8, 0);
-                                let _ = bus.write_u64(p_info + 16, 0);
-                                let _ = bus.write_u64(p_info + 24, 0);
-                                let _ = bus.write_u32(p_info + 32, 0x80);
-                            }
-                        }
-                        21 => { // FileNetworkOpenInformation
-                            if p_info != 0 {
-                                let _ = bus.write_u64(p_info + 0, 0);
-                                let _ = bus.write_u64(p_info + 8, 0);
-                                let _ = bus.write_u64(p_info + 16, 0);
-                                let _ = bus.write_u64(p_info + 24, 0);
-                                let _ = bus.write_u64(p_info + 32, flen);
-                                let _ = bus.write_u64(p_info + 40, flen);
-                                let _ = bus.write_u32(p_info + 48, 0x80);
-                            }
-                        }
-                        _ => {
-                            if p_info != 0 {
-                                let _ = bus.write_u64(p_info + 0, flen);
-                                let _ = bus.write_u64(p_info + 8, flen);
-                            }
-                        }
-                    }
-                    if p_ios != 0 {
-                        let _ = bus.write_u32(p_ios, 0);
-                        let _ = bus.write_u32(p_ios + 4, 24);
-                    }
-                    0 // STATUS_SUCCESS
-                } else {
-                    0xC000_0008 // STATUS_INVALID_HANDLE
+                let (p_ios, p_info, length, class) = (arg(1), arg(2), arg(3) as u32, arg(4) as u32);
+                let minimum = match class {
+                    FILE_INTERNAL_INFORMATION | FILE_POSITION_INFORMATION => 8,
+                    FILE_ALIGNMENT_INFORMATION | FILE_SECTOR_INFORMATION => 4,
+                    FILE_STANDARD_INFORMATION => 24,
+                    FILE_NETWORK_OPEN_INFORMATION => 56,
+                    _ => return Some(STATUS_INVALID_INFO_CLASS),
+                };
+                if length < minimum {
+                    return Some(STATUS_INFO_LENGTH_MISMATCH);
                 }
+                let Some(file) = self.vfs_handles.get(&(arg(0) as u32)) else { return Some(0xC000_0008) };
+                let size = file.data.len() as u64;
+                // X_FILE_ATTRIBUTE_DIRECTORY / X_FILE_ATTRIBUTE_NORMAL
+                let attributes = if file.is_directory { 0x10 } else { 0x80 };
+                // a stable per-path number for the internal index and the sector
+                let hash = file.name.to_lowercase().bytes().fold(0xCBF2_9CE4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01B3));
+                for off in (0..length as u64).step_by(4) {
+                    let _ = bus.write_u32(p_info + off, 0);
+                }
+                let written = match class {
+                    FILE_INTERNAL_INFORMATION => {
+                        let _ = bus.write_u64(p_info, hash);
+                        8
+                    }
+                    FILE_POSITION_INFORMATION => {
+                        let _ = bus.write_u64(p_info, file.position as u64);
+                        8
+                    }
+                    FILE_ALIGNMENT_INFORMATION => 4,
+                    FILE_SECTOR_INFORMATION => {
+                        let _ = bus.write_u32(p_info, (hash ^ (hash >> 32)) as u32);
+                        4
+                    }
+                    FILE_STANDARD_INFORMATION => {
+                        let _ = bus.write_u64(p_info, size);
+                        let _ = bus.write_u64(p_info + 8, size);
+                        let _ = bus.write_u32(p_info + 16, 1);
+                        let _ = bus.write_u8(p_info + 21, file.is_directory as u8);
+                        24
+                    }
+                    // X_FILE_NETWORK_OPEN_INFORMATION: creation, last access, last write, change times, allocation
+                    // size, end of file, attributes (times 0: the host files carry none for the guest)
+                    _ => {
+                        let _ = bus.write_u64(p_info + 32, size);
+                        let _ = bus.write_u64(p_info + 40, size);
+                        let _ = bus.write_u32(p_info + 48, attributes);
+                        56
+                    }
+                };
+                if p_ios != 0 {
+                    let _ = bus.write_u32(p_ios, 0);
+                    let _ = bus.write_u32(p_ios + 4, written);
+                }
+                0
             }
 
             // 0x00EE: NtQueryVirtualMemory
@@ -675,5 +685,32 @@ impl KernelDispatcher {
         let deadline = self.wait_deadline(bus, timeout_ptr);
         let wait = scheduler::WaitRequest::objects(self.current_kthread, vec![object], false, deadline);
         self.begin_wait(bus, wait)
+    }
+}
+
+#[cfg(test)]
+mod file_info_tests {
+    use super::*;
+    use crate::kernel::dispatcher::VfsFileHandle;
+
+    #[test]
+    fn query_information_file_follows_xenia() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        k.vfs_handles.insert(0xF800_0100, VfsFileHandle { handle: 0xF800_0100, name: "media:\\shrdres.xzp".into(), data: vec![0; 223_911], position: 22, is_directory: false });
+        let q = |k: &mut KernelDispatcher, bus: &mut MemoryBus, len: u64, class: u64| k.dispatch("xboxkrnl.exe", 0x00E8, &[0xF800_0100, 0x1000, 0x2000, len, class], bus);
+        // the dash asks for FileNetworkOpenInformation (34): end of file at +40
+        for off in (0..64).step_by(4) {
+            bus.write_u32(0x2000 + off, 0xDEAD_BEEF).unwrap();
+        }
+        assert_eq!(q(&mut k, &mut bus, 0x38, 34), 0);
+        assert_eq!((bus.read_u64(0x2000).unwrap(), bus.read_u64(0x2020).unwrap(), bus.read_u64(0x2028).unwrap()), (0, 223_911, 223_911));
+        assert_eq!((bus.read_u32(0x2030).unwrap(), bus.read_u32(0x2034).unwrap()), (0x80, 0));
+        assert_eq!(bus.read_u32(0x1004).unwrap(), 56);
+        assert_eq!(q(&mut k, &mut bus, 8, 14), 0);
+        assert_eq!(bus.read_u64(0x2000).unwrap(), 22);
+        assert_eq!(q(&mut k, &mut bus, 0x30, 34), STATUS_INFO_LENGTH_MISMATCH);
+        assert_eq!(q(&mut k, &mut bus, 0x40, 21), STATUS_INVALID_INFO_CLASS);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x00E8, &[0x1234, 0x1000, 0x2000, 8, 14], &mut bus), 0xC000_0008);
     }
 }
