@@ -312,9 +312,11 @@ Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/num�
   - Backend padrão determinístico e isolado `HostOffline` em `src/host/offline.rs` (rede desconectada, armazenamento em memória mock, tempo determinístico virtual, controle neutro, áudio no-op, perfil padrão "Xbox Player").
   - Backend real acoplado ao SO `HostReal` em `src/host/real.rs` (`std::fs`, alta resolução de tempo com `SystemTime` e `Instant`, XInput no Windows).
   - Conectado `pub host: Box<dyn crate::host::Host>` no `KernelDispatcher` com `default_host()`.
-- [ ] **5.2: VFS Unificado (`hdd0:`, `game:`, `dvd:`, content e STFS)**
-  - Unificar `src/kernel/vfs.rs` com os dispositivos `\\Device\\Harddisk0\\Partition1` (`hdd0:`), `game:`, `dvd:`, integrando com `HostStorage`.
-  - Conectar contêineres STFS (`src/loader/stfs.rs`) como provedores de arquivos montáveis.
+- [x] **5.2: VFS Unificado (`hdd0:`, `game:`, `dvd:`, content e STFS)**
+  - Implementado `src/kernel/vfs.rs` com traits `VfsFile`, `VfsDevice`, estruturas `MemoryDevice`, `MemoryFile`, `StfsDevice` e `VirtualFileSystem`.
+  - Normalização de caminhos NT (`\\Device\\Harddisk0\\Partition1\\`, `\\Device\\Cdrom0\\`, `\\Device\\Flash\\`) e resolução de symlinks (`hdd0:`, `game:`, `dvd:`, `systemroot:`, `d:`, `update:`).
+  - Montagem de contêineres STFS (`src/loader/stfs.rs`) como dispositivos montáveis transparentes no VFS.
+  - Integrado `pub vfs: super::vfs::VirtualFileSystem` em `KernelDispatcher`, conectando `find_vfs_file` e `register_vfs_file`.
 - [ ] **5.3: Integração dos Serviços de Rede e Tempo do Host no XAM/Xboxkrnl**
   - Rotear `XNetGetEthernetLinkStatus`, `XNetStartup`, `WSAStartup`, `XHttp*` e sockets para `dispatcher.host.net()`.
   - Conectar `KeQuerySystemTime` e `KeQueryPerformanceCounter` a `dispatcher.host.time()`.

@@ -94,6 +94,7 @@ pub struct KernelDispatcher {
     pub video: super::video::VideoConfig,
     pub vfs_handles: HashMap<u32, VfsFileHandle>,
     pub host: Box<dyn crate::host::Host>,
+    pub vfs: super::vfs::VirtualFileSystem,
 }
 
 impl KernelDispatcher {
@@ -140,6 +141,7 @@ impl KernelDispatcher {
             video: super::video::VideoConfig::default(),
             vfs_handles: HashMap::new(),
             host: crate::host::default_host(),
+            vfs: super::vfs::VirtualFileSystem::new(),
         }
     }
 
@@ -298,8 +300,9 @@ impl KernelDispatcher {
         let clean_path = path.trim_matches('\0').replace('/', "\\");
         let lower_path = clean_path.to_lowercase();
 
-        // 1. Full lowercase path
+        // 1. Full lowercase path in legacy cache and VFS
         self.vfs_files.insert(lower_path.clone(), data.clone());
+        let _ = self.vfs.write_file(path, &data);
 
         // 2. Just the filename and standard prefixes
         if let Some(filename) = lower_path.rsplit('\\').next() {
@@ -319,15 +322,20 @@ impl KernelDispatcher {
 
     /// Finds a file in the virtual filesystem with fallback to on-disk assets
     pub fn find_vfs_file(&mut self, query: &str) -> Option<Vec<u8>> {
+        // 1. Check unified VFS first
+        if let Some(data) = self.vfs.read_file(query) {
+            return Some(data);
+        }
+
         let clean = query.trim_matches('\0').replace('/', "\\");
         let lower = clean.to_lowercase();
 
-        // 1. Direct match
+        // 2. Direct match in local cache
         if let Some(data) = self.vfs_files.get(&lower) {
             return Some(data.clone());
         }
 
-        // 2. Try stripping standard prefixes
+        // 3. Try stripping standard prefixes
         let prefixes = [
             "\\device\\harddisk0\\partition1\\",
             "\\device\\harddisk0\\partition0\\",
@@ -353,13 +361,13 @@ impl KernelDispatcher {
             return Some(data.clone());
         }
 
-        // 3. Try just the filename
+        // 4. Try just the filename
         if let Some(fname) = stripped.rsplit('\\').next() {
             if let Some(data) = self.vfs_files.get(fname) {
                 return Some(data.clone());
             }
 
-            // 4. Fallback to host filesystem at ../extracted_xui
+            // 5. Fallback to host filesystem at ../extracted_xui
             let disk_paths = [
                 format!("../extracted_xui/{}", stripped),
                 format!("../extracted_xui/{}", fname),

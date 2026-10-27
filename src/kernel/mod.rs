@@ -11,6 +11,7 @@ pub mod strings;
 pub mod timers;
 pub mod video;
 pub mod xconfig;
+pub mod vfs;
 mod util;
 mod xam;
 mod xboxkrnl;
