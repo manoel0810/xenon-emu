@@ -105,7 +105,7 @@ impl ShaderExec {
                 return;
             }
         };
-        let mut sampler = GpuTextureSampler::new(bus);
+        let mut sampler = GpuTextureSampler::recording(bus);
         let mut first: Option<ShaderState> = None;
         for &index in &indices {
             let mut state = ShaderState::default();

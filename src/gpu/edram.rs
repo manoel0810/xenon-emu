@@ -21,6 +21,7 @@
 //! implemented; other formats are reported once and not written.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 use crate::gpu::texture::tiled_offset_2d;
 use crate::gpu::xenos::guest_endian_swap;
@@ -354,12 +355,6 @@ impl RenderState {
     }
 }
 
-/// Result of a fragment's depth/stencil test.
-pub enum DepthResult {
-    /// Fragment rejected.
-    Fail,
-    Pass,
-}
 
 /// The EDRAM: 2048 tiles of 80x16 32-bit samples.
 pub struct Edram {
@@ -385,60 +380,107 @@ impl Edram {
         }
     }
 
-    /// Depth/stencil test and update of every sample of pixel (x, y) of the depth surface, with D24S8 depth `z` in
-    /// [0, 1]. Returns whether the fragment passes. Unsupported depth formats pass without a write.
-    pub fn depth_stencil(&mut self, state: &RenderState, x: u32, y: u32, z: f32, back: bool) -> DepthResult {
-        let Some((surface, format)) = state.depth else { return DepthResult::Pass };
-        if format != DEPTH_D24S8 {
-            self.warn_once(format!("depth format {}", format));
-            return DepthResult::Pass;
-        }
-        let dc = state.depth_control;
-        let z24 = (z.clamp(0.0, 1.0) * 16_777_215.0).round() as u32;
-        let (reference, mask, write_mask) = state.stencil_ref[back as usize];
-        let (func, fail, zpass, zfail) = dc.stencil(back);
-        // coverage is per pixel: every sample sees the same fragment
-        let mut passed = false;
-        for s in 0..surface.samples_per_pixel() {
-            let i = surface.pixel_sample_index(x, y, s);
-            let stored = self.samples[i];
-            let (stored_z, stored_s) = (stored >> 8, stored & 0xFF);
-            let stencil_pass = !dc.stencil_enable() || compare(func, reference & mask, stored_s & mask);
-            let depth_pass = !dc.z_enable() || compare(dc.zfunc(), z24, stored_z);
-            let mut new_s = stored_s;
-            if dc.stencil_enable() {
-                let op = if !stencil_pass { fail } else if !depth_pass { zfail } else { zpass };
-                new_s = (stored_s & !write_mask) | (stencil_op(op, stored_s, reference) & write_mask);
-            }
-            let new_z = if stencil_pass && depth_pass && dc.z_enable() && dc.z_write_enable() { z24 } else { stored_z };
-            self.samples[i] = (new_z << 8) | new_s;
-            passed |= stencil_pass && depth_pass;
-        }
-        if passed { DepthResult::Pass } else { DepthResult::Fail }
+    /// The samples as cells that rasterizer threads working on disjoint pixels can share.
+    pub fn cells(&mut self) -> &[AtomicU32] {
+        // SAFETY: AtomicU32 has the layout of u32, and the exclusive borrow keeps any other access out
+        unsafe { &*(self.samples.as_mut_slice() as *mut [u32] as *const [AtomicU32]) }
     }
 
-    /// Blends and writes the pixel shader's color exports to every sample of pixel (x, y) of each bound target.
-    pub fn write_colors(&mut self, state: &RenderState, x: u32, y: u32, colors: &[Option<[f32; 4]>; 4]) {
-        for &(i, surface, format) in &state.colors {
-            let Some(src) = colors[i] else { continue };
-            if format != COLOR_8_8_8_8 && format != COLOR_8_8_8_8_GAMMA {
-                self.warn_once(format!("color format {}", format));
-                continue;
+    /// Reports the formats of a draw's targets that are not emulated (their writes are skipped).
+    pub fn check_formats(&mut self, state: &RenderState) {
+        if let Some((_, format)) = state.depth {
+            if format != DEPTH_D24S8 {
+                self.warn_once(format!("depth format {}", format));
             }
+        }
+        for &(_, _, format) in &state.colors {
             if format == COLOR_8_8_8_8_GAMMA {
                 self.warn_once("gamma conversion of k_8_8_8_8_GAMMA".to_string());
-            }
-            let mask = (state.color_mask >> (4 * i)) & 0xF;
-            for s in 0..surface.samples_per_pixel() {
-                let index = surface.pixel_sample_index(x, y, s);
-                let dst = self.samples[index];
-                let blended = pack_8888(state.blend[i].blend(src, unpack_8888(dst), state.blend_constant));
-                let keep: u32 = (0..4).filter(|c| mask & (1 << c) == 0).map(|c| 0xFFu32 << (8 * c)).sum();
-                self.samples[index] = (blended & !keep) | (dst & keep);
+            } else if format != COLOR_8_8_8_8 {
+                self.warn_once(format!("color format {}", format));
             }
         }
     }
+}
 
+/// Depth/stencil test and update of every sample of pixel (x, y) of the depth surface, with D24S8 depth `z` in [0, 1].
+/// Returns whether the fragment passes. Unsupported depth formats pass without a write.
+pub fn depth_stencil(samples: &[AtomicU32], state: &RenderState, x: u32, y: u32, z: f32, back: bool) -> bool {
+    let Some((surface, format)) = state.depth else { return true };
+    if format != DEPTH_D24S8 {
+        return true;
+    }
+    let dc = state.depth_control;
+    let z24 = (z.clamp(0.0, 1.0) * 16_777_215.0).round() as u32;
+    let (reference, mask, write_mask) = state.stencil_ref[back as usize];
+    let (func, fail, zpass, zfail) = dc.stencil(back);
+    // coverage is per pixel: every sample sees the same fragment
+    let mut passed = false;
+    for s in 0..surface.samples_per_pixel() {
+        let i = surface.pixel_sample_index(x, y, s);
+        let stored = samples[i].load(Relaxed);
+        let (stored_z, stored_s) = (stored >> 8, stored & 0xFF);
+        let stencil_pass = !dc.stencil_enable() || compare(func, reference & mask, stored_s & mask);
+        let depth_pass = !dc.z_enable() || compare(dc.zfunc(), z24, stored_z);
+        let mut new_s = stored_s;
+        if dc.stencil_enable() {
+            let op = if !stencil_pass { fail } else if !depth_pass { zfail } else { zpass };
+            new_s = (stored_s & !write_mask) | (stencil_op(op, stored_s, reference) & write_mask);
+        }
+        let new_z = if stencil_pass && depth_pass && dc.z_enable() && dc.z_write_enable() { z24 } else { stored_z };
+        samples[i].store((new_z << 8) | new_s, Relaxed);
+        passed |= stencil_pass && depth_pass;
+    }
+    passed
+}
+
+/// Blends and writes the pixel shader's color exports to every sample of pixel (x, y) of each bound target.
+pub fn write_colors(samples: &[AtomicU32], state: &RenderState, x: u32, y: u32, colors: &[Option<[f32; 4]>; 4]) {
+    for &(i, surface, format) in &state.colors {
+        let Some(src) = colors[i] else { continue };
+        if format != COLOR_8_8_8_8 && format != COLOR_8_8_8_8_GAMMA {
+            continue;
+        }
+        let mask = (state.color_mask >> (4 * i)) & 0xF;
+        let keep: u32 = (0..4).filter(|c| mask & (1 << c) == 0).map(|c| 0xFFu32 << (8 * c)).sum();
+        for s in 0..surface.samples_per_pixel() {
+            let index = surface.pixel_sample_index(x, y, s);
+            let dst = samples[index].load(Relaxed);
+            let blended = pack_8888(state.blend[i].blend(src, unpack_8888(dst), state.blend_constant));
+            samples[index].store((blended & !keep) | (dst & keep), Relaxed);
+        }
+    }
+}
+
+impl RenderState {
+    /// Tiles of the EDRAM that the targets touch for pixel rows y0..=y1, as (first tile, count) modulo 2048.
+    fn tile_spans(&self, y0: u32, y1: u32) -> Vec<(u32, u32)> {
+        let surfaces = self.colors.iter().map(|&(_, s, _)| s).chain(self.depth.map(|(s, _)| s));
+        surfaces
+            .map(|s| {
+                let (_, h) = s.sample_grid();
+                let (r0, r1) = (y0 * h / EDRAM_TILE_HEIGHT_SAMPLES, ((y1 + 1) * h - 1) / EDRAM_TILE_HEIGHT_SAMPLES);
+                ((s.base + r0 * s.pitch_tiles) % EDRAM_TILE_COUNT, (r1 - r0 + 1) * s.pitch_tiles)
+            })
+            .collect()
+    }
+
+    /// Whether distinct pixels of rows y0..=y1 never share a sample: each target spans at most the EDRAM, and the
+    /// targets do not overlap one another (rasterizer threads may then work on disjoint rows).
+    pub fn pixels_are_disjoint(&self, y0: u32, y1: u32) -> bool {
+        let spans = self.tile_spans(y0, y1);
+        if spans.iter().map(|&(_, n)| n as u64).sum::<u64>() > EDRAM_TILE_COUNT as u64 {
+            return false;
+        }
+        let overlaps = |(a, n): (u32, u32), (b, m): (u32, u32)| {
+            let d = (b + EDRAM_TILE_COUNT - a) % EDRAM_TILE_COUNT;
+            d < n || (EDRAM_TILE_COUNT - d) % EDRAM_TILE_COUNT < m
+        };
+        spans.iter().enumerate().all(|(i, &a)| spans[i + 1..].iter().all(|&b| !overlaps(a, b)))
+    }
+}
+
+impl Edram {
     /// RB_MODECONTROL = kCopy (Xenia IssueCopy): resolves the rectangle given by vertex fetch 0 from the selected
     /// EDRAM surface to RB_COPY_DEST_BASE, then applies the requested clears. Returns the resolved rectangle.
     pub fn resolve(&mut self, bus: &mut MemoryBus) -> Option<(i32, i32, i32, i32)> {
@@ -621,6 +663,25 @@ mod tests {
     }
 
     #[test]
+    fn row_bands_are_disjoint_unless_targets_alias() {
+        let mut bus = MemoryBus::new();
+        bus.gpu_regs.set(RB_MODECONTROL, EDRAM_MODE_COLOR_DEPTH);
+        bus.gpu_regs.set(RB_SURFACE_INFO, 0x0001_0500);
+        bus.gpu_regs.set(RB_COLOR_INFO, 0x260);
+        bus.gpu_regs.set(RB_COLOR_MASK, 0xF);
+        // the dash's 1280x720 2x target ends exactly at the last tile
+        assert!(state(&bus).pixels_are_disjoint(0, 719));
+        assert!(!state(&bus).pixels_are_disjoint(0, 1100), "more rows than the EDRAM holds wrap onto themselves");
+        // depth at tile 0: rows 0..299 (38 tile rows, 608 tiles) end where the color target starts; more rows reach it
+        bus.gpu_regs.set(RB_DEPTHCONTROL, 2);
+        bus.gpu_regs.set(RB_DEPTH_INFO, 0);
+        assert!(state(&bus).pixels_are_disjoint(0, 299));
+        assert!(!state(&bus).pixels_are_disjoint(0, 359));
+        bus.gpu_regs.set(RB_DEPTH_INFO, 0x260 + 16 * 40);
+        assert!(!state(&bus).pixels_are_disjoint(0, 359));
+    }
+
+    #[test]
     fn blend_control_fields_follow_registers_h() {
         // the dash's UI blend: color SrcAlpha / InvSrcAlpha add, alpha One / InvSrcAlpha add
         let b = BlendControl(0x0701_0706);
@@ -648,7 +709,7 @@ mod tests {
         let s = state(&bus);
         assert!(s.colors.is_empty());
         let mut edram = Edram::new();
-        assert!(matches!(edram.depth_stencil(&s, 1, 1, 1.0, false), DepthResult::Pass));
+        assert!(depth_stencil(edram.cells(), &s, 1, 1, 1.0, false));
         let (surface, _) = s.depth.unwrap();
         for k in 0..4 {
             assert_eq!(edram.samples[surface.pixel_sample_index(1, 1, k)], 0xFFFF_FF5A);
@@ -656,8 +717,8 @@ mod tests {
         // LESS against the stored 1.0 fails for 1.0, passes for 0.5
         bus.gpu_regs.set(RB_DEPTHCONTROL, (1 << 4) | 6);
         let s = state(&bus);
-        assert!(matches!(edram.depth_stencil(&s, 1, 1, 1.0, false), DepthResult::Fail));
-        assert!(matches!(edram.depth_stencil(&s, 1, 1, 0.5, false), DepthResult::Pass));
+        assert!(!depth_stencil(edram.cells(), &s, 1, 1, 1.0, false));
+        assert!(depth_stencil(edram.cells(), &s, 1, 1, 0.5, false));
         assert_eq!(edram.samples[surface.pixel_sample_index(1, 1, 0)] >> 8, 0x80_0000);
     }
 
@@ -674,7 +735,7 @@ mod tests {
         let mut edram = Edram::new();
         let (_, surface, _) = s.colors[0];
         edram.samples[surface.pixel_sample_index(2, 3, 0)] = 0x7700_0000;
-        edram.write_colors(&s, 2, 3, &[Some([1.0, 0.5, 0.0, 0.0]), None, None, None]);
+        write_colors(edram.cells(), &s, 2, 3, &[Some([1.0, 0.5, 0.0, 0.0]), None, None, None]);
         assert_eq!(edram.samples[surface.pixel_sample_index(2, 3, 0)], 0x7700_80FF);
         assert_eq!(edram.samples[surface.pixel_sample_index(2, 3, 1)], 0x0000_80FF);
     }

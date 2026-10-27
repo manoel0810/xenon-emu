@@ -9,13 +9,17 @@
 //! kill, alpha test, depth/stencil, then the color writes.
 //! Also includes 2D overlay helpers used by the display's own drawing.
 
-use crate::gpu::edram::{DepthResult, Edram, RenderState, EDRAM_MODE_COLOR_DEPTH, PA_SU_SC_MODE_CNTL};
+use crate::gpu::edram::{depth_stencil, write_colors, Edram, RenderState, EDRAM_MODE_COLOR_DEPTH, PA_SU_SC_MODE_CNTL};
 use crate::gpu::primitive::ScreenVertex;
 use crate::gpu::shader_env::GpuShaderEnv;
 use crate::gpu::shader_interp::{run, ShaderState};
 use crate::gpu::texture::GpuTextureSampler;
 use crate::gpu::ucode::ShaderType;
 use crate::memory::MemoryBus;
+use std::sync::atomic::AtomicU32;
+
+/// Below this many pixels in its bounding box a triangle is rasterized on the calling thread.
+const PARALLEL_MIN_PIXELS: i64 = 16 * 1024;
 
 /// CompareFunction on floats (alpha test: `alpha FUNC reference`).
 fn compare_f32(func: u32, a: f32, b: f32) -> bool {
@@ -31,15 +35,95 @@ fn compare_f32(func: u32, a: f32, b: f32) -> bool {
     }
 }
 
-/// Rasterizes one triangle into the bound render targets.
-pub fn rasterize_triangle(
-    edram: &mut Edram,
-    state: &RenderState,
-    tri: &[ScreenVertex; 3],
-    bus: &MemoryBus,
-    pixel_shader: &[u32],
-    sampler: &mut GpuTextureSampler,
-) {
+/// A triangle set up for scanning: clockwise vertices, area, bounds and per-draw state.
+struct Setup<'a> {
+    v: [&'a ScreenVertex; 3],
+    area: f32,
+    front: bool,
+    perspective: bool,
+    inputs: Vec<usize>,
+    write_colors: bool,
+}
+
+impl Setup<'_> {
+    /// Scans rows y0..=y1 (columns x0..=x1) of the triangle.
+    #[allow(clippy::too_many_arguments)]
+    fn scan(&self, samples: &[AtomicU32], state: &RenderState, bus: &MemoryBus, pixel_shader: &[u32], (x0, x1): (i32, i32), y0: i32, y1: i32) {
+        let v = &self.v;
+        let mut sampler = GpuTextureSampler::new(bus);
+        // edge a->b: (bx - ax)(py - ay) - (by - ay)(px - ax), weighting the opposite vertex; a center exactly on a
+        // top or left edge is inside
+        let edges: [(usize, usize, usize); 3] = [(1, 2, 0), (2, 0, 1), (0, 1, 2)];
+        let top_left = |a: &ScreenVertex, b: &ScreenVertex| {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            (dy == 0.0 && dx > 0.0) || dy < 0.0
+        };
+        for y in y0..=y1 {
+            let py = y as f32 + 0.5;
+            for x in x0..=x1 {
+                let px = x as f32 + 0.5;
+                let mut l = [0f32; 3];
+                let mut inside = true;
+                for &(a, b, opposite) in &edges {
+                    let e = (v[b].x - v[a].x) * (py - v[a].y) - (v[b].y - v[a].y) * (px - v[a].x);
+                    if e < 0.0 || (e == 0.0 && !top_left(v[a], v[b])) {
+                        inside = false;
+                        break;
+                    }
+                    l[opposite] = e / self.area;
+                }
+                if !inside {
+                    continue;
+                }
+                let mut z = l[0] * v[0].z + l[1] * v[1].z + l[2] * v[2].z;
+
+                let mut ps = ShaderState::default();
+                let weights = if self.perspective {
+                    let q = [l[0] * v[0].inv_w, l[1] * v[1].inv_w, l[2] * v[2].inv_w];
+                    let sum = q[0] + q[1] + q[2];
+                    if sum == 0.0 { l } else { q.map(|w| w / sum) }
+                } else {
+                    l
+                };
+                for &k in &self.inputs {
+                    let value = |i: usize| v[i].interpolators[k].unwrap_or([0.0; 4]);
+                    let (a, b, c) = (value(0), value(1), value(2));
+                    ps.r[k] = std::array::from_fn(|i| weights[0] * a[i] + weights[1] * b[i] + weights[2] * c[i]);
+                }
+                let mut colors = [None; 4];
+                if !pixel_shader.is_empty() {
+                    let mut env = GpuShaderEnv { bus, sampler: &mut sampler };
+                    if run(pixel_shader, ShaderType::Pixel, &mut ps, &mut env).is_err() || ps.killed {
+                        continue;
+                    }
+                    colors = ps.exports.colors;
+                    if let Some(depth) = ps.exports.depth {
+                        z = depth;
+                    }
+                }
+                let (alpha_test, alpha_func) = state.alpha_test;
+                if alpha_test && self.write_colors {
+                    if let Some(c) = colors[0] {
+                        if !compare_f32(alpha_func, c[3], state.alpha_ref) {
+                            continue;
+                        }
+                    }
+                }
+                if !depth_stencil(samples, state, x as u32, y as u32, z, !self.front) {
+                    continue;
+                }
+                if self.write_colors {
+                    write_colors(samples, state, x as u32, y as u32, &colors);
+                }
+            }
+        }
+    }
+}
+
+/// Rasterizes one triangle into the bound render targets. Large triangles are split into bands of rows scanned by
+/// up to `threads` threads when no two of their pixels can share an EDRAM sample; every pixel is still processed
+/// once, so the result does not depend on the thread count.
+pub fn rasterize_triangle(edram: &mut Edram, state: &RenderState, tri: &[ScreenVertex; 3], bus: &MemoryBus, pixel_shader: &[u32], threads: usize) {
     let area = (tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[1].y - tri[0].y) * (tri[2].x - tri[0].x);
     if area == 0.0 || !area.is_finite() {
         return;
@@ -51,11 +135,8 @@ pub fn rasterize_triangle(
     if (front && su & 1 != 0) || (!front && su & 2 != 0) {
         return;
     }
-    let perspective = su & (1 << 20) == 0;
     // order the vertices clockwise so that every edge function is positive inside
     let v = if clockwise { [&tri[0], &tri[1], &tri[2]] } else { [&tri[0], &tri[2], &tri[1]] };
-    let area = area.abs();
-
     let (sx0, sy0, sx1, sy1) = state.scissor;
     let min_x = (v.iter().map(|p| p.x).fold(f32::INFINITY, f32::min).floor() as i32).max(sx0);
     let max_x = (v.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max).ceil() as i32).min(sx1 - 1);
@@ -64,76 +145,34 @@ pub fn rasterize_triangle(
     if min_x > max_x || min_y > max_y {
         return;
     }
-
-    // edge a->b: (bx - ax)(py - ay) - (by - ay)(px - ax), weighting the opposite vertex; a center exactly on a top
-    // or left edge is inside
-    let edges: [(usize, usize, usize); 3] = [(1, 2, 0), (2, 0, 1), (0, 1, 2)];
-    let top_left = |a: &ScreenVertex, b: &ScreenVertex| {
-        let (dx, dy) = (b.x - a.x, b.y - a.y);
-        (dy == 0.0 && dx > 0.0) || dy < 0.0
+    let setup = Setup {
+        v,
+        area: area.abs(),
+        front,
+        perspective: su & (1 << 20) == 0,
+        inputs: (0..16).filter(|&k| v.iter().any(|p| p.interpolators[k].is_some())).collect(),
+        write_colors: state.mode == EDRAM_MODE_COLOR_DEPTH && !state.colors.is_empty(),
     };
-    let inputs: Vec<usize> = (0..16).filter(|&k| v.iter().any(|p| p.interpolators[k].is_some())).collect();
-    let write_colors = state.mode == EDRAM_MODE_COLOR_DEPTH && !state.colors.is_empty();
-
-    for y in min_y..=max_y {
-        let py = y as f32 + 0.5;
-        for x in min_x..=max_x {
-            let px = x as f32 + 0.5;
-            let mut l = [0f32; 3];
-            let mut inside = true;
-            for &(a, b, opposite) in &edges {
-                let e = (v[b].x - v[a].x) * (py - v[a].y) - (v[b].y - v[a].y) * (px - v[a].x);
-                if e < 0.0 || (e == 0.0 && !top_left(v[a], v[b])) {
-                    inside = false;
-                    break;
-                }
-                l[opposite] = e / area;
-            }
-            if !inside {
-                continue;
-            }
-            let mut z = l[0] * v[0].z + l[1] * v[1].z + l[2] * v[2].z;
-
-            let mut ps = ShaderState::default();
-            let weights = if perspective {
-                let q = [l[0] * v[0].inv_w, l[1] * v[1].inv_w, l[2] * v[2].inv_w];
-                let sum = q[0] + q[1] + q[2];
-                if sum == 0.0 { l } else { q.map(|w| w / sum) }
-            } else {
-                l
-            };
-            for &k in &inputs {
-                let value = |i: usize| v[i].interpolators[k].unwrap_or([0.0; 4]);
-                let (a, b, c) = (value(0), value(1), value(2));
-                ps.r[k] = std::array::from_fn(|i| weights[0] * a[i] + weights[1] * b[i] + weights[2] * c[i]);
-            }
-            let mut colors = [None; 4];
-            if !pixel_shader.is_empty() {
-                let mut env = GpuShaderEnv { bus, sampler: &mut *sampler };
-                if run(pixel_shader, ShaderType::Pixel, &mut ps, &mut env).is_err() || ps.killed {
-                    continue;
-                }
-                colors = ps.exports.colors;
-                if let Some(depth) = ps.exports.depth {
-                    z = depth;
-                }
-            }
-            let (alpha_test, alpha_func) = state.alpha_test;
-            if alpha_test && write_colors {
-                if let Some(c) = colors[0] {
-                    if !compare_f32(alpha_func, c[3], state.alpha_ref) {
-                        continue;
-                    }
-                }
-            }
-            if let DepthResult::Fail = edram.depth_stencil(state, x as u32, y as u32, z, !front) {
-                continue;
-            }
-            if write_colors {
-                edram.write_colors(state, x as u32, y as u32, &colors);
-            }
-        }
+    let samples = edram.cells();
+    let rows = (max_y - min_y + 1) as i64;
+    let pixels = rows * (max_x - min_x + 1) as i64;
+    let bands = threads.min(rows as usize).max(1);
+    if bands == 1 || pixels < PARALLEL_MIN_PIXELS || !state.pixels_are_disjoint(min_y as u32, max_y as u32) {
+        setup.scan(samples, state, bus, pixel_shader, (min_x, max_x), min_y, max_y);
+        return;
     }
+    let per_band = (rows as usize).div_ceil(bands) as i32;
+    std::thread::scope(|scope| {
+        for band in 0..bands as i32 {
+            let y0 = min_y + band * per_band;
+            let y1 = (y0 + per_band - 1).min(max_y);
+            if y0 > y1 {
+                continue;
+            }
+            let setup = &setup;
+            scope.spawn(move || setup.scan(samples, state, bus, pixel_shader, (min_x, max_x), y0, y1));
+        }
+    });
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -290,14 +329,13 @@ mod tests {
         bus.gpu_regs.set(PA_SC_SCREEN_SCISSOR_BR, 0x2000_2000);
         let state = RenderState::from_registers(&bus).unwrap();
         let mut edram = Edram::new();
-        let mut sampler = GpuTextureSampler::new(&bus);
         // pixel shader: oC0 = r0 (the first interpolator)
         let export = alu(Alu { export: true, vmask: 0xF, vop: VECTOR_MAX, sop: SCALAR_RETAIN_PREV, reg: [0, 0, 0], temp: [true; 3], ..Default::default() });
         let ps = shader(&[pack(exec(2, 1, 1, 0, 1 << 9), cf(0, 0, 0)), export]);
         // a 4x2 rectangle at (2, 2) as two triangles sharing a diagonal, with opposite windings
         let (a, b, c, d) = (vertex(2.0, 2.0), vertex(6.0, 2.0), vertex(6.0, 4.0), vertex(2.0, 4.0));
-        rasterize_triangle(&mut edram, &state, &[a.clone(), b, c.clone()], &bus, &ps, &mut sampler);
-        rasterize_triangle(&mut edram, &state, &[a, d, c], &bus, &ps, &mut sampler);
+        rasterize_triangle(&mut edram, &state, &[a.clone(), b, c.clone()], &bus, &ps, 4);
+        rasterize_triangle(&mut edram, &state, &[a, d, c], &bus, &ps, 4);
         let (_, surface, _) = state.colors[0];
         let covered: Vec<(u32, u32)> = (0..8)
             .flat_map(|y| (0..8).map(move |x| (x, y)))
@@ -307,18 +345,44 @@ mod tests {
         assert_eq!(covered, expected);
         assert_eq!(unpack_8888(edram.samples[surface.pixel_sample_index(3, 3, 0)]), [1.0, 0.0, 0.0, 1.0]);
         // a pixel on the shared diagonal was written once: blending dst + src would show otherwise
-        drop(sampler);
         bus.gpu_regs.set(RB_BLENDCONTROLS[0], 0x0101_0101);
         let state = RenderState::from_registers(&bus).unwrap();
-        let mut sampler = GpuTextureSampler::new(&bus);
         let mut edram = Edram::new();
         let (a, b, c, d) = (vertex(0.0, 0.0), vertex(4.0, 0.0), vertex(4.0, 4.0), vertex(0.0, 4.0));
         let half = |mut v: ScreenVertex| {
             v.interpolators[0] = Some([0.5, 0.0, 0.0, 0.5]);
             v
         };
-        rasterize_triangle(&mut edram, &state, &[half(a.clone()), half(b), half(c.clone())], &bus, &ps, &mut sampler);
-        rasterize_triangle(&mut edram, &state, &[half(a), half(d), half(c)], &bus, &ps, &mut sampler);
+        rasterize_triangle(&mut edram, &state, &[half(a.clone()), half(b), half(c.clone())], &bus, &ps, 4);
+        rasterize_triangle(&mut edram, &state, &[half(a), half(d), half(c)], &bus, &ps, 4);
         assert!((0..4).all(|i| edram.samples[surface.pixel_sample_index(i, i, 0)] == 0x8000_0080));
+    }
+
+    #[test]
+    fn threads_produce_the_serial_result() {
+        let mut bus = MemoryBus::new();
+        bus.gpu_regs.set(RB_MODECONTROL, 4);
+        bus.gpu_regs.set(RB_SURFACE_INFO, 0x0001_0500);
+        bus.gpu_regs.set(RB_COLOR_INFO, 0x260);
+        bus.gpu_regs.set(RB_COLOR_MASK, 0xF);
+        bus.gpu_regs.set(RB_BLENDCONTROLS[0], 0x0701_0706);
+        bus.gpu_regs.set(PA_SC_WINDOW_SCISSOR_BR, 0x02D0_0500);
+        bus.gpu_regs.set(PA_SC_SCREEN_SCISSOR_BR, 0x2000_2000);
+        let state = RenderState::from_registers(&bus).unwrap();
+        let export = alu(Alu { export: true, vmask: 0xF, vop: VECTOR_MAX, sop: SCALAR_RETAIN_PREV, reg: [0, 0, 0], temp: [true; 3], ..Default::default() });
+        let ps = shader(&[pack(exec(2, 1, 1, 0, 1 << 9), cf(0, 0, 0)), export]);
+        let corner = |x: f32, y: f32, c: [f32; 4]| {
+            let mut v = vertex(x, y);
+            v.interpolators[0] = Some(c);
+            v
+        };
+        let tri = [corner(-10.5, 3.0, [1.0, 0.0, 0.0, 0.5]), corner(1290.0, 100.0, [0.0, 1.0, 0.0, 0.25]), corner(200.0, 719.7, [0.0, 0.0, 1.0, 1.0])];
+        let run = |threads| {
+            let mut edram = Edram::new();
+            rasterize_triangle(&mut edram, &state, &tri, &bus, &ps, threads);
+            rasterize_triangle(&mut edram, &state, &[tri[2].clone(), tri[0].clone(), corner(1279.0, 719.0, [0.5; 4])], &bus, &ps, threads);
+            edram.samples
+        };
+        assert!(run(1) == run(8));
     }
 }

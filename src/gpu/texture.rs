@@ -93,12 +93,19 @@ fn texel_component(raw: u32, bits: u32, sign: u32, integer: bool) -> f32 {
 /// Emulated Xenos Texture Sampler accessing guest physical memory through the MemoryBus.
 pub struct GpuTextureSampler<'a> {
     pub bus: &'a MemoryBus,
+    /// Every fetch with its result, only when built with `recording` (diagnostics).
     pub fetches: Vec<(TextureFetchConstant, Vec4, Vec4)>,
+    record: bool,
 }
 
 impl<'a> GpuTextureSampler<'a> {
     pub fn new(bus: &'a MemoryBus) -> Self {
-        Self { bus, fetches: Vec::new() }
+        Self { bus, fetches: Vec::new(), record: false }
+    }
+
+    /// A sampler that keeps every fetch in `fetches`.
+    pub fn recording(bus: &'a MemoryBus) -> Self {
+        Self { record: true, ..Self::new(bus) }
     }
 
     /// Samples a single texel at integer pixel coordinates (x_coord, y_coord).
@@ -234,7 +241,9 @@ impl TextureSampler for GpuTextureSampler<'_> {
             out
         };
 
-        self.fetches.push((*constant, coords, result));
+        if self.record {
+            self.fetches.push((*constant, coords, result));
+        }
         result
     }
 }

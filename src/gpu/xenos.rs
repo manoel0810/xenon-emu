@@ -252,28 +252,40 @@ impl XenosGpu {
             self.edram.resolve(bus);
             return;
         }
+        if !crate::diag::config().raster {
+            return;
+        }
         let Some(state) = RenderState::from_registers(bus) else { return };
+        self.edram.check_formats(&state);
         if !matches!(di.prim_type, 0x04 | 0x05 | 0x06 | 0x08 | 0x0D) {
             self.edram.warn_once(format!("primitive type {}", di.prim_type));
             return;
         }
         let Ok(indices) = draw_indices(bus, opcode, data, di.num_indices) else { return };
         let mut sampler = GpuTextureSampler::new(bus);
+        // the vertex shader runs once per distinct index
+        let mut shaded: HashMap<u32, Vertex> = HashMap::new();
         let vertices: Vec<Vertex> = indices
             .iter()
             .map(|&index| {
-                let mut vs = ShaderState::default();
-                vs.r[0][0] = index as f32;
-                let mut env = GpuShaderEnv { bus, sampler: &mut sampler };
-                let _ = run(&self.vertex_shader, ShaderType::Vertex, &mut vs, &mut env);
-                Vertex { position: clip_position(bus, vs.exports.position.unwrap_or([0.0, 0.0, 0.0, 1.0])), interpolators: vs.exports.interpolators }
+                shaded
+                    .entry(index)
+                    .or_insert_with(|| {
+                        let mut vs = ShaderState::default();
+                        vs.r[0][0] = index as f32;
+                        let mut env = GpuShaderEnv { bus, sampler: &mut sampler };
+                        let _ = run(&self.vertex_shader, ShaderType::Vertex, &mut vs, &mut env);
+                        Vertex { position: clip_position(bus, vs.exports.position.unwrap_or([0.0, 0.0, 0.0, 1.0])), interpolators: vs.exports.interpolators }
+                    })
+                    .clone()
             })
             .collect();
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
         for tri in assemble_primitives(di.prim_type, &vertices) {
             let polygon: Vec<ScreenVertex> = clip_triangle(bus, &tri).iter().map(|v| project(bus, v)).collect();
             for i in 1..polygon.len().saturating_sub(1) {
                 let tri = [polygon[0].clone(), polygon[i].clone(), polygon[i + 1].clone()];
-                rasterize_triangle(&mut self.edram, &state, &tri, bus, &self.pixel_shader, &mut sampler);
+                rasterize_triangle(&mut self.edram, &state, &tri, bus, &self.pixel_shader, threads);
             }
         }
     }

@@ -97,6 +97,8 @@ pub struct DiagConfig {
     /// XENON_FB_DUMP=<file>: at the end of the run, write the raw bytes of the last swapped frontbuffer (tiled,
     /// pitch and height aligned to 32) to <file> (outside the repository).
     pub fb_dump: Option<String>,
+    /// XENON_RASTER=0: skip rasterizing draws (resolves still copy the EDRAM); on by default.
+    pub raster: bool,
 }
 
 /// A boolean variable: unset -> `default`; "0", "false", "off" or "no" (any case) -> false; any other value -> true.
@@ -172,6 +174,7 @@ impl DiagConfig {
             shader_dump: string("XENON_SHADER_DUMP"),
             shader_exec: parse("XENON_SHADER_EXEC"),
             fb_dump: string("XENON_FB_DUMP"),
+            raster: flag_or("XENON_RASTER", true),
         }
     }
 }
