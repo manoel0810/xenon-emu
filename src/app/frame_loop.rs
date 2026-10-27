@@ -8,7 +8,7 @@ use xenon_emu::gpu::display::resolve_path;
 use xenon_emu::gpu::{GpuDisplay, RingBuffer, XenosGpu};
 
 use super::boot::Boot;
-use super::threads::{begin_dpc_call, bind_kthread, timer_dpc_thread, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
+use super::threads::{begin_dpc_call, begin_entry_call, end_entry_call, EntryFrame, ENTRY_RETURN_ORDINAL, bind_kthread, timer_dpc_thread, callback_stack_top, dynamic_thread_stack_top, end_dpc_call, interrupt_callback_thread, setup_kpcr, DpcFrame, GuestThread, DPC_RETURN_ORDINAL, DYNAMIC_STACK_SIZE};
 
 pub fn run(
     boot: Boot,
@@ -17,7 +17,7 @@ pub fn run(
     mut ring_buffer: RingBuffer,
     mut xenos_gpu: XenosGpu,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Boot { mut bus, mut kernel, thunk_map, is_metro, mut next_kpcr_slot, .. } = boot;
+    let Boot { mut bus, mut kernel, mut thunk_map, is_metro, mut next_kpcr_slot, .. } = boot;
 
     let diag = diag::config();
     let initial_fb = kernel.active_frontbuffer();
@@ -56,6 +56,8 @@ pub fn run(
     let mut deadlock_reported = false;
     // DPC routines running inline on a guest thread (KeInsertQueueDpc), by thread name
     let mut dpc_frames: HashMap<String, Vec<DpcFrame>> = HashMap::new();
+    // module entry points (DllMain) in progress per thread, run by XexLoadImage before it returns
+    let mut entry_frames: HashMap<String, Vec<EntryFrame>> = HashMap::new();
     let mut frame = 0u64;
     while display.is_open() {
         frame += 1;
@@ -212,6 +214,11 @@ pub fn run(
                                         end_dpc_call(&mut thread.cpu, &mut bus, dpc_frames.entry(thread.name.clone()).or_default());
                                         continue;
                                     }
+                                    if *ordinal == ENTRY_RETURN_ORDINAL {
+                                        // a module's DllMain returned: resume the XexLoadImage caller
+                                        end_entry_call(&mut thread.cpu, entry_frames.entry(thread.name.clone()).or_default());
+                                        continue;
+                                    }
                                 }
                                 if let Some((lib, ordinal)) = thunk {
                                     let is_term = *ordinal == 0x0019 && lib.eq_ignore_ascii_case("xboxkrnl.exe");
@@ -245,6 +252,11 @@ pub fn run(
                                     if let Some(call) = kernel.pending_dpc_call.take() {
                                         // KeInsertQueueDpc: run the DPC routine inline on this thread before returning
                                         begin_dpc_call(&mut thread.cpu, &mut bus, dpc_frames.entry(thread.name.clone()).or_default(), call);
+                                    }
+                                    // a module loaded by this call: its import thunks, then its DllMain before the call returns
+                                    thunk_map.extend(kernel.user_modules.new_thunks.drain(..));
+                                    if let Some(call) = kernel.user_modules.pending_entry_call.take() {
+                                        begin_entry_call(&mut thread.cpu, entry_frames.entry(thread.name.clone()).or_default(), call, ret);
                                     }
                                     if kernel.title_terminated {
                                         // XamLoaderTerminateTitle does not return

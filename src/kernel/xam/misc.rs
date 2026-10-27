@@ -40,6 +40,28 @@ impl KernelDispatcher {
                 0
             }
 
+            // 0x0655: XdfLoadXexFromCache(name, flags, version, handle_ptr) -> HRESULT. Not in Xenia; the console's
+            // xam (0x817F5968) answers E_INVALIDARG for a null name or handle pointer or zero flags, clears the handle
+            // and loads the module through its dash XEX cache (the dash's SystemExtPartition folder). Here the module
+            // comes from the title's folder through the XexLoadImage path; the handle is the loader entry, which the
+            // dash passes to XexGetProcedureAddress. The failure code is an assumption (file not found).
+            0x0655 => {
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0) & 0xFFFF_FFFF;
+                if arg(0) == 0 || arg(3) == 0 || arg(1) == 0 {
+                    return Some(0x8007_0057);
+                }
+                let _ = bus.write_u32(arg(3), 0);
+                let name = read_c_string(arg(0), bus).unwrap_or_default();
+                match self.load_user_module(bus, &name) {
+                    Ok(hmodule) => {
+                        self.modules.add_load_count(bus, hmodule, 1);
+                        let _ = bus.write_u32(arg(3), hmodule);
+                        0
+                    }
+                    Err(_) => 0x8007_0002,
+                }
+            }
+
             // 0x05DC: XamAvatarInitialize(...) -> ~0: avatar initialization is off outside the avatar editor
             // (Xenia cvar allow_avatar_initialization = false)
             0x05DC => 0xFFFF_FFFF,
@@ -429,7 +451,8 @@ mod tests {
         put_utf16(&mut bus, 0x4100_0040, "dashmain");
         assert_eq!(out(&mut k, &mut bus, 0x031B, &[0x9200_0000, 0x4100_0040, 0x4100_0000, 0x4100_0100, 0x100]), "section://92000000,dashmain#loadingRing.png");
         // a real xam.xex loaded as a user module: the section form for the shared resources
-        let h = k.modules.register_executable(&mut bus, "xam.xex", "xam.xex", 0x815F_0000, 0x0061_0000, 0, Vec::new());
+        let h = k.modules.register_user_module(&mut bus, "xam.xex", "xam.xex", 0x0061_0000, 0, Vec::new(),
+            crate::kernel::modules::ModuleExports { image_base: 0x815F_0000, ..Default::default() });
         assert_eq!(out(&mut k, &mut bus, 0x0315, &[0x4100_0000, 0x4100_0100, 0x100]), format!("section://{:X},shrdres#loadingRing.png", h));
 
         // XamGetLanguageTypefacePatch(English): a stable pointer to the JK patch locator
@@ -452,6 +475,24 @@ mod tests {
         assert_eq!(xam(&mut k, &mut bus, 0x0646, &[0x4100_0000]), 0);
         assert_eq!(bus.read_u32(0x4100_0000).unwrap(), 0x2);
         assert_eq!(xam(&mut k, &mut bus, 0x0646, &[0]), 0);
+        // XdfLoadXexFromCache: E_INVALIDARG for a null name or handle pointer or zero flags; a module missing
+        // from the title's folder clears the handle
+        bus.load_bytes(0x4100_0100, b"dashnui.xex\0").unwrap();
+        bus.write_u32(0x4100_0200, 0xFFFF_FFFF).unwrap();
+        for args in [[0, 8, 0, 0x4100_0200], [0x4100_0100, 8, 0, 0], [0x4100_0100, 0, 0, 0x4100_0200]] {
+            assert_eq!(xam(&mut k, &mut bus, 0x0655, &args), 0x8007_0057, "{args:X?}");
+        }
+        assert_eq!(bus.read_u32(0x4100_0200).unwrap(), 0xFFFF_FFFF);
+        assert_eq!(xam(&mut k, &mut bus, 0x0655, &[0x4100_0100, 8, 0, 0x4100_0200]), 0x8007_0002);
+        assert_eq!(bus.read_u32(0x4100_0200).unwrap(), 0);
+        // XexLoadImage: a loaded module (here the HLE xam) is found by name, a missing one is X_STATUS_NO_SUCH_FILE
+        k.modules.register_kernel(&mut bus, "xam.xex");
+        bus.load_bytes(0x4100_0300, b"xam.xex\0").unwrap();
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0199, &[0x4100_0300, 8, 0, 0x4100_0200], &mut bus), 0);
+        assert_eq!(bus.read_u32(0x4100_0200).unwrap(), k.modules.find("xam.xex").unwrap().hmodule);
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0199, &[0x4100_0100, 8, 0, 0x4100_0200], &mut bus), 0xC000_000F);
+        assert_eq!((bus.read_u32(0x4100_0200).unwrap(), k.user_modules.pending_entry_call), (0, None));
+        assert_eq!(k.dispatch("xboxkrnl.exe", 0x0199, &[0x4100_0300, 8, 0, 0], &mut bus), 0x57);
         assert_eq!((xam(&mut k, &mut bus, 0x059F, &[0x8030_0034, 0]), xam(&mut k, &mut bus, 0x059F, &[1, 0])), (0, 0x8000_4001));
         assert_eq!(xam(&mut k, &mut bus, 0x05DC, &[1, 0, 0, 0, 0, 0]), 0xFFFF_FFFF);
         assert_eq!(xam(&mut k, &mut bus, 0x03CA, &[]), 0x0001_0001);

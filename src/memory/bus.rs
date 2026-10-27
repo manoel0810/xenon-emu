@@ -28,6 +28,9 @@ pub struct MemoryBus {
     /// Key = 64 KB chunk index inside the window, value = physical RAM offset of the chunk.
     window_map: Vec<u32>,
     window_pool_next: usize,
+    /// Images of XEX modules loaded after boot (`map_image`): (first guest address, end, physical RAM offset).
+    image_maps: Vec<(u64, u64, usize)>,
+    image_pool_next: usize,
     /// Guest time base shared by all threads (mftb), advanced by Cpu::step.
     pub timebase: crate::cpu::timebase::TimeBase,
 }
@@ -41,6 +44,12 @@ const WINDOW_CHUNK: u64 = 0x1_0000; // 64 KB
 const WINDOW_POOL_START: usize = 0x1400_0000;
 const WINDOW_POOL_END: usize = 0x2000_0000;
 static ZERO_PAGE: [u8; 4096] = [0u8; 4096];
+
+/// Physical backing for module images mapped after boot: between the KPCR / loader-entry blocks (phys 0x13100000..
+/// 0x131F2000, above the dash image) and the virtual-alloc pool. `addr & 0x1FFFFFFF` of a module's image base can fall
+/// in that pool (dashnui.xex: 0x9E510000 -> 0x1E510000), so its pages are remapped here.
+const IMAGE_POOL_START: usize = 0x1320_0000;
+const IMAGE_POOL_END: usize = WINDOW_POOL_START;
 
 /// GPU register window mapped by the kernel at 0x7FC80000 (CP_RB_WPTR = +0x714 ...). It must NOT be backed by plain RAM.
 pub const GPU_MMIO_BASE: u64 = 0x7FC8_0000;
@@ -81,6 +90,8 @@ impl MemoryBus {
             watch_hits: 0,
             window_map: vec![u32::MAX; ((WINDOW_END - WINDOW_START) / WINDOW_CHUNK) as usize],
             window_pool_next: WINDOW_POOL_START,
+            image_maps: Vec::new(),
+            image_pool_next: IMAGE_POOL_START,
             timebase: Default::default(),
         }
     }
@@ -155,6 +166,10 @@ impl MemoryBus {
             return Ok(&mut self.ram[off..]);
         }
 
+        if let Some(off) = self.image_offset(addr) {
+            return Ok(&mut self.ram[off..]);
+        }
+
         // Direct physical RAM access
         let ram_offset = (addr & 0x1FFF_FFFF) as usize;
         if ram_offset < RAM_SIZE {
@@ -183,12 +198,43 @@ impl MemoryBus {
             };
         }
 
+        if let Some(off) = self.image_offset(addr) {
+            return Ok(&self.ram[off..]);
+        }
+
         let ram_offset = (addr & 0x1FFF_FFFF) as usize;
         if ram_offset < RAM_SIZE {
             Ok(&self.ram[ram_offset..])
         } else {
             Err(format!("Physical RAM access out of bounds: 0x{:016X}", addr))
         }
+    }
+
+    /// RAM offset of `addr` inside an image mapped with `map_image`.
+    #[inline(always)]
+    fn image_offset(&self, addr: u64) -> Option<usize> {
+        if self.image_maps.is_empty() {
+            return None;
+        }
+        let a = addr & 0xFFFF_FFFF;
+        self.image_maps.iter().find(|&&(start, end, _)| a >= start && a < end).map(|&(start, _, phys)| phys + (a - start) as usize)
+    }
+
+    /// Gives `size` bytes of guest addresses from `base` (a module image) zeroed physical pages of their own.
+    pub fn map_image(&mut self, base: u64, size: u64) -> Result<(), String> {
+        let base = base & 0xFFFF_FFFF;
+        let size = (size + 0xFFF) & !0xFFF;
+        if self.image_maps.iter().any(|&(start, end, _)| base < end && start < base + size) {
+            return Err(format!("image 0x{:08X}+0x{:X} overlaps a mapped image", base, size));
+        }
+        let phys = self.image_pool_next;
+        if phys + size as usize > IMAGE_POOL_END {
+            return Err(format!("image pool exhausted mapping 0x{:08X}+0x{:X}", base, size));
+        }
+        self.ram[phys..phys + size as usize].fill(0);
+        self.image_pool_next += size as usize;
+        self.image_maps.push((base, base + size, phys));
+        Ok(())
     }
 
     /// Walks the Xbox 360 backchain ([sp] = caller sp, [caller_sp - 8] = saved LR) for diagnostics.
@@ -355,5 +401,24 @@ mod tests {
         // image / physical range
         bus.write_u32(0x92A7_809C, 0x1234).unwrap();
         assert_eq!(bus.read_u32(0x1_92A7_809C).unwrap(), 0x1234);
+    }
+
+    #[test]
+    fn mapped_images_do_not_alias_the_virtual_alloc_pool() {
+        let mut bus = MemoryBus::new();
+        // dashnui.xex at 0x9E510000 masks to phys 0x1E510000, inside the window pool
+        let window = 0x4000_0000 + (0x1E51_0000 - WINDOW_POOL_START as u64);
+        for chunk in (0x4000_0000..=window).step_by(WINDOW_CHUNK as usize) {
+            bus.write_u32(chunk, 1).unwrap();
+        }
+        bus.write_u32(window, 0xAAAA).unwrap();
+        bus.map_image(0x9E51_0000, 0x34_4000).unwrap();
+        assert_eq!(bus.read_u32(0x9E51_0000).unwrap(), 0, "fresh zeroed pages");
+        bus.write_u32(0x9E51_0000, 0x5555).unwrap();
+        bus.write_u32(0x9E85_3FFC, 0x6666).unwrap();
+        assert_eq!((bus.read_u32(window).unwrap(), bus.read_u32(0x1_9E51_0000).unwrap()), (0xAAAA, 0x5555));
+        assert_eq!(bus.read_u32(0x9E85_3FFC).unwrap(), 0x6666);
+        assert!(bus.map_image(0x9E60_0000, 0x1000).is_err(), "overlapping image");
+        assert!(bus.map_image(0x9F00_0000, 0x100_0000).is_err(), "pool exhausted");
     }
 }

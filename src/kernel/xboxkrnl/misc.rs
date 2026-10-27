@@ -79,11 +79,23 @@ impl KernelDispatcher {
                 self.modules.xex_get_module_section(bus, arg(0), arg(1), arg(2), arg(3))
             }
 
-            // 0x0197: XexGetProcedureAddress
-            0x0197 => 0x9268_DD14,
+            // 0x0197: XexGetProcedureAddress(hmodule, ordinal_or_name, out_ptr) - see kernel/modules.rs
+            0x0197 => {
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                self.modules.xex_get_procedure_address(bus, arg(0), arg(1), arg(2))
+            }
 
-            // 0x0199: XexLoadImage | 0x01A1: XexUnloadImage | 0x01A2: XexUnloadImageAndExitThread | 0x01A4: XexVerifyImageHeaders
-            0x0199 | 0x01A1 | 0x01A2 | 0x01A4 => 0,
+            // 0x0199: XexLoadImage(name, flags, min_version, hmodule_ptr) - see kernel/user_module.rs
+            0x0199 => {
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                self.xex_load_image(bus, arg(0), arg(3))
+            }
+
+            // 0x01A1: XexUnloadImage(hmodule) - see kernel/user_module.rs
+            0x01A1 => self.xex_unload_image(bus, args.first().copied().unwrap_or(0)),
+
+            // 0x01A2: XexUnloadImageAndExitThread | 0x01A4: XexVerifyImageHeaders
+            0x01A2 | 0x01A4 => 0,
 
             // 0x01A5: __C_specific_handler
             0x01A5 => 0,

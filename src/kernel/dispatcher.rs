@@ -86,6 +86,8 @@ pub struct KernelDispatcher {
     pub vfs_files: HashMap<String, Vec<u8>>,
     /// Loaded modules and their loader data entries (XexGetModuleHandle / XexGetModuleSection).
     pub modules: super::modules::ModuleTable,
+    /// Loading of XEX modules after boot (XexLoadImage, XdfLoadXexFromCache): see kernel/user_module.rs.
+    pub user_modules: super::user_module::UserModuleLoader,
     /// DPCs inserted with KeInsertQueueDpc and not removed (KeRemoveQueueDpc).
     pub queued_dpcs: std::collections::HashSet<u32>,
     /// DPC routine the calling thread must run before returning from KeInsertQueueDpc (taken by the frame loop).
@@ -143,6 +145,7 @@ impl KernelDispatcher {
             pending_threads: Vec::new(),
             vfs_files: HashMap::new(),
             modules: super::modules::ModuleTable::default(),
+            user_modules: Default::default(),
             queued_dpcs: std::collections::HashSet::new(),
             pending_dpc_call: None,
             title_terminated: false,

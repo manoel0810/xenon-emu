@@ -204,10 +204,16 @@ pub fn boot() -> Result<Boot, Box<dyn std::error::Error>> {
     bus.write_u32(super::threads::DPC_RETURN_TRAMPOLINE, 0x44000042)?;
     bus.write_u32(super::threads::DPC_RETURN_TRAMPOLINE + 4, 0x4E800020)?;
     thunk_map.insert(super::threads::DPC_RETURN_TRAMPOLINE, ("xboxkrnl.exe".to_string(), super::threads::DPC_RETURN_ORDINAL));
+    // Module entry return trampoline (sc; blr): a DllMain run by XexLoadImage returns here (app/threads.rs)
+    bus.write_u32(super::threads::ENTRY_RETURN_TRAMPOLINE, 0x44000042)?;
+    bus.write_u32(super::threads::ENTRY_RETURN_TRAMPOLINE + 4, 0x4E800020)?;
+    thunk_map.insert(super::threads::ENTRY_RETURN_TRAMPOLINE, ("xboxkrnl.exe".to_string(), super::threads::ENTRY_RETURN_ORDINAL));
 
     let mut kernel = KernelDispatcher::new();
     // Kernel variables the title imports (Xenia SetVariableMapping): the import record gets the variable's address.
     let variables = kernel.register_variable_exports(&mut bus);
+    kernel.user_modules.kernel_variables = variables.clone();
+    kernel.user_modules.title_dir = metro_path.parent().filter(|_| is_metro).map(|d| d.to_path_buf());
     for (lib, ordinal, slot) in dash_xex.variable_import_slots(&bus) {
         if lib.eq_ignore_ascii_case("xboxkrnl.exe") {
             if let Some(&(_, addr)) = variables.iter().find(|(o, _)| *o == ordinal) {
@@ -221,10 +227,14 @@ pub fn boot() -> Result<Boot, Box<dyn std::error::Error>> {
         &mut bus,
         "dash",
         if is_metro { "game:\\dash.xex" } else { "game:\\$flash_dash.xex" },
-        vaddr_base as u32,
         dash_xex.image_size,
         dash_xex.entry_point,
         dash_xex.resources.clone(),
+        xenon_emu::kernel::modules::ModuleExports {
+            image_base: vaddr_base as u32,
+            xex_table: dash_xex.export_table,
+            by_name: dash_xex.exports_by_name.map_or(0, |offset| vaddr_base as u32 + offset),
+        },
     );
     kernel.modules.register_kernel(&mut bus, "xboxkrnl.exe");
     kernel.modules.register_kernel(&mut bus, "xam.xex");

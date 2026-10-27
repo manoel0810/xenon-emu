@@ -9,6 +9,7 @@ pub mod modules;
 pub mod notify;
 pub mod strings;
 pub mod timers;
+pub mod user_module;
 pub mod video;
 pub mod xconfig;
 pub mod vfs;

@@ -2,6 +2,7 @@
 
 use xenon_emu::cpu::Cpu;
 use xenon_emu::kernel::dpc::{self, DpcCall};
+use xenon_emu::kernel::user_module::ModuleEntryCall;
 use xenon_emu::memory::MemoryBus;
 
 // ---- Guest thread stacks ----
@@ -38,6 +39,41 @@ pub fn callback_stack_top(slot: u64) -> u64 {
 pub const DPC_RETURN_TRAMPOLINE: u64 = 0x80001010;
 /// Pseudo ordinal of the DPC return trampoline (not a real xboxkrnl export; never reaches the kernel).
 pub const DPC_RETURN_ORDINAL: u16 = 0xFFFE;
+
+/// Guest address of the module entry return trampoline (`sc; blr`), registered in the thunk map as a pseudo export.
+pub const ENTRY_RETURN_TRAMPOLINE: u64 = 0x80001020;
+/// Pseudo ordinal of the module entry return trampoline (never reaches the kernel).
+pub const ENTRY_RETURN_ORDINAL: u16 = 0xFFFD;
+
+/// A module entry point (DllMain) running on the thread whose kernel call loaded the module: where to resume and
+/// the call's own return value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntryFrame {
+    pub return_pc: u64,
+    pub result: u64,
+}
+
+/// Runs a newly loaded module's entry point on the calling thread (Xenia FinishLoadingUserModule: processor
+/// Execute on the current thread) before its XexLoadImage returns `result`; it comes back through
+/// ENTRY_RETURN_TRAMPOLINE. The thread's `pc` is already the call's return address.
+pub fn begin_entry_call(cpu: &mut Cpu, frames: &mut Vec<EntryFrame>, call: ModuleEntryCall, result: u64) {
+    frames.push(EntryFrame { return_pc: cpu.regs.pc, result });
+    for (i, &arg) in call.args.iter().enumerate() {
+        cpu.regs.gpr[3 + i] = arg as u64;
+    }
+    cpu.regs.lr = ENTRY_RETURN_TRAMPOLINE;
+    cpu.regs.pc = call.routine as u64;
+}
+
+/// The entry point returned to the trampoline: resume the loading call with its own result. Returns false if the
+/// thread had no entry point in progress.
+pub fn end_entry_call(cpu: &mut Cpu, frames: &mut Vec<EntryFrame>) -> bool {
+    let Some(frame) = frames.pop() else { return false };
+    cpu.regs.gpr[3] = frame.result;
+    cpu.regs.pc = frame.return_pc;
+    cpu.regs.lr = frame.return_pc;
+    true
+}
 
 /// A DPC routine running on a guest thread: where to resume and the IRQL to restore (None = nested DPC).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -365,6 +401,25 @@ mod tests {
         assert_eq!((cpu.regs.pc, cpu.regs.lr, cpu.regs.gpr[3]), (0x921B_13E0, 0x921B_13E0, 1));
         assert_eq!((bus.read_u8(kpcr + 0x18).unwrap(), bus.read_u32(kpcr + 0x150).unwrap()), (0, 0));
         assert!(!end_dpc_call(&mut cpu, &mut bus, &mut frames));
+    }
+
+    #[test]
+    fn module_entry_runs_before_the_load_call_returns() {
+        let mut cpu = Cpu::new(0);
+        cpu.regs.gpr[1] = 0x721B_EC00;
+        // right after XdfLoadXexFromCache: pc = the dash's return address (0x9218B4E0)
+        cpu.regs.pc = 0x9218_B4E0;
+        let mut frames = Vec::new();
+        let call = ModuleEntryCall { routine: 0x9E78_D458, args: [0xF800_000C, 1, 0] };
+        begin_entry_call(&mut cpu, &mut frames, call, 0);
+        assert_eq!((cpu.regs.pc, cpu.regs.lr), (0x9E78_D458, ENTRY_RETURN_TRAMPOLINE));
+        assert_eq!((cpu.regs.gpr[3], cpu.regs.gpr[4], cpu.regs.gpr[5]), (0xF800_000C, 1, 0));
+        assert_eq!(cpu.regs.gpr[1], 0x721B_EC00, "DllMain runs on the caller's stack");
+        // DllMain returns TRUE through the trampoline; the load call returns its own result
+        cpu.regs.gpr[3] = 1;
+        assert!(end_entry_call(&mut cpu, &mut frames));
+        assert_eq!((cpu.regs.pc, cpu.regs.lr, cpu.regs.gpr[3]), (0x9218_B4E0, 0x9218_B4E0, 0));
+        assert!(!end_entry_call(&mut cpu, &mut frames));
     }
 
     #[test]
