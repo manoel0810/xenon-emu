@@ -13,9 +13,13 @@ pub use traits::*;
 pub use offline::*;
 pub use real::*;
 
-/// Returns the default host environment (`HostOffline` for maximum determinism and safety).
+/// Returns the default host environment (`HostOffline` for maximum determinism and safety, or `HostReal` if configured via `XENON_HOST=real`).
 pub fn default_host() -> Box<dyn Host> {
-    Box::new(HostOffline::new())
+    if crate::diag::config().host_real {
+        Box::new(HostReal::new())
+    } else {
+        Box::new(HostOffline::new())
+    }
 }
 
 /// Returns a real OS-backed host environment.
@@ -165,5 +169,40 @@ mod tests {
         let sock = net_online.socket(2, 2, 17).expect("create UDP socket");
         assert!(sock > 0);
         assert!(net_online.close_socket(sock).is_ok());
+    }
+
+    #[test]
+    fn test_host_switching_and_dispatcher_integration() {
+        let mut disp = crate::kernel::KernelDispatcher::new();
+        // Starts with default offline host
+        assert_eq!(disp.host().profile().signed_in_users().len(), 1);
+
+        // Switch to real host
+        disp.set_host(Box::new(HostReal::new()));
+        assert_eq!(disp.host().profile().signed_in_users().len(), 1);
+
+        // Submit audio sample and verify drain
+        let sample = [100i16, 200i16, -100i16, -200i16];
+        disp.host_mut().audio().submit_pcm(&sample);
+        let drained = disp.host_mut().audio().drain_pcm();
+        assert_eq!(drained, sample);
+
+        // Inject virtual pad and verify poll
+        let pad = PadState {
+            w_buttons: 0x1000, // A button
+            b_left_trigger: 50,
+            b_right_trigger: 150,
+            s_thumb_lx: 1000,
+            s_thumb_ly: -1000,
+            s_thumb_rx: 2000,
+            s_thumb_ry: -2000,
+            connected: true,
+        };
+        disp.update_pad_state(0, pad);
+        let polled = disp.host_mut().input().poll_pad(0);
+        assert!(polled.connected);
+        assert_eq!(polled.w_buttons, 0x1000);
+        assert_eq!(polled.b_left_trigger, 50);
+        assert_eq!(polled.b_right_trigger, 150);
     }
 }

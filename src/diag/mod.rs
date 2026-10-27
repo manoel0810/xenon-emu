@@ -21,6 +21,8 @@ pub struct DiagConfig {
     pub fb_source_reference: bool,
     /// XENON_NET_ONLINE: opt-in real network access for HostReal (default false / offline).
     pub net_online: bool,
+    /// XENON_HOST=real or XENON_HOST_REAL=1: use real OS-backed host environment (HostReal).
+    pub host_real: bool,
 
     // ---- Threads / traps ----
     /// XENON_TRAP_TRACE: keep a ring of the last executed instructions and dump it on trap.
@@ -130,6 +132,7 @@ impl DiagConfig {
             skip_bootanim: flag("XENON_SKIP_BOOTANIM"),
             fb_source_reference: string("XENON_FB_SOURCE").map(|v| v.eq_ignore_ascii_case("reference")).unwrap_or(false),
             net_online: flag("XENON_NET_ONLINE"),
+            host_real: string("XENON_HOST").map(|v| v.eq_ignore_ascii_case("real")).unwrap_or(false) || flag("XENON_HOST_REAL"),
 
             trap_trace: flag("XENON_TRAP_TRACE"),
             trap_full: flag("XENON_TRAP_FULL"),

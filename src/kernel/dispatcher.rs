@@ -145,6 +145,21 @@ impl KernelDispatcher {
         }
     }
 
+    /// Sets a custom host environment (e.g. HostReal or test mocks).
+    pub fn set_host(&mut self, host: Box<dyn crate::host::Host>) {
+        self.host = host;
+    }
+
+    /// Immutable reference to the active host environment.
+    pub fn host(&self) -> &dyn crate::host::Host {
+        self.host.as_ref()
+    }
+
+    /// Mutable reference to the active host environment.
+    pub fn host_mut(&mut self) -> &mut dyn crate::host::Host {
+        self.host.as_mut()
+    }
+
     /// A handle to a new object without a guest object (files, sockets, listeners, enumerators, ...).
     pub fn new_handle(&mut self, kind: super::objects::ObjectKind) -> u32 {
         self.objects.create(super::objects::KernelObject { kind, guest_ptr: 0 })

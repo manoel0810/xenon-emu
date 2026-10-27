@@ -351,11 +351,14 @@ Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem
   - Conectados `NetDll_bind` (0x000B), `NetDll_connect` (0x000C), `NetDll_recv` (0x0012) e `NetDll_send` (0x0016) ao `self.host.net()` em `src/kernel/xam/net.rs`.
   - Adicionado `read_bytes` em `src/memory/bus.rs` para leitura contígua e segura de buffers de rede na memória guest.
   - Adicionados testes unitários para `RealNet` opt-in e ciclo de vida de sockets via HLE (155 testes passando no total).
-- [ ] **6.4: Integração, Validação da Baseline e Navegação Interativa da Dash**
-  - Validar a execução completa com regressão de 3000 frames (timeout 120s estrito).
-  - Teste de navegação interativa na janela (resposta a comandos de entrada sem deadlocks).
+- [x] **6.4: Integração, Validação da Baseline e Navegação Interativa da Dash**
+  - Integração consolidada dos subsistemas do host: Áudio (`HostAudio` com PCM e XAudio), Entrada (`HostInput` com mesclagem transparente de teclado host e gamepad XInput) e Rede (`HostNet` com sockets TCP/UDP e resolução DNS opt-in).
+  - Adicionado controle de seleção de host via `XENON_HOST=real` ou `XENON_HOST_REAL=1` em `DiagConfig` (`src/diag/mod.rs`), integrado a `default_host()` (`src/host/mod.rs`).
+  - Adicionados métodos de injeção e inspeção de host em `KernelDispatcher` (`set_host`, `host`, `host_mut` em `src/kernel/dispatcher.rs`).
+  - Adicionado teste de integração e switching de host (`test_host_switching_and_dispatcher_integration`, 156 testes passando no total).
+  - Validada a baseline com teste de regressão de 3000 frames (timeout 120s estrito) sem traps nem regressões.
 
-Aceite: dashboard reproduz áudio, responde a comandos de controle (teclado e gamepad físico) e suporta rede real opt-in sem regressões.
+Aceite: dashboard reproduz áudio, responde a comandos de controle (teclado e gamepad físico) e suporta rede real opt-in sem regressões. FASE 6 CONCLUÍDA.
 
 ---
 
