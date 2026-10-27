@@ -4,6 +4,9 @@ use super::super::dispatcher::KernelDispatcher;
 use crate::kernel::objects::ObjectKind;
 use crate::memory::MemoryBus;
 
+/// XnAddrStatus (Xenia xam_net.cc).
+const XNET_GET_XNADDR_STATIC: u64 = 0x0000_0004;
+
 impl KernelDispatcher {
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xam_net(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
@@ -147,22 +150,31 @@ impl KernelDispatcher {
                 crate::host::traits::LinkStatus::Connected { .. } => 0x0000_0001 | 0x0000_0002, // XNET_ETHERNET_LINK_ACTIVE | 100MBPS
             },
 
-            // 0x0036 NetDll_XNetGetTitleXnAddr (caller, pXnAddr) -> XNET_GET_XNADDR_ETHERNET
+            // 0x0036 NetDll_XNetCreateKey(caller, pKeyId, pExchangeKey): Xenia (xam_net.cc) fills the 8-byte key id and
+            // the 16-byte exchange key with 0xBE and succeeds.
             0x0036 => {
+                let (key_id, exchange_key) = (args.get(1).copied().unwrap_or(0), args.get(2).copied().unwrap_or(0));
+                if key_id != 0 {
+                    let _ = bus.load_bytes(key_id, &[0xBE; 8]);
+                }
+                if exchange_key != 0 {
+                    let _ = bus.load_bytes(exchange_key, &[0xBE; 16]);
+                }
+                0
+            }
+
+            // 0x0049 NetDll_XNetGetTitleXnAddr(caller, pXnAddr) -> XNET_GET_XNADDR_STATIC. As Xenia (xam_net.cc): XNADDR
+            // { ina, inaOnline (network byte order), be16 wPortOnline, abEnet[6], abOnline[20] } with a loopback ina,
+            // abEnet 0xCC (a zero MAC makes RakNet's startup fail) and the online fields zero.
+            0x0049 => {
                 let p_xn = args.get(1).copied().unwrap_or(0);
                 if p_xn != 0 {
-                    match self.host.net().link_status() {
-                        crate::host::traits::LinkStatus::Connected { ip, .. } => {
-                            let _ = bus.load_bytes(p_xn + 0x10, &ip);
-                            0x0000_0001 // XNET_GET_XNADDR_ETHERNET
-                        }
-                        crate::host::traits::LinkStatus::Disconnected => {
-                            0x0000_0000 // None
-                        }
-                    }
-                } else {
-                    0
+                    let mut xnaddr = [0u8; 36];
+                    xnaddr[0..4].copy_from_slice(&[127, 0, 0, 1]);
+                    xnaddr[10..16].copy_from_slice(&[0xCC; 6]);
+                    let _ = bus.load_bytes(p_xn, &xnaddr);
                 }
+                XNET_GET_XNADDR_STATIC
             }
 
             _ => return None,
@@ -206,5 +218,25 @@ mod tests {
         // 0x0004: NetDll_closesocket
         let close_res = disp.xam_net(0x0004, &[0, sock_handle], &mut bus);
         assert_eq!(close_res, Some(0));
+    }
+
+    #[test]
+    fn xnet_key_and_title_address_follow_xenia() {
+        let mut disp = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        // XNetCreateKey
+        assert_eq!(disp.xam_net(0x0036, &[0, 0x1000, 0x1100], &mut bus), Some(0));
+        assert_eq!(bus.read_u64(0x1000).unwrap(), 0xBEBE_BEBE_BEBE_BEBE);
+        assert_eq!(bus.read_u64(0x1108).unwrap(), 0xBEBE_BEBE_BEBE_BEBE);
+        assert_eq!(bus.read_u8(0x1110).unwrap(), 0);
+        // XNetGetTitleXnAddr
+        bus.write_u32(0x2020, 0xFFFF_FFFF).unwrap();
+        assert_eq!(disp.xam_net(0x0049, &[0, 0x2000], &mut bus), Some(super::XNET_GET_XNADDR_STATIC));
+        assert_eq!(bus.read_u32(0x2000).unwrap(), 0x7F00_0001);
+        assert_eq!(bus.read_u32(0x2004).unwrap(), 0);
+        assert_eq!(bus.read_u16(0x2008).unwrap(), 0);
+        assert_eq!(bus.read_u16(0x200A).unwrap(), 0xCCCC);
+        assert_eq!(bus.read_u32(0x200C).unwrap(), 0xCCCC_CCCC);
+        assert_eq!(bus.read_u32(0x2020).unwrap(), 0, "abOnline cleared up to byte 36");
     }
 }
