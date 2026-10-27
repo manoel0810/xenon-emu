@@ -294,46 +294,44 @@ impl Cpu {
     pub(in crate::cpu) fn exec_loadstore_x31(&mut self, bus: &mut MemoryBus, insn: u32, _pc: u64, xo: u32) -> Result<StepResult, String> {
         match xo {
 
-            // 20: lwarx (Load Word and Reserve Indexed)
-            20 => {
+            // 20: lwarx / 84: ldarx (Load Word / Doubleword and Reserve Indexed): RESERVE <- 1, RESERVE_ADDR <- EA;
+            // the loaded value is kept for the conditional store (Xenia RESERVED_LOAD)
+            20 | 84 => {
                 let rd = ((insn >> 21) & 0x1F) as usize;
                 let ra = ((insn >> 16) & 0x1F) as usize;
                 let rb = ((insn >> 11) & 0x1F) as usize;
-                let ea = if ra == 0 { self.regs.gpr[rb] } else { self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]) };
-                let val = bus.read_u32(ea)?;
-                self.regs.gpr[rd] = val as u64;
-            }
-
-            // 84: ldarx (Load Doubleword and Reserve Indexed)
-            84 => {
-                let rd = ((insn >> 21) & 0x1F) as usize;
-                let ra = ((insn >> 16) & 0x1F) as usize;
-                let rb = ((insn >> 11) & 0x1F) as usize;
-                let ea = if ra == 0 { self.regs.gpr[rb] } else { self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]) };
-                let val = bus.read_u64(ea)?;
+                let ea = if ra == 0 { self.regs.gpr[rb] } else { self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]) } & 0xFFFF_FFFF;
+                let (val, size) = if xo == 20 { (bus.read_u32(ea)? as u64, 4) } else { (bus.read_u64(ea)?, 8) };
                 self.regs.gpr[rd] = val;
+                self.reservation = Some(crate::cpu::Reservation { address: ea, value: val, size });
             }
 
-            // 150: stwcx. (Store Word Conditional Indexed)
-            150 => {
+            // 150: stwcx. / 214: stdcx. (Store Word / Doubleword Conditional Indexed): stored only if this thread
+            // holds the reservation for EA and memory still has the reserved value (Xenia RESERVED_STORE:
+            // compare-exchange); the reservation is released. CR0 = 0b00 || stored || XER[SO].
+            150 | 214 => {
                 let rs = ((insn >> 21) & 0x1F) as usize;
                 let ra = ((insn >> 16) & 0x1F) as usize;
                 let rb = ((insn >> 11) & 0x1F) as usize;
-                let ea = if ra == 0 { self.regs.gpr[rb] } else { self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]) };
-                bus.write_u32(ea, self.regs.gpr[rs] as u32)?;
+                let ea = if ra == 0 { self.regs.gpr[rb] } else { self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]) } & 0xFFFF_FFFF;
+                let size = if xo == 150 { 4 } else { 8 };
+                let stored = match self.reservation.take() {
+                    Some(r) if r.address == ea && r.size == size => {
+                        let current = if size == 4 { bus.read_u32(ea)? as u64 } else { bus.read_u64(ea)? };
+                        current == r.value
+                    }
+                    _ => false,
+                };
+                if stored {
+                    if size == 4 {
+                        bus.write_u32(ea, self.regs.gpr[rs] as u32)?;
+                    } else {
+                        bus.write_u64(ea, self.regs.gpr[rs])?;
+                    }
+                }
+                let so = ((self.regs.xer >> 31) & 1) as u32;
                 let cr0_shift = 7 * 4;
-                self.regs.cr = (self.regs.cr & !(0xFu32 << cr0_shift)) | (0b0010 << cr0_shift);
-            }
-
-            // 214: stdcx. (Store Doubleword Conditional Indexed)
-            214 => {
-                let rs = ((insn >> 21) & 0x1F) as usize;
-                let ra = ((insn >> 16) & 0x1F) as usize;
-                let rb = ((insn >> 11) & 0x1F) as usize;
-                let ea = if ra == 0 { self.regs.gpr[rb] } else { self.regs.gpr[ra].wrapping_add(self.regs.gpr[rb]) };
-                bus.write_u64(ea, self.regs.gpr[rs])?;
-                let cr0_shift = 7 * 4;
-                self.regs.cr = (self.regs.cr & !(0xFu32 << cr0_shift)) | (0b0010 << cr0_shift);
+                self.regs.cr = (self.regs.cr & !(0xFu32 << cr0_shift)) | ((((stored as u32) << 1) | so) << cr0_shift);
             }
 
             // 23: lwzx (Load Word and Zero Indexed)
@@ -574,6 +572,49 @@ mod tests {
         setup(&mut cpu);
         assert_eq!(cpu.step(bus), Ok(StepResult::Ok));
         cpu
+    }
+
+    #[test]
+    fn conditional_stores_need_the_reservation_and_an_unchanged_value() {
+        let mut bus = MemoryBus::new();
+        let (lwarx, stwcx, ldarx, stdcx) = (x31(3, 10, 9, 20), x31(4, 10, 9, 150) | 1, x31(3, 10, 9, 84), x31(4, 10, 9, 214) | 1);
+        let cr0 = |cpu: &Cpu| cpu.regs.cr >> 28;
+        let step = |cpu: &mut Cpu, bus: &mut MemoryBus, insn: u32| {
+            bus.write_u32(CODE, insn).unwrap();
+            cpu.regs.pc = CODE;
+            assert_eq!(cpu.step(bus), Ok(StepResult::Ok));
+        };
+        bus.write_u32(DATA + 8, 5).unwrap();
+        // lwarx then stwcx. with the value unchanged: stored, CR0.EQ
+        let mut cpu = run(&mut bus, lwarx, 8, |c| c.regs.gpr[4] = 6);
+        assert_eq!(cpu.regs.gpr[3], 5);
+        step(&mut cpu, &mut bus, stwcx);
+        assert_eq!((bus.read_u32(DATA + 8).unwrap(), cr0(&cpu)), (6, 0b0010));
+        // the reservation was released: a second stwcx. fails and stores nothing
+        cpu.regs.gpr[4] = 7;
+        step(&mut cpu, &mut bus, stwcx);
+        assert_eq!((bus.read_u32(DATA + 8).unwrap(), cr0(&cpu)), (6, 0b0000));
+        // another thread changes the word between lwarx and stwcx.: the update is not lost
+        step(&mut cpu, &mut bus, lwarx);
+        bus.write_u32(DATA + 8, 9).unwrap();
+        step(&mut cpu, &mut bus, stwcx);
+        assert_eq!((bus.read_u32(DATA + 8).unwrap(), cr0(&cpu)), (9, 0b0000));
+        // a reservation on another address does not cover the store; XER[SO] is copied into CR0
+        step(&mut cpu, &mut bus, lwarx);
+        cpu.regs.gpr[9] = 12;
+        cpu.regs.xer |= 1 << 31;
+        step(&mut cpu, &mut bus, stwcx);
+        assert_eq!((bus.read_u32(DATA + 12).unwrap(), cr0(&cpu)), (0, 0b0001));
+        // ldarx / stdcx.
+        bus.write_u64(DATA + 16, 0x1122_3344_5566_7788).unwrap();
+        let mut cpu = run(&mut bus, ldarx, 16, |c| c.regs.gpr[4] = 0xAABB_CCDD_EEFF_0011);
+        assert_eq!(cpu.regs.gpr[3], 0x1122_3344_5566_7788);
+        step(&mut cpu, &mut bus, stdcx);
+        assert_eq!((bus.read_u64(DATA + 16).unwrap(), cr0(&cpu)), (0xAABB_CCDD_EEFF_0011, 0b0010));
+        // a word reservation does not cover a doubleword store
+        step(&mut cpu, &mut bus, lwarx);
+        step(&mut cpu, &mut bus, stdcx);
+        assert_eq!(cr0(&cpu), 0b0000);
     }
 
     #[test]

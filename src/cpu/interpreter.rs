@@ -42,10 +42,21 @@ pub enum StepResult {
     Halted,
 }
 
+/// A lwarx/ldarx reservation: the address and the value it loaded (Xenia's RESERVED_LOAD keeps the value in
+/// cached_reserve_value_). stwcx./stdcx. store only while it holds and memory still has that value, as Xenia's
+/// RESERVED_STORE compare-exchange, and release it either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reservation {
+    pub address: u64,
+    pub value: u64,
+    pub size: u8,
+}
+
 pub struct Cpu {
     pub regs: Registers,
     pub halted: bool,
     pub step_count: u64,
+    pub reservation: Option<Reservation>,
 }
 
 impl Cpu {
@@ -56,6 +67,7 @@ impl Cpu {
             regs,
             halted: false,
             step_count: 0,
+            reservation: None,
         }
     }
 

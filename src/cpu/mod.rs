@@ -4,4 +4,4 @@ pub mod altivec;
 pub mod timebase;
 mod ops;
 pub use registers::Registers;
-pub use interpreter::{Cpu, StepResult};
+pub use interpreter::{Cpu, Reservation, StepResult};
