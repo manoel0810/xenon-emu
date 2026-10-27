@@ -67,6 +67,15 @@ pub fn run(
         if let Some(mf) = max_frames {
             if frame > mf {
                 println!("[*] Reached XENON_MAX_FRAMES limit ({} frames) - terminating loop cleanly.", mf);
+                if let (Some(path), Some((address, width, height))) = (diag.fb_dump.as_ref(), xenos_gpu.last_swap) {
+                    let len = (width.next_multiple_of(32) * height.next_multiple_of(32) * 4) as u64;
+                    let start = (address & 0x1FFF_FFFF) as u64;
+                    let bytes: Vec<u8> = (start..start + len).map(|a| bus.read_u8(a).unwrap_or(0)).collect();
+                    match std::fs::write(path, &bytes) {
+                        Ok(()) => println!("[*] Frontbuffer {:08X} {}x{} written to {}", address, width, height, path),
+                        Err(e) => println!("[*] Frontbuffer dump failed: {}", e),
+                    }
+                }
                 break;
             }
         }
