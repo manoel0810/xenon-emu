@@ -29,6 +29,17 @@ impl KernelDispatcher {
             // 0x087A: XamIsNuiAutomationEnabled(unk1, unk2) -> X_ERROR_SUCCESS (Xenia xam_nui.cc stub)
             0x087A => 0,
 
+            // 0x0646: XamPackageManagerGetExperienceMode(mode_ptr) -> X_ERROR_SUCCESS. Deviation: Xenia only lists the
+            // export; the console's xam (0x816E9AC0) asks its app 0xFE (message 0x25005) for the mode. The dash keeps
+            // bit 0x2 at app+0x164 (0x921838D8), 1 on the console, and loads dashnui.xex only when it is set
+            // (0x92186360); the other bits are unknown, so only 0x2 is set.
+            0x0646 => {
+                if let Some(&mode) = args.first().filter(|&&p| p != 0) {
+                    let _ = bus.write_u32(mode, 0x2);
+                }
+                0
+            }
+
             // 0x05DC: XamAvatarInitialize(...) -> ~0: avatar initialization is off outside the avatar editor
             // (Xenia cvar allow_avatar_initialization = false)
             0x05DC => 0xFFFF_FFFF,
@@ -436,6 +447,11 @@ mod tests {
         let mut k = KernelDispatcher::new();
         let mut bus = MemoryBus::new();
         assert_eq!(xam(&mut k, &mut bus, 0x087A, &[0, 0]), 0);
+        // XamPackageManagerGetExperienceMode: bit 0x2 as on the console, a null pointer is ignored
+        bus.write_u32(0x4100_0000, 0xFFFF_FFFF).unwrap();
+        assert_eq!(xam(&mut k, &mut bus, 0x0646, &[0x4100_0000]), 0);
+        assert_eq!(bus.read_u32(0x4100_0000).unwrap(), 0x2);
+        assert_eq!(xam(&mut k, &mut bus, 0x0646, &[0]), 0);
         assert_eq!((xam(&mut k, &mut bus, 0x059F, &[0x8030_0034, 0]), xam(&mut k, &mut bus, 0x059F, &[1, 0])), (0, 0x8000_4001));
         assert_eq!(xam(&mut k, &mut bus, 0x05DC, &[1, 0, 0, 0, 0, 0]), 0xFFFF_FFFF);
         assert_eq!(xam(&mut k, &mut bus, 0x03CA, &[]), 0x0001_0001);
