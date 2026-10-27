@@ -6,6 +6,16 @@ use crate::kernel::objects::ObjectKind;
 use crate::memory::MemoryBus;
 
 impl KernelDispatcher {
+    /// keXamBuildResourceLocator (Xenia xam_info.cc).
+    fn write_resource_locator(bus: &mut MemoryBus, module: u32, container: &str, resource: &str, buffer: u64, buffer_bytes: u64) {
+        let path = if module == 0 {
+            format!("file://media:/{}.xzp#{}", container, resource)
+        } else {
+            format!("section://{:X},{}#{}", module, container, resource)
+        };
+        Self::write_utf16_truncating(bus, buffer, &path, (buffer_bytes / 2) as usize);
+    }
+
     /// Handles the ordinals of this area; `None` means "not handled here".
     pub(super) fn xam_misc(&mut self, ordinal: u16, args: &[u64], bus: &mut MemoryBus) -> Option<u64> {
         Some(match ordinal {
@@ -55,16 +65,48 @@ impl KernelDispatcher {
                 0
             }
 
-            // 0x058D: XamGetLanguageTypefacePatch(language, buffer_size, buffer)
-            0x058D => 0,
+            // 0x058D: XamGetLanguageTypefacePatch(language) -> guest pointer to a typeface patch locator (Xenia
+            // XamState::GetLanguageTypefacePatch: 17 = SChinese, 8 = TChinese, otherwise the JK font). Deviation: Xenia
+            // returns the .xttp2 patches; the console's flash (17559) holds .xttp1 ones, which the same comment says a
+            // console with flag 0x1000 uses, so these point at .xttp1.
+            0x058D => {
+                let index = match args.first().copied().unwrap_or(0) {
+                    17 => 1,
+                    8 => 2,
+                    _ => 3,
+                };
+                if self.typeface_patches[index] == 0 {
+                    let name = ["", "XenonSCLatin", "XenonCLatin", "XenonJKLatin"][index];
+                    let path = format!("file://media:/{}.xttp1", name);
+                    let ptr = self.alloc_system(bus, 2 * (path.len() as u32 + 1));
+                    Self::write_utf16_truncating(bus, ptr, &path, path.len() + 1);
+                    self.typeface_patches[index] = ptr as u32;
+                }
+                self.typeface_patches[index] as u64
+            }
 
-            // 0x0315: XamBuildSharedSystemResourceLocator(filename, buffer, buffer_count bytes):
-            // "section://<xam hmodule>,shrdres#<filename>" (Xenia xam_info.cc keXamBuildResourceLocator)
-            0x0315 => {
-                let name = Self::read_utf16(bus, args.first().copied().unwrap_or(0));
-                let xam = self.modules.modules.iter().find(|m| m.name.eq_ignore_ascii_case("xam.xex")).map(|m| m.hmodule).unwrap_or(0);
-                let path = if xam != 0 { format!("section://{:X},shrdres#{}", xam, name) } else { format!("file://media:/shrdres.xzp#{}", name) };
-                Self::write_utf16_truncating(bus, args.get(1).copied().unwrap_or(0), &path, (args.get(2).copied().unwrap_or(0) / 2) as usize);
+            // XamBuild*ResourceLocator (Xenia xam_info.cc keXamBuildResourceLocator): "section://<module>,<container>#<res>"
+            // for a module, "file://media:/<container>.xzp#<res>" without one; buffer_count is in bytes; returns 0.
+            // Shared system (0x0315) / legacy (0x031C): container shrdres; gamercard (0x031D): gamercrd; both use the
+            // xam module only when a real xam.xex is loaded as a user module (GetModule("xam", true)), otherwise the
+            // local file extracted from xam.xex (tools/extract_xam_resources). Xam (0x031F): container xam, no module.
+            0x0315 | 0x031C | 0x031D | 0x031F => {
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                let (container, module) = match ordinal {
+                    0x031D => ("gamercrd", self.modules.user_module_handle("xam")),
+                    0x031F => ("xam", None),
+                    _ => ("shrdres", self.modules.user_module_handle("xam")),
+                };
+                let resource = Self::read_utf16(bus, arg(0));
+                Self::write_resource_locator(bus, module.unwrap_or(0), container, &resource, arg(1), arg(2));
+                0
+            }
+
+            // 0x031B: XamBuildResourceLocator(module, container, resource, buffer, buffer_count)
+            0x031B => {
+                let arg = |i: usize| args.get(i).copied().unwrap_or(0);
+                let (container, resource) = (Self::read_utf16(bus, arg(1)), Self::read_utf16(bus, arg(2)));
+                Self::write_resource_locator(bus, arg(0) as u32, &container, &resource, arg(3), arg(4));
                 0
             }
 
@@ -347,6 +389,46 @@ mod tests {
 
     fn xam(k: &mut KernelDispatcher, bus: &mut MemoryBus, ordinal: u16, args: &[u64]) -> u64 {
         k.dispatch("xam.xex", ordinal, args, bus)
+    }
+
+    fn put_utf16(bus: &mut MemoryBus, ptr: u64, text: &str) {
+        for (i, u) in text.encode_utf16().chain([0]).enumerate() {
+            bus.write_u16(ptr + 2 * i as u64, u).unwrap();
+        }
+    }
+
+    #[test]
+    fn resource_locators_and_typeface_patch_follow_xenia() {
+        let mut k = KernelDispatcher::new();
+        let mut bus = MemoryBus::new();
+        // the HLE xam is a kernel module: GetModule("xam", true) does not find it, so the local-file form
+        k.modules.register_kernel(&mut bus, "xam.xex");
+        put_utf16(&mut bus, 0x4100_0000, "loadingRing.png");
+        let out = |k: &mut KernelDispatcher, bus: &mut MemoryBus, ordinal: u16, args: &[u64]| {
+            assert_eq!(xam(k, bus, ordinal, args), 0);
+            KernelDispatcher::read_utf16(bus, 0x4100_0100)
+        };
+        assert_eq!(out(&mut k, &mut bus, 0x0315, &[0x4100_0000, 0x4100_0100, 0x100]), "file://media:/shrdres.xzp#loadingRing.png");
+        assert_eq!(out(&mut k, &mut bus, 0x031C, &[0x4100_0000, 0x4100_0100, 0x100]), "file://media:/shrdres.xzp#loadingRing.png");
+        assert_eq!(out(&mut k, &mut bus, 0x031D, &[0x4100_0000, 0x4100_0100, 0x100]), "file://media:/gamercrd.xzp#loadingRing.png");
+        assert_eq!(out(&mut k, &mut bus, 0x031F, &[0x4100_0000, 0x4100_0100, 0x100]), "file://media:/xam.xzp#loadingRing.png");
+        // buffer_count is in bytes: 16 bytes hold 7 characters and the terminator
+        assert_eq!(out(&mut k, &mut bus, 0x0315, &[0x4100_0000, 0x4100_0100, 16]), "file://");
+        // XamBuildResourceLocator with a module: the section form
+        put_utf16(&mut bus, 0x4100_0040, "dashmain");
+        assert_eq!(out(&mut k, &mut bus, 0x031B, &[0x9200_0000, 0x4100_0040, 0x4100_0000, 0x4100_0100, 0x100]), "section://92000000,dashmain#loadingRing.png");
+        // a real xam.xex loaded as a user module: the section form for the shared resources
+        let h = k.modules.register_executable(&mut bus, "xam.xex", "xam.xex", 0x815F_0000, 0x0061_0000, 0, Vec::new());
+        assert_eq!(out(&mut k, &mut bus, 0x0315, &[0x4100_0000, 0x4100_0100, 0x100]), format!("section://{:X},shrdres#loadingRing.png", h));
+
+        // XamGetLanguageTypefacePatch(English): a stable pointer to the JK patch locator
+        let p = xam(&mut k, &mut bus, 0x058D, &[1]);
+        assert_ne!(p, 0);
+        assert_eq!(KernelDispatcher::read_utf16(&bus, p), "file://media:/XenonJKLatin.xttp1");
+        assert_eq!(xam(&mut k, &mut bus, 0x058D, &[1]), p);
+        let (sc, tc) = (xam(&mut k, &mut bus, 0x058D, &[17]), xam(&mut k, &mut bus, 0x058D, &[8]));
+        assert_eq!(KernelDispatcher::read_utf16(&bus, sc), "file://media:/XenonSCLatin.xttp1");
+        assert_eq!(KernelDispatcher::read_utf16(&bus, tc), "file://media:/XenonCLatin.xttp1");
     }
 
     #[test]

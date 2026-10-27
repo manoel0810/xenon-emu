@@ -97,6 +97,9 @@ pub struct KernelDispatcher {
     pub vfs: super::vfs::VirtualFileSystem,
     /// XAudio render driver clients (callback, callback argument), by client index (Xenia AudioSystem clients_).
     pub audio_clients: [Option<(u32, u32)>; 8],
+    /// XamGetLanguageTypefacePatch locator strings in guest memory, allocated on first use (Xenia XamState
+    /// language_type_face_patch_), indices 1..3.
+    pub typeface_patches: [u32; 4],
 }
 
 impl KernelDispatcher {
@@ -144,6 +147,7 @@ impl KernelDispatcher {
             vfs_handles: HashMap::new(),
             host: crate::host::default_host(),
             audio_clients: [None; 8],
+            typeface_patches: [0; 4],
             vfs: {
                 let mut vfs = super::vfs::VirtualFileSystem::new();
                 // XENON_FLASH_DIR: the console's flash files (fonts, xam.xex resources as .xzp) as \Device\Flash

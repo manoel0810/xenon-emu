@@ -66,6 +66,17 @@ impl GuestModule {
     }
 }
 
+impl ModuleTable {
+    /// KernelState::GetModule(name, user_only = true): the handle of a loaded XEX (not an HLE kernel module) whose
+    /// name is `name` or `name`.xex.
+    pub fn user_module_handle(&self, name: &str) -> Option<u32> {
+        self.modules
+            .iter()
+            .find(|m| matches!(m.kind, ModuleKind::User { .. }) && (m.matches(name) || m.matches(&format!("{}.xex", name))))
+            .map(|m| m.hmodule)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ModuleTable {
     pub modules: Vec<GuestModule>,
