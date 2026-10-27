@@ -305,7 +305,7 @@ Objetivo: os draws da dash produzem pixels.
 
 Aceite: os 24 `DRAW_INDX_2` observados produzem saída; comparação visual/numérica com `xbox360_real_framebuffer.raw`.
 
-Situação do aceite (Atualização 35): **parcial**. Os draws da dash geram o fundo (gradiente cinza) no frontbuffer pelo resolve do próprio guest; nas faixas só de fundo a média difere do dump do console em ~3 (baixo) e ~13 níveis (alto, vinheta animada). A dash não desenha UI (cartões, texto) em 3000 frames (só os 7 pares de shaders do fundo), então a comparação com a UI do dump ainda não é possível; o untile do dump de referência com `tiled_offset_2d` mostra artefatos de linha, a investigar.
+Atualização 36: com os recursos do xam (flash do console), o primeiro elemento de UI (anel de carregamento do `shrdres`) é desenhado; a dash fica na tela de carregamento. Situação do aceite (Atualização 35): **parcial**. Os draws da dash geram o fundo (gradiente cinza) no frontbuffer pelo resolve do próprio guest; nas faixas só de fundo a média difere do dump do console em ~3 (baixo) e ~13 níveis (alto, vinheta animada). A dash não desenha UI (cartões, texto) em 3000 frames (só os 7 pares de shaders do fundo), então a comparação com a UI do dump ainda não é possível; o untile do dump de referência com `tiled_offset_2d` mostra artefatos de linha, a investigar.
 
 ### Fase 5: `xe-host` e HLE restante (M4)
 

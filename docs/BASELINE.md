@@ -239,6 +239,10 @@ Entrega externa (4.4-6.4, sem entradas aqui): 3000 frames não completavam no te
 
 Depois das correções (`667a2c0`..`a36557b`), 3000 frames: frame 1622, 99 976 pacotes, `Draws: 2125`, `Swaps: 303`, sem trap, idêntico à 4.3b; 118 s com rasterização, 9 s com `XENON_RASTER=0`. `XENON_FB_DUMP` nos frames 1700 e 3000: fundo em gradiente cinza (médias RGB 118/119/120); faixa y 0..59 com média 63 contra 77 no dump do console, faixa y 600..719 com 151 contra 148. Nenhum aviso `[EDRAM]` de formato não emulado. A dash não desenha UI nesses frames.
 
+## Com os recursos do xam (Atualização 36, 2026-10-27)
+
+Com `console_flash` presente (xam.xex 17559 e fontes da flash do console, recursos extraídos), 3000 frames: 114 739 pacotes, `Draws: 2822`, `Swaps: 314`, sem trap; thread 0x15 termina no frame 1666 (antes 1617); 111 s com rasterização. Os 9 shaders distintos são os mesmos. O frontbuffer mostra o anel de carregamento (`loadingRing.png`) centralizado sobre o fundo. Sem `console_flash`, o comportamento é o da Atualização 35 (99 976 pacotes, 2125 draws, 303 swaps).
+
 ## Critério de regressão (Fase 1)
 
 Após cada etapa, com o mesmo comando do trapscan:
