@@ -368,11 +368,20 @@ impl HostInput for RealInput {
 #[derive(Debug, Default)]
 pub struct RealAudio {
     pub total_samples_written: usize,
+    buffer: Vec<i16>,
 }
 
 impl HostAudio for RealAudio {
     fn submit_pcm(&mut self, samples: &[i16]) {
         self.total_samples_written += samples.len();
+        if self.buffer.len() < 96_000 {
+            let take = samples.len().min(96_000 - self.buffer.len());
+            self.buffer.extend_from_slice(&samples[..take]);
+        }
+    }
+
+    fn drain_pcm(&mut self) -> Vec<i16> {
+        std::mem::take(&mut self.buffer)
     }
 }
 

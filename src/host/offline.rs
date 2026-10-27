@@ -265,11 +265,20 @@ impl HostInput for OfflineInput {
 #[derive(Debug, Default)]
 pub struct OfflineAudio {
     pub total_samples_submitted: usize,
+    buffer: Vec<i16>,
 }
 
 impl HostAudio for OfflineAudio {
     fn submit_pcm(&mut self, samples: &[i16]) {
         self.total_samples_submitted += samples.len();
+        if self.buffer.len() < 48_000 {
+            let take = samples.len().min(48_000 - self.buffer.len());
+            self.buffer.extend_from_slice(&samples[..take]);
+        }
+    }
+
+    fn drain_pcm(&mut self) -> Vec<i16> {
+        std::mem::take(&mut self.buffer)
     }
 }
 

@@ -231,6 +231,16 @@ Resultado (3000 frames): 614 escritas de `CP_RB_WPTR` (antes 411), fence até `0
 - `src/kernel/xam/misc.rs`: adicionados stubs fiéis de localização e compatibilidade de fontes: `XamGetLanguageLocaleFallbackString` (0x058A, retorna fallback locale padrão) e `XamGetLanguageTypefacePatch` (0x058D).
 - Verificação: 2 novos testes unitários adicionados (148 testes passando no total); regressão de 3000 frames executada com timeout estrito de 120s sem traps, processando mais de 2028 frames com total estabilidade. Fase 5 concluída. Próximo: Fase 6 (áudio, input real e rede).
 
+**Atualização 31 (2026-10-26, Fase 6.1, subsistema de áudio host e processamento PCM/XAudio):**
+- `src/host/traits.rs`: adicionado método `drain_pcm(&mut self) -> Vec<i16>` à trait `HostAudio` para permitir drenagem de amostras PCM acumuladas para inspeção de áudio, testes unitários ou streaming ao dispositivo do host.
+- `src/host/offline.rs` e `src/host/real.rs`: implementado buffer PCM interno com capacidade para reter amostras recebidas e implementação de `drain_pcm`.
+- `src/kernel/xboxkrnl/misc.rs`: implementados exports de áudio do Xboxkrnl:
+  - `XAudioGetSpeakerConfig` (0x01FF): configurado para retornar `0x00010001` (Stereo, padrão XAudio Canary).
+  - `XAudioRegisterRenderDriverClient` (0x01F3): simula registro de cliente de renderização de driver de áudio escrevendo handle válido.
+  - `XAudioSubmitRenderDriverFrame` (0x01F5): lê o buffer de amostras PCM do frame guest da memória e encaminha diretamente para `self.host.audio().submit_pcm(&pcm)`.
+  - Stubs adicionais para ciclo de vida de render driver (`0x01F2`, `0x01F4`, `0x01F6`, `0x01F7..0x01FC`, `0x0200`, `0x0276`) e ordinais XMA (`0x022E..0x0238`).
+- Verificação: 2 novos testes unitários adicionados (`test_xaudio_speaker_config` e `test_xaudio_submit_frame_and_drain`, 150 testes passando no total); regressão de 3000 frames executada com timeout estrito de 120s sem traps. Próximo: Etapa 6.2 (entrada interativa com teclado host e gamepad XInput).
+
 **Investigação (resolvida nas Atualizações 19-21) — notificações de partida (antes desligadas por padrão, `XENON_STARTUP_NOTIFICATIONS=1` liga):** o Xenia entrega ao primeiro listener de cada área `SystemUI(0)`, `SignInChanged(1)`, `StorageDevicesChanged(0)` (dashboard), `LiveConnectionChanged(0x001510F1)`, `LiveLinkStateChanged(0)` e `XmpPlaybackControllerChanged(1)` (`KernelState::RegisterNotifyListener`). Com elas, a GPU para no frame 27: no frame 1155 a thread principal (depois de `XamGetLanguage`/`XamGetLocale`/`XamGetOnlineLanguageAndCountry`/`XamUserGetSigninState(0xFF)` em `0x927BDB98`) entra em `0x928E65F0` com objeto nulo (`r3 = 0`) e percorre para sempre uma lista em memória baixa (`r31 = [r3+0x10]`, laço `0x928E6610..0x928E6654`, cabeça `r31+0x180`). Pilha: `0x928E69C4 0x928DFE10 0x928F2C24 0x927BED48 0x927BF72C 0x927BDBB4 0x921859C8 0x921865D8 0x92186A28 0x92180D14 0x92185848 0x921871F0 0x921967A0`. Por grupo: as notificações de sistema sozinhas e as de Live sozinhas travam; a de XMP sozinha não. Corrigir idioma/locale e o índice de usuário não mudou o resultado. Hipótese: falta estado de perfil/XUI que a dash espera depois de "sign-in changed"; próximo passo é descobrir de onde vem o objeto nulo (quem preenche `[r3+0x10]` no caminho sem notificações).
 
 Dados do PM4 abaixo continuam válidos como observação.

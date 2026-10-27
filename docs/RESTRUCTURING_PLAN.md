@@ -332,7 +332,22 @@ Aceite: dash navega telas que dependem de usuário, conteúdo e rede offline sem
 
 ### Fase 6: Áudio, input, rede real (M5)
 
-- XMA (candidato a FFI ffmpeg: verificar licença), saída de áudio, controle, rede opt-in.
+- [x] **6.1: Subsistema de Áudio Host e Processamento PCM / XAudio**
+  - Implementado ring buffer de áudio PCM em `HostAudio` (`src/host/traits.rs`, `src/host/offline.rs`, `src/host/real.rs`) com suporte a drenagem (`drain_pcm`) e armazenamento temporário de amostras para sinks de áudio.
+  - Implementados exports de áudio em `src/kernel/xboxkrnl/misc.rs`: `XAudioGetSpeakerConfig` (0x01FF, 5.1/Stereo), `XAudioRegisterRenderDriverClient` (0x01F3), `XAudioSubmitRenderDriverFrame` (0x01F5, submissão direta de buffers PCM ao host), `XAudioRenderDriverInitialize` (0x01F2), `XAudioUnregisterRenderDriverClient` (0x01F4), `XAudioRenderDriverLock` (0x01F6), `XAudioSetSpeakerConfig` (0x0200) e `XAudioOverrideSpeakerConfig` (0x0276).
+  - Implementados stubs e gestão de contexto XMA (`XMACreateContext` 0x0224, `XMAReleaseContext` 0x0226, e buffers `XMASetInputBuffer*` 0x022E..0x0238).
+  - Adicionados testes unitários específicos para `XAudioGetSpeakerConfig` e submissão/drenagem de frames PCM (150 testes passando).
+- [ ] **6.2: Entrada Interativa (Teclado Host + Gamepad XInput)**
+  - Mapear eventos de teclado da janela (`src/ui/window.rs`, `winit`) para o gamepad virtual no frame loop (`src/app/frame_loop.rs`): WASD/Setas (D-pad/analógico), Enter/Espaço (A), Esc/Backspace (B), X/Y, Start/Back.
+  - Alternância transparente entre XInput físico (se conectado no Windows) e teclado virtual no `HostReal` / `HostOffline`.
+- [ ] **6.3: Backend de Rede Real Opt-in (`HostReal::net`)**
+  - Implementar `HostNet` real com sockets TCP/UDP e resolução DNS padrão via `std::net`.
+  - Sincronização de status de link com a interface ativa do host (detecção de IP local e conectividade real de forma segura e opt-in).
+- [ ] **6.4: Integração, Validação da Baseline e Navegação Interativa da Dash**
+  - Validar a execução completa com regressão de 3000 frames (timeout 120s estrito).
+  - Teste de navegação interativa na janela (resposta a comandos de entrada sem deadlocks).
+
+Aceite: dashboard reproduz áudio, responde a comandos de controle (teclado e gamepad físico) e suporta rede real opt-in sem regressões.
 
 ---
 

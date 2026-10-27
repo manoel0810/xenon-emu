@@ -159,6 +159,11 @@ pub trait HostInput: Send + Sync {
 pub trait HostAudio: Send + Sync {
     /// Submits 16-bit signed PCM audio samples to the audio device.
     fn submit_pcm(&mut self, samples: &[i16]);
+
+    /// Retrieves and clears buffered PCM samples (useful for inspection, tests or forwarding to an audio device).
+    fn drain_pcm(&mut self) -> Vec<i16> {
+        Vec::new()
+    }
 }
 
 // -------------------------------------------------------------------------------------------------
