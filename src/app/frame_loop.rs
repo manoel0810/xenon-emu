@@ -191,7 +191,7 @@ pub fn run(
                         if trap_trace && thread.name.starts_with("Metro") {
                             trap_ring.record(current_pc, op_raw, &thread.cpu.regs);
                         }
-                        match thread.cpu.step(&mut bus) {
+                        match thread.cpu.execute(&mut bus, op_raw) {
                             Ok(StepResult::Ok) => {
                                 thread.total_steps += 1;
                                 if let Some(h) = watch_dump_hit {

@@ -79,6 +79,17 @@ impl Cpu {
 
         let pc = self.regs.pc;
         let insn = bus.read_u32(pc).map_err(|e| format!("Fetch error at 0x{:016X}: {}", pc, e))?;
+        self.execute(bus, insn)
+    }
+
+    /// Executes `insn`, already fetched from the current PC by the caller (the frame loop reads it once for its
+    /// diagnostics and hands it over instead of fetching it a second time).
+    #[inline]
+    pub fn execute(&mut self, bus: &mut MemoryBus, insn: u32) -> Result<StepResult, String> {
+        if self.halted {
+            return Ok(StepResult::Halted);
+        }
+        let pc = self.regs.pc;
         self.regs.pc += 4;
         self.step_count += 1;
         bus.timebase.tick();

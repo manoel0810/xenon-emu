@@ -16,6 +16,9 @@ use super::ucode::FetchInstruction;
 use super::xenos::guest_endian_swap;
 use crate::memory::MemoryBus;
 
+/// Texture formats sampled without a decoder, one bit per TextureFormat (reported once).
+static UNSUPPORTED_FORMATS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Untile offset for 2D textures according to Xenos micro/macro tiling.
 /// Returns the element offset (in pixels for uncompressed formats, or in 4x4 blocks for compressed formats).
 /// Multiply by bytes_per_element (1 << log2_bpp) to get the byte offset.
@@ -162,8 +165,14 @@ impl<'a> GpuTextureSampler<'a> {
                     1.0,
                 ]
             }
-            // Fallback for other formats: opaque white
-            _ => [1.0, 1.0, 1.0, 1.0],
+            // Fallback for other formats: opaque white (each format reported once)
+            other => {
+                let bit = 1u64 << (other & 63);
+                if UNSUPPORTED_FORMATS.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit == 0 {
+                    println!("  [TEXTURE] format {} is not decoded yet: sampled as opaque white", other);
+                }
+                [1.0, 1.0, 1.0, 1.0]
+            }
         };
 
         // Apply constant component swizzle: 0=R, 1=G, 2=B, 3=A, 4=0.0, 5=1.0

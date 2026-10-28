@@ -31,6 +31,10 @@ pub struct MemoryBus {
     /// Images of XEX modules loaded after boot (`map_image`): (first guest address, end, physical RAM offset).
     image_maps: Vec<(u64, u64, usize)>,
     image_pool_next: usize,
+    /// RAM offset of each 4 KB guest page (32-bit effective address >> 12), or `SLOW_PAGE` where an access has to
+    /// take the full translation (GPU MMIO, window chunks not backed yet). Kept in step with `window_map` and
+    /// `image_maps`; it only shortcuts `translate_address`, never changes its result.
+    page_table: Box<[u32]>,
     /// Guest time base shared by all threads (mftb), advanced by Cpu::step.
     pub timebase: crate::cpu::timebase::TimeBase,
 }
@@ -70,6 +74,9 @@ fn window_addr(addr: u64) -> Option<u64> {
 }
 
 const RAM_SIZE: usize = 512 * 1024 * 1024; // 512 MB
+const PAGE_SHIFT: u32 = 12;
+const PAGE_SIZE: u64 = 1 << PAGE_SHIFT;
+const SLOW_PAGE: u32 = u32::MAX;
 const SRAM_SIZE: usize = 512 * 1024;       // 512 KB
 const SRAM_PREFIX: u64 = 0x8000_0200_0000_0000;
 
@@ -92,7 +99,36 @@ impl MemoryBus {
             window_pool_next: WINDOW_POOL_START,
             image_maps: Vec::new(),
             image_pool_next: IMAGE_POOL_START,
+            page_table: (0..1u64 << (32 - PAGE_SHIFT)).map(|p| Self::default_page(p << PAGE_SHIFT)).collect(),
             timebase: Default::default(),
+        }
+    }
+
+    /// Page table entry of a page at boot: plain RAM (`addr & 0x1FFFFFFF`) except the GPU MMIO window and the
+    /// virtual-alloc window, whose chunks get their entries when they are backed.
+    fn default_page(a: u64) -> u32 {
+        if mmio_offset(a).is_some() || window_addr(a).is_some() {
+            SLOW_PAGE
+        } else {
+            (a & 0x1FFF_FFFF) as u32
+        }
+    }
+
+    /// RAM offset of an access of `size` bytes at `addr` through the page table; None when it needs the full
+    /// translation (SRAM, MMIO, unbacked window chunk, or an access that crosses a page).
+    #[inline(always)]
+    fn fast_offset(&self, addr: u64, size: u64) -> Option<usize> {
+        if addr & 0xFFFF_FFFF_0000_0000 == SRAM_PREFIX {
+            return None;
+        }
+        let a = addr as u32;
+        let in_page = (a as u64) & (PAGE_SIZE - 1);
+        if in_page + size > PAGE_SIZE {
+            return None;
+        }
+        match self.page_table[(a >> PAGE_SHIFT) as usize] {
+            SLOW_PAGE => None,
+            base => Some(base as usize + in_page as usize),
         }
     }
 
@@ -160,6 +196,10 @@ impl MemoryBus {
                 }
                 self.window_pool_next += WINDOW_CHUNK as usize;
                 self.window_map[chunk] = b as u32;
+                let first = (WINDOW_START + chunk as u64 * WINDOW_CHUNK) >> PAGE_SHIFT;
+                for i in 0..WINDOW_CHUNK >> PAGE_SHIFT {
+                    self.page_table[(first + i) as usize] = b as u32 + (i << PAGE_SHIFT) as u32;
+                }
                 b
             };
             let off = base + ((a - WINDOW_START) % WINDOW_CHUNK) as usize;
@@ -234,6 +274,9 @@ impl MemoryBus {
         self.ram[phys..phys + size as usize].fill(0);
         self.image_pool_next += size as usize;
         self.image_maps.push((base, base + size, phys));
+        for i in 0..size >> PAGE_SHIFT {
+            self.page_table[((base >> PAGE_SHIFT) + i) as usize] = (phys + (i << PAGE_SHIFT) as usize) as u32;
+        }
         Ok(())
     }
 
@@ -262,18 +305,28 @@ impl MemoryBus {
     }
 
     pub fn read_u8(&self, addr: u64) -> Result<u8, String> {
+        if let Some(off) = self.fast_offset(addr, 1) {
+            return Ok(self.ram[off]);
+        }
         let slice = self.translate_address(addr)?;
         Ok(slice[0])
     }
 
     pub fn write_u8(&mut self, addr: u64, val: u8) -> Result<(), String> {
         self.check_watch(addr, 1, val as u64);
+        if let Some(off) = self.fast_offset(addr, 1) {
+            self.ram[off] = val;
+            return Ok(());
+        }
         let slice = self.translate_address_mut(addr)?;
         slice[0] = val;
         Ok(())
     }
 
     pub fn read_u16(&self, addr: u64) -> Result<u16, String> {
+        if let Some(off) = self.fast_offset(addr, 2) {
+            return Ok(BigEndian::read_u16(&self.ram[off..]));
+        }
         let slice = self.translate_address(addr)?;
         if slice.len() < 2 {
             return Err("Short read".into());
@@ -283,6 +336,10 @@ impl MemoryBus {
 
     pub fn write_u16(&mut self, addr: u64, val: u16) -> Result<(), String> {
         self.check_watch(addr, 2, val as u64);
+        if let Some(off) = self.fast_offset(addr, 2) {
+            BigEndian::write_u16(&mut self.ram[off..], val);
+            return Ok(());
+        }
         let slice = self.translate_address_mut(addr)?;
         if slice.len() < 2 {
             return Err("Short write".into());
@@ -292,6 +349,9 @@ impl MemoryBus {
     }
 
     pub fn read_u32(&self, addr: u64) -> Result<u32, String> {
+        if let Some(off) = self.fast_offset(addr, 4) {
+            return Ok(BigEndian::read_u32(&self.ram[off..]));
+        }
         if let Some(off) = mmio_offset(addr) {
             return Ok(self.gpu_regs.mmio_read(off / 4));
         }
@@ -317,6 +377,10 @@ impl MemoryBus {
             return Ok(());
         }
         self.check_watch(addr, 4, val as u64);
+        if let Some(off) = self.fast_offset(addr, 4) {
+            BigEndian::write_u32(&mut self.ram[off..], val);
+            return Ok(());
+        }
         let slice = self.translate_address_mut(addr)?;
         if slice.len() < 4 {
             return Err("Short write".into());
@@ -334,6 +398,9 @@ impl MemoryBus {
     }
 
     pub fn read_u64(&self, addr: u64) -> Result<u64, String> {
+        if let Some(off) = self.fast_offset(addr, 8) {
+            return Ok(BigEndian::read_u64(&self.ram[off..]));
+        }
         let slice = self.translate_address(addr)?;
         if slice.len() < 8 {
             return Err("Short read".into());
@@ -343,6 +410,10 @@ impl MemoryBus {
 
     pub fn write_u64(&mut self, addr: u64, val: u64) -> Result<(), String> {
         self.check_watch(addr, 8, val);
+        if let Some(off) = self.fast_offset(addr, 8) {
+            BigEndian::write_u64(&mut self.ram[off..], val);
+            return Ok(());
+        }
         let slice = self.translate_address_mut(addr)?;
         if slice.len() < 8 {
             return Err("Short write".into());
@@ -420,5 +491,28 @@ mod tests {
         assert_eq!(bus.read_u32(0x9E85_3FFC).unwrap(), 0x6666);
         assert!(bus.map_image(0x9E60_0000, 0x1000).is_err(), "overlapping image");
         assert!(bus.map_image(0x9F00_0000, 0x100_0000).is_err(), "pool exhausted");
+    }
+
+    #[test]
+    fn page_table_matches_the_full_translation() {
+        let mut bus = MemoryBus::new();
+        let slow = |bus: &MemoryBus, a: u64| BigEndian::read_u32(bus.translate_address(a).unwrap());
+        // plain RAM and its 0xAxxxxxxx alias, an access crossing a page, a 64-bit EA with garbage upper bits
+        bus.write_u32(0xA000_1000, 0x1122_3344).unwrap();
+        assert_eq!((bus.read_u32(0x1000).unwrap(), slow(&bus, 0xA000_1000)), (0x1122_3344, 0x1122_3344));
+        bus.write_u32(0xA000_1FFE, 0xAABB_CCDD).unwrap();
+        assert_eq!((bus.read_u16(0xA000_1FFE).unwrap(), bus.read_u16(0x2000).unwrap()), (0xAABB, 0xCCDD));
+        assert_eq!(bus.read_u32(0x1_A000_1000).unwrap(), 0x1122_3344);
+        // window chunks: unbacked reads as zero, a write backs the whole chunk for the page table too
+        assert_eq!(bus.read_u32(0x4123_4560).unwrap(), 0);
+        bus.write_u32(0x4123_4560, 7).unwrap();
+        bus.write_u64(0x4123_8000, 0x0102_0304_0506_0708).unwrap();
+        assert_eq!((bus.read_u32(0x4123_4560).unwrap(), slow(&bus, 0x4123_4560)), (7, 7));
+        assert_eq!((bus.read_u8(0x4123_8007).unwrap(), bus.read_u32(0x0123_4560).unwrap()), (8, 0), "no alias onto RAM");
+        // the GPU register window and SRAM keep their own paths
+        bus.write_u32(GPU_MMIO_BASE + 0x714, 0x40).unwrap();
+        assert_eq!((bus.cp_rb_wptr, bus.read_u32(GPU_MMIO_BASE + 0x714).unwrap()), (Some(0x40), bus.gpu_regs.mmio_read(0x714 / 4)));
+        bus.write_u32(SRAM_PREFIX + 0x10, 0x5A5A).unwrap();
+        assert_eq!((bus.sram[0x13], bus.read_u32(0x10).unwrap()), (0x5A, 0));
     }
 }
