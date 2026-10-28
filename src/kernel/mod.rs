@@ -8,6 +8,7 @@ pub mod input;
 pub mod modules;
 pub mod notify;
 pub mod strings;
+pub mod time_stamp;
 pub mod timers;
 pub mod user_module;
 pub mod video;

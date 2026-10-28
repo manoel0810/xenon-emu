@@ -270,7 +270,7 @@ impl KernelDispatcher {
     /// Kernel variables exported to the guest (Xenia ExportResolver::SetVariableMapping), as (ordinal, address):
     /// the video ones from RegisterVideoExports - VdGlobalDevice (points to a 40-byte block), VdGlobalXamDevice (0),
     /// VdGpuClockInMHz (500) and VdHSIOCalibrationLock (a critical section, spin count 10000). Other kernel
-    /// variables are not exported yet.
+    /// variables are not exported yet, except KeTimeStampBundle (xboxkrnl_module.cc, see kernel/time_stamp.rs).
     pub fn register_variable_exports(&mut self, bus: &mut MemoryBus) -> Vec<(u16, u32)> {
         use super::video::{VD_GLOBAL_DEVICE, VD_GLOBAL_XAM_DEVICE, VD_GPU_CLOCK_IN_MHZ, VD_HSIO_CALIBRATION_LOCK};
         let device_block = self.alloc_system(bus, 40) as u32;
@@ -278,7 +278,8 @@ impl KernelDispatcher {
         let _ = bus.write_u32(VD_GLOBAL_XAM_DEVICE.1 as u64, 0);
         let _ = bus.write_u32(VD_GPU_CLOCK_IN_MHZ.1 as u64, 500);
         super::objects::init_critical_section(bus, VD_HSIO_CALIBRATION_LOCK.1 as u64, ((10_000u32 + 255) >> 8) as u8);
-        vec![VD_GLOBAL_DEVICE, VD_GLOBAL_XAM_DEVICE, VD_GPU_CLOCK_IN_MHZ, VD_HSIO_CALIBRATION_LOCK]
+        let time_stamp_bundle = super::time_stamp::create(bus);
+        vec![VD_GLOBAL_DEVICE, VD_GLOBAL_XAM_DEVICE, VD_GPU_CLOCK_IN_MHZ, VD_HSIO_CALIBRATION_LOCK, time_stamp_bundle]
     }
 
     /// Starts a wait for the calling thread: it completes at once if it can (returning its status), otherwise the

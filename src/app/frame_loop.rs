@@ -161,6 +161,9 @@ pub fn run(
             }
             bus.current_thread.clear();
             bus.current_thread.push_str(&thread.name);
+            // KeTimeStampBundle advances between time slices (kernel/time_stamp.rs)
+            let now = bus.timebase.now();
+            xenon_emu::kernel::time_stamp::update(&mut bus, now);
             // Execute a timeslice of up to XENON_SLICE (default 25,000) instructions per thread per frame
             let slice_start = std::time::Instant::now();
             for step_i in 0..diag.slice {

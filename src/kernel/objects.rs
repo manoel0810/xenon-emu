@@ -698,7 +698,7 @@ mod tests {
             let mut k = KernelDispatcher::new();
             let mut bus = MemoryBus::new();
             let vars = k.register_variable_exports(&mut bus);
-            assert_eq!(vars.iter().map(|v| v.0).collect::<Vec<_>>(), vec![0x01BE, 0x01BF, 0x01C0, 0x01C1]);
+            assert_eq!(vars.iter().map(|v| v.0).collect::<Vec<_>>(), vec![0x01BE, 0x01BF, 0x01C0, 0x01C1, 0x00AD]);
             assert_eq!(bus.read_u32(0x801D_0E94).unwrap(), 500);
             assert_eq!((bus.read_u32(0x801D_1210 + CS_LOCK_COUNT).unwrap() as i32, bus.read_u8(0x801D_1211).unwrap()), (-1, 40));
             // the first listener of the system area gets the startup notifications (on by default, as in Xenia)
