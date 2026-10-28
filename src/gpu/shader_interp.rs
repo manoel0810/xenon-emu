@@ -786,6 +786,358 @@ fn fetch(op: &FetchInstruction, state: &mut ShaderState, env: &mut dyn ShaderEnv
     }
 }
 
+/// Pixels a `BatchShader` runs together.
+pub const LANES: usize = 16;
+
+/// One instruction of a batched shader.
+enum BatchOp {
+    Alu(CompiledAlu),
+    TextureFetch(FetchInstruction),
+}
+
+/// A pixel shader flattened for running on `LANES` pixels at once: straight-line code whose control flow depends
+/// only on the draw's boolean constants (resolved here), ALU instructions without predication or relative
+/// addressing, texture fetches. Each instruction goes over all the pixels before the next one, through the same
+/// `vector_op` / `scalar_op` as `CompiledShader::run`, so every pixel gets the same result as a run of its own.
+pub struct BatchShader {
+    ops: Vec<BatchOp>,
+    temps: usize,
+}
+
+/// The state of `LANES` pixel shader threads: registers by index then pixel, and what `ShaderState` keeps per
+/// thread that a batched shader can observe (ps) or export (kill, colors, depth). p0 and a0 are only read by
+/// predication and relative addressing, which a batched shader has none of.
+pub struct BatchState {
+    pub r: Vec<[Vec4; LANES]>,
+    ps: [f32; LANES],
+    pub killed: [bool; LANES],
+    pub colors: [[Option<Vec4>; 4]; LANES],
+    pub depth: [Option<f32>; LANES],
+}
+
+impl Default for BatchState {
+    fn default() -> Self {
+        Self { r: vec![[[0.0; 4]; LANES]; 64], ps: [0.0; LANES], killed: [false; LANES], colors: [[None; 4]; LANES], depth: [None; LANES] }
+    }
+}
+
+impl BatchState {
+    /// `ShaderState::reset_pixel` for the first `lanes` pixels.
+    pub fn reset(&mut self, temps: usize, lanes: usize) {
+        for r in &mut self.r[..temps.min(64)] {
+            r[..lanes].fill([0.0; 4]);
+        }
+        self.ps[..lanes].fill(0.0);
+        self.killed[..lanes].fill(false);
+        self.colors[..lanes].fill([None; 4]);
+        self.depth[..lanes].fill(None);
+    }
+}
+
+impl Operand {
+    /// A temporary or constant operand a batched shader can read without per-thread addressing.
+    fn is_batchable(&self) -> bool {
+        matches!(*self, Operand::Constant(_) | Operand::Register { temp: true, relative: false, .. })
+    }
+
+    /// `read` for the first `lanes` pixels of a batch.
+    #[inline(always)]
+    fn read_batch(&self, st: &BatchState, lanes: usize, out: &mut [Vec4; LANES]) {
+        match *self {
+            Operand::Constant(v) => out[..lanes].fill(v),
+            Operand::Register { index, abs, swizzle, negate, .. } => {
+                let reg = &st.r[(index & 63) as usize];
+                for lane in 0..lanes {
+                    let value = reg[lane];
+                    let mut v = [value[swizzle[0] as usize], value[swizzle[1] as usize], value[swizzle[2] as usize], value[swizzle[3] as usize]];
+                    if abs {
+                        v = v.map(f32::abs);
+                    }
+                    if negate {
+                        v = v.map(|x| -x);
+                    }
+                    out[lane] = v;
+                }
+            }
+        }
+    }
+}
+
+impl CompiledShader {
+    /// The shader as a `BatchShader` when it has nothing that differs between pixels in its control flow or
+    /// addressing; None otherwise (it then runs one pixel at a time).
+    pub fn batch(&self, env: &dyn ShaderEnv) -> Option<BatchShader> {
+        if self.shader_type != ShaderType::Pixel {
+            return None;
+        }
+        let mut ops = Vec::new();
+        for cf in &self.cf {
+            let op = cf.opcode();
+            match op {
+                CfOpcode::Nop | CfOpcode::Alloc | CfOpcode::MarkVsFetchDone => continue,
+                CfOpcode::CondExecPred | CfOpcode::CondExecPredEnd => return None,
+                _ if op.is_exec() => {}
+                _ => return None,
+            }
+            let run_body = match op {
+                CfOpcode::Exec | CfOpcode::ExecEnd => true,
+                _ => env.bool_constant(cf.bool_address()) == cf.condition(),
+            };
+            if run_body {
+                let mut sequence = cf.exec_sequence();
+                for offset in cf.exec_address()..cf.exec_address() + cf.exec_count() {
+                    let base = offset as usize * 3;
+                    let w = self.words.get(base..base + 3)?;
+                    if sequence & 1 != 0 {
+                        let f = FetchInstruction([w[0], w[1], w[2]]);
+                        match f.opcode() {
+                            FetchOpcode::VertexFetch => return None,
+                            FetchOpcode::SetTextureLod | FetchOpcode::SetTextureGradientsHorz | FetchOpcode::SetTextureGradientsVert | FetchOpcode::Unknown(_) => {}
+                            _ if f.is_predicated() || f.is_src_relative() || f.is_dest_relative() => return None,
+                            _ => ops.push(BatchOp::TextureFetch(f)),
+                        }
+                    } else if let Some(alu) = &self.alu[offset as usize] {
+                        let reads_third = matches!(alu.scalar, ScalarSource::Source3 { .. }) && alu.vector_operands < 3;
+                        let sources_ok = alu.sources.iter().take(if reads_third { 3 } else { alu.vector_operands }).all(Operand::is_batchable);
+                        let scalar_ok = !matches!(alu.scalar, ScalarSource::ConstTemp { constant: ConstScalar::Indexed { .. }, .. });
+                        let dest_ok = !matches!(alu.dest, AluDest::Temps { vector: (_, true), .. } | AluDest::Temps { scalar: (_, true), .. });
+                        if alu.predicate.is_some() || !sources_ok || !scalar_ok || !dest_ok {
+                            return None;
+                        }
+                        ops.push(BatchOp::Alu(*alu));
+                    }
+                    sequence >>= 2;
+                }
+            }
+            if op.ends_shader() {
+                return Some(BatchShader { ops, temps: self.temps });
+            }
+        }
+        Some(BatchShader { ops, temps: self.temps })
+    }
+}
+
+impl BatchShader {
+    /// See `ShaderState::reset`.
+    pub fn temps(&self) -> usize {
+        self.temps
+    }
+
+    /// Runs the shader on the first `lanes` pixels of `st`.
+    pub fn run(&self, st: &mut BatchState, lanes: usize, env: &mut dyn ShaderEnv) {
+        // the scratch thread vector_op / scalar_op read ps from and report kills to
+        let mut scratch = ShaderState::default();
+        let mut sources = [[[0.0f32; 4]; LANES]; 3];
+        let mut scalar_a = [0.0f32; LANES];
+        let mut scalar_b = [0.0f32; LANES];
+        let mut third = [[0.0f32; 4]; LANES];
+        let mut vectors = [[0.0f32; 4]; LANES];
+        let mut scalars = [0.0f32; LANES];
+        for op in &self.ops {
+            let alu = match op {
+                BatchOp::Alu(alu) => alu,
+                BatchOp::TextureFetch(f) => {
+                    batch_texture_fetch(f, st, lanes, env);
+                    continue;
+                }
+            };
+            // as in `alu`: the operands the vector operation does not take are 0
+            for (i, source) in sources.iter_mut().enumerate() {
+                if i < alu.vector_operands {
+                    alu.sources[i].read_batch(st, lanes, source);
+                } else {
+                    source[..lanes].fill([0.0; 4]);
+                }
+            }
+            match alu.scalar {
+                ScalarSource::None => {
+                    scalar_a[..lanes].fill(0.0);
+                    scalar_b[..lanes].fill(0.0);
+                }
+                ScalarSource::Source3 { second } => {
+                    let source3 = if alu.vector_operands == 3 {
+                        &sources[2]
+                    } else {
+                        alu.sources[2].read_batch(st, lanes, &mut third);
+                        &third
+                    };
+                    for lane in 0..lanes {
+                        scalar_a[lane] = source3[lane][3];
+                        scalar_b[lane] = source3[lane][second];
+                    }
+                }
+                ScalarSource::ConstTemp { constant, temp, temp_component, abs, negate } => {
+                    let ConstScalar::Fixed(a) = constant else { unreachable!("indexed constants are not batched") };
+                    for lane in 0..lanes {
+                        let v = st.r[temp][lane][temp_component];
+                        let v = if abs { v.abs() } else { v };
+                        scalar_a[lane] = a;
+                        scalar_b[lane] = if negate { -v } else { v };
+                    }
+                }
+            }
+            // the common operations over all the pixels at once; the others (and those that set p0 / a0 / kill) one
+            // pixel at a time through vector_op / scalar_op
+            let vector_done = vector_batch(alu.vector_opcode, &sources, lanes, &mut vectors);
+            let scalar_done = scalar_batch(alu.scalar_opcode, &scalar_a, &scalar_b, &st.ps, lanes, &mut scalars);
+            for lane in 0..lanes {
+                let (mut vector, mut scalar);
+                if vector_done && scalar_done {
+                    vector = vectors[lane];
+                    scalar = scalars[lane];
+                } else {
+                    scratch.ps = st.ps[lane];
+                    scratch.killed = false;
+                    let operands = [sources[0][lane], sources[1][lane], sources[2][lane]];
+                    vector = if vector_done { vectors[lane] } else { vector_op(alu.vector_opcode, &operands, &mut scratch) };
+                    scalar = if scalar_done { scalars[lane] } else { scalar_op(alu.scalar_opcode, scalar_a[lane], scalar_b[lane], &mut scratch) };
+                    st.killed[lane] |= scratch.killed;
+                }
+                st.ps[lane] = scalar;
+                if alu.vector_clamp {
+                    vector = vector.map(clamp01);
+                }
+                if alu.scalar_clamp {
+                    scalar = clamp01(scalar);
+                }
+                match alu.dest {
+                    AluDest::Temps { vector: (vd, _), vector_mask, scalar: (sd, _), scalar_mask } => {
+                        write_lane(&mut st.r[(vd & 63) as usize][lane], vector_mask, vector);
+                        write_lane(&mut st.r[(sd & 63) as usize][lane], scalar_mask, [scalar; 4]);
+                    }
+                    AluDest::Export { reg, vector_mask, scalar_mask, one_mask, mask } => {
+                        let mut value = [0.0; 4];
+                        for c in 0..4 {
+                            value[c] = if vector_mask & (1 << c) != 0 {
+                                vector[c]
+                            } else if scalar_mask & (1 << c) != 0 {
+                                scalar
+                            } else if one_mask & (1 << c) != 0 {
+                                1.0
+                            } else {
+                                0.0
+                            };
+                        }
+                        match reg {
+                            export::PS_COLOR_0..=export::PS_COLOR_3 => write_export(&mut st.colors[lane][reg as usize], mask, value),
+                            export::PS_DEPTH if mask & 1 != 0 => st.depth[lane] = Some(value[0]),
+                            // memory exports are only counted by `run`; other registers are not pixel exports
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `vector_op` over the first `lanes` pixels for the opcodes that only compute (no p0 / a0 / kill): the same
+/// operations in the same order, so the same results. False for the other opcodes.
+#[inline(always)]
+fn vector_batch(opcode: u32, s: &[[Vec4; LANES]; 3], lanes: usize, out: &mut [Vec4; LANES]) -> bool {
+    #[inline(always)]
+    fn each(s: &[[Vec4; LANES]; 3], lanes: usize, out: &mut [Vec4; LANES], f: impl Fn(f32, f32, f32) -> f32) {
+        for lane in 0..lanes {
+            let (a, b, c) = (&s[0][lane], &s[1][lane], &s[2][lane]);
+            out[lane] = [f(a[0], b[0], c[0]), f(a[1], b[1], c[1]), f(a[2], b[2], c[2]), f(a[3], b[3], c[3])];
+        }
+    }
+    #[inline(always)]
+    fn splat(s: &[[Vec4; LANES]; 3], lanes: usize, out: &mut [Vec4; LANES], f: impl Fn(&Vec4, &Vec4, &Vec4) -> f32) {
+        for lane in 0..lanes {
+            out[lane] = [f(&s[0][lane], &s[1][lane], &s[2][lane]); 4];
+        }
+    }
+    match opcode {
+        0 => each(s, lanes, out, |x, y, _| x + y),
+        1 => each(s, lanes, out, |x, y, _| mul_sm3(x, y)),
+        2 => each(s, lanes, out, |x, y, _| if x >= y { x } else { y }),
+        3 => each(s, lanes, out, |x, y, _| if x < y { x } else { y }),
+        4 => each(s, lanes, out, |x, y, _| bool_f(x == y)),
+        5 => each(s, lanes, out, |x, y, _| bool_f(x > y)),
+        6 => each(s, lanes, out, |x, y, _| bool_f(x >= y)),
+        7 => each(s, lanes, out, |x, y, _| bool_f(x != y)),
+        8 => each(s, lanes, out, |x, _, _| x - x.floor()),
+        10 => each(s, lanes, out, |x, _, _| x.floor()),
+        11 => each(s, lanes, out, |x, y, z| mul_sm3(x, y) + z),
+        12 => each(s, lanes, out, |x, y, z| if x == 0.0 { y } else { z }),
+        13 => each(s, lanes, out, |x, y, z| if x >= 0.0 { y } else { z }),
+        14 => each(s, lanes, out, |x, y, z| if x > 0.0 { y } else { z }),
+        15 => splat(s, lanes, out, |a, b, _| ((mul_sm3(a[0], b[0]) + mul_sm3(a[1], b[1])) + mul_sm3(a[2], b[2])) + mul_sm3(a[3], b[3])),
+        16 => splat(s, lanes, out, |a, b, _| (mul_sm3(a[0], b[0]) + mul_sm3(a[1], b[1])) + mul_sm3(a[2], b[2])),
+        17 => splat(s, lanes, out, |a, b, c| (mul_sm3(a[0], b[0]) + mul_sm3(a[1], b[1])) + c[0]),
+        _ => return false,
+    }
+    true
+}
+
+/// `scalar_op` over the first `lanes` pixels for the opcodes that only compute; `ps` is each pixel's previous
+/// scalar result. False for the other opcodes.
+#[inline(always)]
+fn scalar_batch(opcode: u32, a: &[f32; LANES], b: &[f32; LANES], ps: &[f32; LANES], lanes: usize, out: &mut [f32; LANES]) -> bool {
+    #[inline(always)]
+    fn each(a: &[f32; LANES], b: &[f32; LANES], ps: &[f32; LANES], lanes: usize, out: &mut [f32; LANES], f: impl Fn(f32, f32, f32) -> f32) {
+        for lane in 0..lanes {
+            out[lane] = f(a[lane], b[lane], ps[lane]);
+        }
+    }
+    match opcode {
+        0 | 44 | 45 => each(a, b, ps, lanes, out, |a, b, _| a + b),
+        1 => each(a, b, ps, lanes, out, |a, _, ps| a + ps),
+        2 | 42 | 43 => each(a, b, ps, lanes, out, |a, b, _| mul_sm3(a, b)),
+        3 => each(a, b, ps, lanes, out, |a, _, ps| mul_sm3(a, ps)),
+        5 => each(a, b, ps, lanes, out, |a, b, _| if a >= b { a } else { b }),
+        6 => each(a, b, ps, lanes, out, |a, b, _| if a < b { a } else { b }),
+        25 | 46 | 47 => each(a, b, ps, lanes, out, |a, b, _| a - b),
+        26 => each(a, b, ps, lanes, out, |a, _, ps| a - ps),
+        40 => each(a, b, ps, lanes, out, |a, _, _| a.sqrt()),
+        50 => out[..lanes].copy_from_slice(&ps[..lanes]),
+        _ => return false,
+    }
+    true
+}
+
+/// `write_temp` on one register of one pixel.
+#[inline(always)]
+fn write_lane(reg: &mut Vec4, mask: u32, value: Vec4) {
+    match mask {
+        0 => {}
+        0xF => *reg = value,
+        _ => {
+            for c in 0..4 {
+                if mask & (1 << c) != 0 {
+                    reg[c] = value[c];
+                }
+            }
+        }
+    }
+}
+
+/// `fetch` (texture fetches) for the first `lanes` pixels of a batch.
+fn batch_texture_fetch(op: &FetchInstruction, st: &mut BatchState, lanes: usize, env: &mut dyn ShaderEnv) {
+    let (src, dest) = ((op.src() & 63) as usize, (op.dest() & 63) as usize);
+    let count = fetch_dimension_component_count(op.tf_dimension()) as usize;
+    let swizzle = op.tf_src_swizzle();
+    let dest_swizzle = op.dest_swizzle();
+    for lane in 0..lanes {
+        let s = st.r[src][lane];
+        let mut coords = [0.0; 4];
+        for (j, c) in coords.iter_mut().enumerate().take(count.max(2)) {
+            *c = s[((swizzle >> (2 * j)) & 3) as usize];
+        }
+        let value = env.texture_fetch(op, coords);
+        let d = &mut st.r[dest][lane];
+        for c in 0..4 {
+            match fetch_dest_component_swizzle(dest_swizzle, c as u32) {
+                s @ 0..=3 => d[c] = value[s as usize],
+                5 => d[c] = 1.0,
+                7 => {}
+                _ => d[c] = 0.0,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1212,5 +1564,81 @@ mod tests {
             }
             println!("{}: {:.0} ns/pixel (checksum {})", name, start.elapsed().as_nanos() as f64 / n as f64, sum);
         }
+    }
+
+    #[test]
+    fn batches_give_every_pixel_its_own_result() {
+        // tfetch2D r3 from r5.zw; r1 = mad(r0, r3, r2); r2 = dp4(r1, r0) with r6 = rcp(r4.w); r8 = kill_gt(r0, r7) with
+        // r9.x = r6.w + ps; r10 = cndeq(r5, r0, r2) with r11 = sqrt(r2.w); r12.xyw = dp2add(r10, r1, r11) with r12.z =
+        // max(r11.w, r11.?); r13 = sge(r12, r2) with r13.y = r0.w - ps; oC0 = max(r12, r13) and oDepth = r9 + r6
+        let tfetch = [1 | (5 << 5) | (3 << 12) | (1 << 19) | ((2 | (3 << 2)) << 26), 1 << 3 | (2 << 6) | (3 << 9), 1 << 14];
+        let t = [true; 3];
+        let body = [
+            tfetch,
+            enc(Alu { vdst: 1, vmask: 0xF, vop: 11, sop: SCALAR_RETAIN_PREV, reg: [0, 3, 2], temp: t, ..Default::default() }),
+            enc(Alu { vdst: 2, vmask: 0xF, vop: 15, sop: 19, sdst: 6, smask: 0xF, reg: [1, 0, 4], temp: t, ..Default::default() }),
+            enc(Alu { vdst: 8, vmask: 0, vop: 25, sop: 1, sdst: 9, smask: 1, reg: [0, 7, 6], temp: t, ..Default::default() }),
+            enc(Alu { vdst: 10, vmask: 0xF, vop: 12, sop: 40, sdst: 11, smask: 0xF, reg: [5, 0, 2], temp: t, ..Default::default() }),
+            enc(Alu { vdst: 12, vmask: 0xB, vop: 17, sop: 5, sdst: 12, smask: 0x4, reg: [10, 1, 11], temp: t, ..Default::default() }),
+            enc(Alu { vdst: 13, vmask: 0xF, vop: 6, sop: 26, sdst: 13, smask: 0x2, reg: [12, 2, 0], temp: t, ..Default::default() }),
+            enc(Alu { export: true, vdst: export::PS_COLOR_0, vmask: 0xF, vop: VECTOR_MAX, sop: SCALAR_RETAIN_PREV, reg: [12, 13, 0], temp: t, ..Default::default() }),
+            enc(Alu { export: true, vdst: export::PS_DEPTH, vmask: 1, vop: 0, sop: SCALAR_RETAIN_PREV, reg: [9, 6, 0], temp: t, ..Default::default() }),
+        ];
+        // two execs: the fetch and four ALU instructions, then the rest
+        let mut parts = vec![pack(exec(EXEC, 1, 5, 0b01, CLEAN), exec(EXEC_END, 6, body.len() as u32 - 5, 0, CLEAN))];
+        parts.extend_from_slice(&body);
+        let words = shader(&parts);
+        let pixel = |i: usize| -> [Vec4; 5] {
+            let f = i as f32;
+            [
+                [f * 0.25 - 3.0, 1.0 - f * 0.5, 0.0, f.sin()],
+                [f * 0.1, -0.5, 2.0, 0.0],
+                [0.0, 0.0, 0.0, if i % 5 == 0 { 0.0 } else { f - 7.0 }],
+                [0.0, 0.0, f / 37.0, 1.0 - f / 37.0],
+                [0.5; 4].map(|v| if i % 3 == 0 { 10.0 } else { v }),
+            ]
+        };
+        let registers = [0usize, 2, 4, 5, 7];
+        let n = 37;
+        let mut scalar_env = Mock::new();
+        let compiled = CompiledShader::compile(&words, ShaderType::Pixel, &scalar_env);
+        let expected: Vec<(bool, [Option<Vec4>; 4], Option<f32>)> = (0..n)
+            .map(|i| {
+                let mut st = ShaderState::default();
+                for (k, v) in registers.into_iter().zip(pixel(i)) {
+                    st.r[k] = v;
+                }
+                compiled.run(&mut st, &mut scalar_env).unwrap();
+                (st.killed, st.exports.colors, st.exports.depth)
+            })
+            .collect();
+        assert!(expected.iter().any(|e| e.0) && expected.iter().any(|e| !e.0), "some pixels killed, some not");
+        let mut batch_env = Mock::new();
+        let batch = compiled.batch(&batch_env).expect("straight-line shader");
+        let mut st = BatchState::default();
+        let mut got = Vec::new();
+        for chunk in (0..n).collect::<Vec<_>>().chunks(LANES) {
+            st.reset(batch.temps(), LANES);
+            for (lane, &i) in chunk.iter().enumerate() {
+                for (k, v) in registers.into_iter().zip(pixel(i)) {
+                    st.r[k][lane] = v;
+                }
+            }
+            batch.run(&mut st, chunk.len(), &mut batch_env);
+            got.extend((0..chunk.len()).map(|lane| (st.killed[lane], st.colors[lane], st.depth[lane])));
+        }
+        type Bits = Vec<(bool, Vec<Option<[u32; 4]>>, Option<u32>)>;
+        let bits = |v: &Vec<(bool, [Option<Vec4>; 4], Option<f32>)>| -> Bits {
+            v.iter().map(|(k, c, d)| (*k, c.iter().map(|c| c.map(|c| c.map(f32::to_bits))).collect(), d.map(f32::to_bits))).collect()
+        };
+        assert_eq!(bits(&got), bits(&expected));
+        assert_eq!(batch_env.texture_coords, scalar_env.texture_coords);
+        // what differs between pixels in control flow or addressing is not batched
+        let predicated = enc(Alu { vdst: 1, vmask: 0xF, vop: 0, sop: SCALAR_RETAIN_PREV, reg: [0, 0, 0], temp: t, predicated: true, ..Default::default() });
+        let words = shader(&[pack(exec(EXEC_END, 1, 1, 0, CLEAN), cf(0, 0, 0)), predicated]);
+        assert!(CompiledShader::compile(&words, ShaderType::Pixel, &batch_env).batch(&batch_env).is_none());
+        let relative = enc(Alu { vdst: 1, vdst_rel: true, vmask: 0xF, vop: 0, sop: SCALAR_RETAIN_PREV, reg: [0, 0, 0], temp: t, ..Default::default() });
+        let words = shader(&[pack(exec(EXEC_END, 1, 1, 0, CLEAN), cf(0, 0, 0)), relative]);
+        assert!(CompiledShader::compile(&words, ShaderType::Pixel, &batch_env).batch(&batch_env).is_none());
     }
 }

@@ -275,6 +275,8 @@ impl XenosGpu {
         let vertex_shader = CompiledShader::compile(&self.vertex_shader, ShaderType::Vertex, &GpuShaderEnv { bus, sampler: &mut sampler });
         let pixel_shader = (!self.pixel_shader.is_empty())
             .then(|| CompiledShader::compile(&self.pixel_shader, ShaderType::Pixel, &GpuShaderEnv { bus, sampler: &mut sampler }));
+        // pixel shaders without per-pixel control flow or addressing run on several pixels at once
+        let batch = pixel_shader.as_ref().and_then(|ps| ps.batch(&GpuShaderEnv { bus, sampler: &mut sampler }));
         // the vertex shader runs once per distinct index
         let mut shaded: HashMap<u32, Vertex> = HashMap::new();
         let vertices: Vec<Vertex> = indices
@@ -298,7 +300,7 @@ impl XenosGpu {
             let polygon: Vec<ScreenVertex> = clip_triangle(bus, &tri).iter().map(|v| project(bus, v)).collect();
             for i in 1..polygon.len().saturating_sub(1) {
                 let tri = [polygon[0].clone(), polygon[i].clone(), polygon[i + 1].clone()];
-                rasterize_triangle(&mut self.edram, &state, &tri, bus, pixel_shader.as_ref(), threads);
+                rasterize_triangle(&mut self.edram, &state, &tri, bus, pixel_shader.as_ref(), batch.as_ref(), threads);
             }
         }
         if let Some((draws, _, _)) = self.raster_profile.as_mut() {
