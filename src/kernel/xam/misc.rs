@@ -29,6 +29,24 @@ impl KernelDispatcher {
             // 0x087A: XamIsNuiAutomationEnabled(unk1, unk2) -> X_ERROR_SUCCESS (Xenia xam_nui.cc stub)
             0x087A => 0,
 
+            // 0x0890: XamNuiIsDeviceReady() -> NuiInitialized(): false, no Kinect is emulated (Xenia xam_nui.cc).
+            // The console's dash polls it from 0x9278AF48 and gets 0 too (xbdm trace, 2026-10-28).
+            0x0890 => 0,
+
+            // 0x0885: XamNuiGetDeviceStatus(X_NUI_DEVICE_STATUS* status) -> NTSTATUS. Deviation: Xenia zeroes the
+            // struct {camera_status, tilt_status, mic_status, status_bits} and returns 0xC0050006 without a Kinect;
+            // the console's xam (traced from the dash's call at 0x9278B450) fills camera, tilt and mic with
+            // STATUS_DEVICE_NOT_CONNECTED, leaves status_bits 0 and returns that status, so its answer is used.
+            0x0885 => {
+                const STATUS_DEVICE_NOT_CONNECTED: u32 = 0xC000_009D;
+                if let Some(&status) = args.first().filter(|&&p| p & 0xFFFF_FFFF != 0) {
+                    for (i, value) in [STATUS_DEVICE_NOT_CONNECTED, STATUS_DEVICE_NOT_CONNECTED, STATUS_DEVICE_NOT_CONNECTED, 0].into_iter().enumerate() {
+                        let _ = bus.write_u32((status & 0xFFFF_FFFF) + 4 * i as u64, value);
+                    }
+                }
+                STATUS_DEVICE_NOT_CONNECTED as u64
+            }
+
             // 0x0646: XamPackageManagerGetExperienceMode(mode_ptr) -> X_ERROR_SUCCESS. Deviation: Xenia only lists the
             // export; the console's xam (0x816E9AC0) asks its app 0xFE (message 0x25005) for the mode. The dash keeps
             // bit 0x2 at app+0x164 (0x921838D8), 1 on the console, and loads dashnui.xex only when it is set
@@ -470,6 +488,15 @@ mod tests {
         let mut k = KernelDispatcher::new();
         let mut bus = MemoryBus::new();
         assert_eq!(xam(&mut k, &mut bus, 0x087A, &[0, 0]), 0);
+        // NUI as the console answers without a usable sensor: not ready, every device STATUS_DEVICE_NOT_CONNECTED
+        assert_eq!(xam(&mut k, &mut bus, 0x0890, &[]), 0);
+        for i in 0..4 {
+            bus.write_u32(0x4100_0000 + 4 * i, 0xFFFF_FFFF).unwrap();
+        }
+        assert_eq!(xam(&mut k, &mut bus, 0x0885, &[0x4100_0000]), 0xC000_009D);
+        let status: Vec<u32> = (0..4).map(|i| bus.read_u32(0x4100_0000 + 4 * i).unwrap()).collect();
+        assert_eq!(status, [0xC000_009D, 0xC000_009D, 0xC000_009D, 0]);
+        assert_eq!(xam(&mut k, &mut bus, 0x0885, &[0]), 0xC000_009D);
         // XamPackageManagerGetExperienceMode: bit 0x2 as on the console, a null pointer is ignored
         bus.write_u32(0x4100_0000, 0xFFFF_FFFF).unwrap();
         assert_eq!(xam(&mut k, &mut bus, 0x0646, &[0x4100_0000]), 0);
