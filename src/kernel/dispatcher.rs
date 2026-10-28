@@ -88,6 +88,8 @@ pub struct KernelDispatcher {
     pub modules: super::modules::ModuleTable,
     /// Loading of XEX modules after boot (XexLoadImage, XdfLoadXexFromCache): see kernel/user_module.rs.
     pub user_modules: super::user_module::UserModuleLoader,
+    /// Last playlist and song handles the XMP app gave out (XmpApp next_playlist_handle_ / next_song_handle_).
+    pub xmp_handles: (u32, u32),
     /// DPCs inserted with KeInsertQueueDpc and not removed (KeRemoveQueueDpc).
     pub queued_dpcs: std::collections::HashSet<u32>,
     /// DPC routine the calling thread must run before returning from KeInsertQueueDpc (taken by the frame loop).
@@ -146,6 +148,7 @@ impl KernelDispatcher {
             vfs_files: HashMap::new(),
             modules: super::modules::ModuleTable::default(),
             user_modules: Default::default(),
+            xmp_handles: (0, 0),
             queued_dpcs: std::collections::HashSet::new(),
             pending_dpc_call: None,
             title_terminated: false,
