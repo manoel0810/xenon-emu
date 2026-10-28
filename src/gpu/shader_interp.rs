@@ -847,16 +847,24 @@ impl Operand {
             Operand::Constant(v) => out[..lanes].fill(v),
             Operand::Register { index, abs, swizzle, negate, .. } => {
                 let reg = &st.r[(index & 63) as usize];
-                for lane in 0..lanes {
-                    let value = reg[lane];
-                    let mut v = [value[swizzle[0] as usize], value[swizzle[1] as usize], value[swizzle[2] as usize], value[swizzle[3] as usize]];
-                    if abs {
-                        v = v.map(f32::abs);
+                if swizzle == [0, 1, 2, 3] {
+                    out[..lanes].copy_from_slice(&reg[..lanes]);
+                } else {
+                    let [x, y, z, w] = swizzle.map(usize::from);
+                    for lane in 0..lanes {
+                        let value = &reg[lane];
+                        out[lane] = [value[x], value[y], value[z], value[w]];
                     }
-                    if negate {
-                        v = v.map(|x| -x);
+                }
+                if abs {
+                    for v in &mut out[..lanes] {
+                        *v = v.map(f32::abs);
                     }
-                    out[lane] = v;
+                }
+                if negate {
+                    for v in &mut out[..lanes] {
+                        *v = v.map(|x| -x);
+                    }
                 }
             }
         }
@@ -980,38 +988,46 @@ impl BatchShader {
             // pixel at a time through vector_op / scalar_op
             let vector_done = vector_batch(alu.vector_opcode, &sources, lanes, &mut vectors);
             let scalar_done = scalar_batch(alu.scalar_opcode, &scalar_a, &scalar_b, &st.ps, lanes, &mut scalars);
-            for lane in 0..lanes {
-                let (mut vector, mut scalar);
-                if vector_done && scalar_done {
-                    vector = vectors[lane];
-                    scalar = scalars[lane];
-                } else {
+            if !(vector_done && scalar_done) {
+                for lane in 0..lanes {
                     scratch.ps = st.ps[lane];
                     scratch.killed = false;
                     let operands = [sources[0][lane], sources[1][lane], sources[2][lane]];
-                    vector = if vector_done { vectors[lane] } else { vector_op(alu.vector_opcode, &operands, &mut scratch) };
-                    scalar = if scalar_done { scalars[lane] } else { scalar_op(alu.scalar_opcode, scalar_a[lane], scalar_b[lane], &mut scratch) };
+                    if !vector_done {
+                        vectors[lane] = vector_op(alu.vector_opcode, &operands, &mut scratch);
+                    }
+                    if !scalar_done {
+                        scalars[lane] = scalar_op(alu.scalar_opcode, scalar_a[lane], scalar_b[lane], &mut scratch);
+                    }
                     st.killed[lane] |= scratch.killed;
                 }
-                st.ps[lane] = scalar;
-                if alu.vector_clamp {
-                    vector = vector.map(clamp01);
+            }
+            // as in `alu`: ps takes the scalar result before the clamp, then the vector result is written before the
+            // scalar one
+            st.ps[..lanes].copy_from_slice(&scalars[..lanes]);
+            if alu.vector_clamp {
+                for v in &mut vectors[..lanes] {
+                    *v = v.map(clamp01);
                 }
-                if alu.scalar_clamp {
-                    scalar = clamp01(scalar);
+            }
+            if alu.scalar_clamp {
+                for v in &mut scalars[..lanes] {
+                    *v = clamp01(*v);
                 }
-                match alu.dest {
-                    AluDest::Temps { vector: (vd, _), vector_mask, scalar: (sd, _), scalar_mask } => {
-                        write_lane(&mut st.r[(vd & 63) as usize][lane], vector_mask, vector);
-                        write_lane(&mut st.r[(sd & 63) as usize][lane], scalar_mask, [scalar; 4]);
-                    }
-                    AluDest::Export { reg, vector_mask, scalar_mask, one_mask, mask } => {
+            }
+            match alu.dest {
+                AluDest::Temps { vector: (vd, _), vector_mask, scalar: (sd, _), scalar_mask } => {
+                    write_vector_lanes(&mut st.r[(vd & 63) as usize], vector_mask, &vectors, lanes);
+                    write_scalar_lanes(&mut st.r[(sd & 63) as usize], scalar_mask, &scalars, lanes);
+                }
+                AluDest::Export { reg, vector_mask, scalar_mask, one_mask, mask } => {
+                    for lane in 0..lanes {
                         let mut value = [0.0; 4];
                         for c in 0..4 {
                             value[c] = if vector_mask & (1 << c) != 0 {
-                                vector[c]
+                                vectors[lane][c]
                             } else if scalar_mask & (1 << c) != 0 {
-                                scalar
+                                scalars[lane]
                             } else if one_mask & (1 << c) != 0 {
                                 1.0
                             } else {
@@ -1027,6 +1043,32 @@ impl BatchShader {
                     }
                 }
             }
+        }
+    }
+}
+
+/// `write_temp` of the vector results of the first `lanes` pixels into one register.
+#[inline(always)]
+fn write_vector_lanes(reg: &mut [Vec4; LANES], mask: u32, values: &[Vec4; LANES], lanes: usize) {
+    match mask {
+        0 => {}
+        0xF => reg[..lanes].copy_from_slice(&values[..lanes]),
+        _ => {
+            for c in (0..4).filter(|c| mask & (1 << c) != 0) {
+                for lane in 0..lanes {
+                    reg[lane][c] = values[lane][c];
+                }
+            }
+        }
+    }
+}
+
+/// `write_temp` of the scalar results (replicated) of the first `lanes` pixels into one register.
+#[inline(always)]
+fn write_scalar_lanes(reg: &mut [Vec4; LANES], mask: u32, values: &[f32; LANES], lanes: usize) {
+    for c in (0..4).filter(|c| mask & (1 << c) != 0) {
+        for lane in 0..lanes {
+            reg[lane][c] = values[lane];
         }
     }
 }
@@ -1095,22 +1137,6 @@ fn scalar_batch(opcode: u32, a: &[f32; LANES], b: &[f32; LANES], ps: &[f32; LANE
         _ => return false,
     }
     true
-}
-
-/// `write_temp` on one register of one pixel.
-#[inline(always)]
-fn write_lane(reg: &mut Vec4, mask: u32, value: Vec4) {
-    match mask {
-        0 => {}
-        0xF => *reg = value,
-        _ => {
-            for c in 0..4 {
-                if mask & (1 << c) != 0 {
-                    reg[c] = value[c];
-                }
-            }
-        }
-    }
 }
 
 /// `fetch` (texture fetches) for the first `lanes` pixels of a batch.

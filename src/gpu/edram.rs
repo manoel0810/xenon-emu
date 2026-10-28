@@ -142,8 +142,19 @@ pub fn pack_8888(c: [f32; 4]) -> u32 {
 }
 
 pub fn unpack_8888(v: u32) -> [f32; 4] {
-    std::array::from_fn(|i| ((v >> (8 * i)) & 0xFF) as f32 / 255.0)
+    std::array::from_fn(|i| UNORM8[((v >> (8 * i)) & 0xFF) as usize])
 }
+
+/// `n as f32 / 255.0` for every byte (the same values, without a division per component).
+const UNORM8: [f32; 256] = {
+    let mut table = [0.0; 256];
+    let mut n = 0;
+    while n < 256 {
+        table[n] = n as f32 / 255.0;
+        n += 1;
+    }
+    table
+};
 
 /// CompareFunction.
 fn compare(func: u32, a: u32, b: u32) -> bool {
@@ -241,6 +252,23 @@ impl BlendControl {
     }
 
     pub fn blend(self, src: [f32; 4], dst: [f32; 4], constant: [f32; 4]) -> [f32; 4] {
+        let v = self.0;
+        // the dash's modes, with the expressions `combine` and `factor` give them
+        match v {
+            // color: src * src.a + dst * (1 - src.a); alpha: src * 1 + dst * (1 - src.a)
+            0x0701_0706 => {
+                let (fs, fd) = (src[3], 1.0 - src[3]);
+                return [src[0] * fs + dst[0] * fd, src[1] * fs + dst[1] * fd, src[2] * fs + dst[2] * fd, src[3] * 1.0 + dst[3] * fd];
+            }
+            // src * 1 + dst * 0
+            0x0001_0001 => return std::array::from_fn(|c| src[c] * 1.0 + dst[c] * 0.0),
+            _ => {}
+        }
+        self.blend_general(src, dst, constant)
+    }
+
+    /// `blend` for any mode, through `factor` and `combine`.
+    fn blend_general(self, src: [f32; 4], dst: [f32; 4], constant: [f32; 4]) -> [f32; 4] {
         let v = self.0;
         let (color_src, color_op, color_dst) = (v & 0x1F, (v >> 5) & 7, (v >> 8) & 0x1F);
         let (alpha_src, alpha_op, alpha_dst) = ((v >> 16) & 0x1F, (v >> 21) & 7, (v >> 24) & 0x1F);
@@ -837,5 +865,21 @@ mod tests {
             edram.resolve(&mut bus);
         }
         println!("resolve 1280x720 2x: {:.1} ms", start.elapsed().as_secs_f64() * 1000.0 / 5.0);
+    }
+
+    #[test]
+    fn blend_fast_paths_match_the_general_blend() {
+        let values = [0.0, -0.0, 0.25, 0.5, 1.0, 1.5, -2.0, f32::NAN, f32::INFINITY, 1e-40];
+        for mode in [0x0701_0706u32, 0x0001_0001] {
+            for &a in &values {
+                for &b in &values {
+                    let (src, dst) = ([a, b, 0.75, a], [b, 0.5, a, b]);
+                    let fast = BlendControl(mode).blend(src, dst, [0.0; 4]).map(f32::to_bits);
+                    let general = BlendControl(mode).blend_general(src, dst, [0.0; 4]).map(f32::to_bits);
+                    assert_eq!(fast, general, "mode {:08X} src {:?} dst {:?}", mode, src, dst);
+                }
+            }
+        }
+        assert!((0..256u32).all(|n| unpack_8888(n)[0].to_bits() == (n as f32 / 255.0).to_bits()));
     }
 }
